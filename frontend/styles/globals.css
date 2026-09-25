@@ -1,0 +1,8 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@layer base {
+    * {
+        box-sizing: border-box;
+    }
+}
