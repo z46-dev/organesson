@@ -6,7 +6,7 @@ import "github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 func Provider() (provider *schema.Provider) {
 	provider = &schema.Provider{
 		ResourcesMap: map[string]*schema.Resource{
-			"organesson_address_reservation":         resourceAddressReservation(),
+			"organesson_address_pool_request":        resourceAddressPoolRequest(),
 			"organesson_artifact":                    resourceArtifact(),
 			"organesson_deployment":                  resourceDeployment(),
 			"organesson_guest_network_configuration": resourceGuestNetworkConfiguration(),

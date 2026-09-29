@@ -97,15 +97,102 @@ func resourcePermissionGrant() (resource *schema.Resource) {
 	return
 }
 
-// resourceNetwork defines a deployment-owned virtual network.
+// resourceNetwork defines a virtual network owned by one deployment or logical group.
 func resourceNetwork() (resource *schema.Resource) {
 	resource = localResource("network", map[string]*schema.Schema{
-		"logical_group_id": requiredStringSchema("The owning logical group identifier."),
-		"mode":             requiredStringSchema("The requested network mode."),
-		"name":             requiredStringSchema("The virtual network name."),
-		"summary":          summarySchema(),
+		"deployment_id": {
+			Type:         schema.TypeString,
+			Optional:     true,
+			ExactlyOneOf: []string{"deployment_id", "logical_group_id"},
+			Description:  "The owning deployment identifier for a shared network.",
+		},
+		"dhcp_enabled": {
+			Type:        schema.TypeBool,
+			Required:    true,
+			Description: "Whether Organesson provides DHCP on this virtual network.",
+		},
+		"egress_policy": {
+			Type:         schema.TypeString,
+			Required:     true,
+			ValidateFunc: validation.StringInSlice([]string{"isolated", "environment-network", "platform-route"}, false),
+			Description:  "The network's explicit egress policy.",
+		},
+		"ipv4_gateway": optionalStringSchema("The managed IPv4 gateway address."),
+		"ipv4_subnet":  optionalStringSchema("The managed IPv4 subnet in CIDR notation."),
+		"logical_group_id": {
+			Type:         schema.TypeString,
+			Optional:     true,
+			ExactlyOneOf: []string{"deployment_id", "logical_group_id"},
+			Description:  "The owning logical group identifier for a private network.",
+		},
+		"mode": {
+			Type:         schema.TypeString,
+			Required:     true,
+			ValidateFunc: validation.StringInSlice([]string{"managed", "unmanaged-layer-2"}, false),
+			Description:  "The requested network mode.",
+		},
+		"name":    requiredStringSchema("The virtual network name."),
+		"summary": summarySchema(),
 	}, func(data *schema.ResourceData) (description string, err error) {
-		description = fmt.Sprintf("create %q virtual network %q in logical group %q", data.Get("mode").(string), data.Get("name").(string), data.Get("logical_group_id").(string))
+		var (
+			dhcpEnabled  bool   = data.Get("dhcp_enabled").(bool)
+			egressPolicy string = data.Get("egress_policy").(string)
+			gateway      string = data.Get("ipv4_gateway").(string)
+			mode         string = data.Get("mode").(string)
+			subnet       string = data.Get("ipv4_subnet").(string)
+			owner        string
+		)
+
+		if value := data.Get("deployment_id").(string); value != "" {
+			owner = fmt.Sprintf("deployment %q", value)
+		} else {
+			owner = fmt.Sprintf("logical group %q", data.Get("logical_group_id").(string))
+		}
+
+		if mode == "managed" && (subnet == "" || gateway == "") {
+			err = fmt.Errorf("managed network requires ipv4_subnet and ipv4_gateway")
+
+			return
+		}
+
+		if mode == "unmanaged-layer-2" && (dhcpEnabled || subnet != "" || gateway != "") {
+			err = fmt.Errorf("unmanaged-layer-2 network cannot define DHCP, ipv4_subnet, or ipv4_gateway")
+
+			return
+		}
+
+		description = fmt.Sprintf("create %q virtual network %q in %s with egress policy %q", mode, data.Get("name").(string), owner, egressPolicy)
+		if mode == "managed" {
+			description += fmt.Sprintf(" using subnet %q, gateway %q, and DHCP %t", subnet, gateway, dhcpEnabled)
+		}
+
+		return
+	})
+
+	return
+}
+
+// resourceAddressPoolRequest defines a deployment request for addresses from one environment network.
+func resourceAddressPoolRequest() (resource *schema.Resource) {
+	resource = localResource("address-pool-request", map[string]*schema.Schema{
+		"address_count": {
+			Type:         schema.TypeInt,
+			Required:     true,
+			ValidateFunc: validation.IntAtLeast(1),
+			Description:  "The number of addresses requested from the environment network.",
+		},
+		"address_family": {
+			Type:         schema.TypeString,
+			Required:     true,
+			ValidateFunc: validation.StringInSlice([]string{"ipv4", "ipv6"}, false),
+			Description:  "The requested address family.",
+		},
+		"deployment_id":       requiredStringSchema("The owning deployment identifier."),
+		"environment_network": requiredStringSchema("The environment network supplying addresses."),
+		"name":                requiredStringSchema("The deployment-local address pool request name."),
+		"summary":             summarySchema(),
+	}, func(data *schema.ResourceData) (description string, err error) {
+		description = fmt.Sprintf("request %d %s addresses from environment network %q as pool %q for deployment %q", data.Get("address_count").(int), data.Get("address_family").(string), data.Get("environment_network").(string), data.Get("name").(string), data.Get("deployment_id").(string))
 
 		return
 	})
@@ -152,6 +239,12 @@ func resourceVirtualDisk() (resource *schema.Resource) {
 // resourceNetworkAttachment defines a virtual-machine network attachment.
 func resourceNetworkAttachment() (resource *schema.Resource) {
 	resource = localResource("network-attachment", map[string]*schema.Schema{
+		"address_pool_request_id": {
+			Type:         schema.TypeString,
+			Optional:     true,
+			RequiredWith: []string{"requested_address_count"},
+			Description:  "The single environment address pool request supplying this interface.",
+		},
 		"environment_network": {
 			Type:         schema.TypeString,
 			Optional:     true,
@@ -164,7 +257,14 @@ func resourceNetworkAttachment() (resource *schema.Resource) {
 			ExactlyOneOf: []string{"environment_network", "logical_network_id"},
 			Description:  "The deployment virtual network identifier.",
 		},
-		"name":               requiredStringSchema("The attachment name."),
+		"name": requiredStringSchema("The attachment name."),
+		"requested_address_count": {
+			Type:         schema.TypeInt,
+			Optional:     true,
+			RequiredWith: []string{"address_pool_request_id"},
+			ValidateFunc: validation.IntAtLeast(1),
+			Description:  "The number of addresses this interface consumes from its one address pool.",
+		},
 		"virtual_machine_id": requiredStringSchema("The attached virtual machine identifier."),
 		"summary":            summarySchema(),
 	}, func(data *schema.ResourceData) (description string, err error) {
@@ -181,6 +281,9 @@ func resourceNetworkAttachment() (resource *schema.Resource) {
 		}
 
 		description = fmt.Sprintf("attach VM %q to %s as %q", data.Get("virtual_machine_id").(string), target, data.Get("name").(string))
+		if poolRequestID, exists := data.GetOk("address_pool_request_id"); exists {
+			description += fmt.Sprintf(" and request %d address(es) from pool %q", data.Get("requested_address_count").(int), poolRequestID.(string))
+		}
 
 		return
 	})
@@ -226,22 +329,6 @@ func resourceGuestNetworkConfiguration() (resource *schema.Resource) {
 		default:
 			err = fmt.Errorf("ipv4_method must be dhcp or static")
 		}
-
-		return
-	})
-
-	return
-}
-
-// resourceAddressReservation defines one environment-network address lease.
-func resourceAddressReservation() (resource *schema.Resource) {
-	resource = localResource("address-reservation", map[string]*schema.Schema{
-		"address_family":        requiredStringSchema("The requested address family."),
-		"environment_network":   requiredStringSchema("The authorized environment network name."),
-		"network_attachment_id": requiredStringSchema("The network attachment receiving the lease."),
-		"summary":               summarySchema(),
-	}, func(data *schema.ResourceData) (description string, err error) {
-		description = fmt.Sprintf("reserve one %s address from environment network %q for attachment %q", data.Get("address_family").(string), data.Get("environment_network").(string), data.Get("network_attachment_id").(string))
 
 		return
 	})
