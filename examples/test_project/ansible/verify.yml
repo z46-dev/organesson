@@ -1,0 +1,19 @@
+---
+- name: Verify Team LAN guests after initial provisioning
+  hosts: team_lan_guests
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Confirm the guest agent service is active
+      ansible.builtin.systemd_service:
+        name: qemu-guest-agent
+        state: started
+
+    - name: Confirm first-time setup completed
+      ansible.builtin.stat:
+        path: /var/lib/organesson/first-time-setup-complete
+      register: setup_marker
+
+    - name: Require the first-time setup marker
+      ansible.builtin.assert:
+        that: setup_marker.stat.exists
