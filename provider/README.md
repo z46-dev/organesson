@@ -1,6 +1,6 @@
 # Organesson OpenTofu provider
 
-This is the local-first provider prototype. It accepts a Team LAN deployment declaration, expands it into logged actions, and writes the same action list to OpenTofu state. It does not connect to Organesson or Proxmox and cannot create infrastructure yet.
+This is the local-first provider prototype. It parses individual deployment resources, logs their intended actions, and writes one summary per resource to OpenTofu state. It does not connect to Organesson or Proxmox and cannot create infrastructure yet.
 
 Build the provider from the repository root:
 
