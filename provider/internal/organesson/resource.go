@@ -102,6 +102,18 @@ func optionalStringSchema(description string) (field *schema.Schema) {
 	return
 }
 
+// optionalStringSetSchema returns an optional, order-independent string set field.
+func optionalStringSetSchema(description string) (field *schema.Schema) {
+	field = &schema.Schema{
+		Type:        schema.TypeSet,
+		Optional:    true,
+		Elem:        &schema.Schema{Type: schema.TypeString},
+		Description: description,
+	}
+
+	return
+}
+
 // requiredIntSchema returns a required integer field.
 func requiredIntSchema(description string) (field *schema.Schema) {
 	field = &schema.Schema{Type: schema.TypeInt, Required: true, Description: description}

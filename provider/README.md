@@ -1,6 +1,6 @@
 # Organesson OpenTofu provider
 
-This is the local-first provider prototype. It parses individual deployment resources, logs their intended actions, and writes one summary per resource to OpenTofu state. It does not connect to Organesson or Proxmox and cannot create infrastructure yet.
+This is the local-first provider prototype. It parses individual deployment resources, logs their intended actions, and writes one summary per resource to OpenTofu state. User identities are resolved by Organesson using identifiers such as `alice@organesson`; deployment-local groups and validated fixed permission grants are defined in OpenTofu. Its artifact resource accepts a source directory that the future provider will package and hash into an immutable artifact. It does not connect to Organesson or Proxmox and cannot create infrastructure yet.
 
 Build the provider from the repository root:
 
