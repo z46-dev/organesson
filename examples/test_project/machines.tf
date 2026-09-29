@@ -1,0 +1,52 @@
+# This Fedora VM is dual-homed: DHCP on cyber.lab and a static private-link address.
+resource "organesson_virtual_machine" "internet_fedora" {
+  for_each = local.students
+
+  boot_disk_gib    = 64
+  cpu_cores        = 2
+  logical_group_id = organesson_logical_group.student_lab[each.key].id
+  memory_mib       = 4096
+  name             = "internet-fedora"
+  template         = "og-template-fedora-server-latest"
+}
+
+# This Fedora VM joins both its student's private link and the shared DHCP subnet.
+resource "organesson_virtual_machine" "lan_fedora" {
+  for_each = local.students
+
+  boot_disk_gib    = 64
+  cpu_cores        = 2
+  logical_group_id = organesson_logical_group.student_lab[each.key].id
+  memory_mib       = 4096
+  name             = "lan-fedora"
+  template         = "og-template-fedora-server-latest"
+}
+
+resource "organesson_virtual_disk" "internet_fedora_data" {
+  for_each = local.students
+
+  name               = "data"
+  size_gib           = 500
+  storage_class      = "fast"
+  virtual_machine_id = organesson_virtual_machine.internet_fedora[each.key].id
+}
+
+resource "organesson_artifact" "first_time_setup" {
+  deployment_id    = organesson_deployment.class_lab.id
+  entrypoint       = "entrypoint.sh"
+  source_directory = "artifacts/first-time-setup"
+}
+
+resource "organesson_guest_setup" "internet_fedora" {
+  for_each = local.students
+
+  artifact_id        = organesson_artifact.first_time_setup.id
+  virtual_machine_id = organesson_virtual_machine.internet_fedora[each.key].id
+}
+
+resource "organesson_guest_setup" "lan_fedora" {
+  for_each = local.students
+
+  artifact_id        = organesson_artifact.first_time_setup.id
+  virtual_machine_id = organesson_virtual_machine.lan_fedora[each.key].id
+}

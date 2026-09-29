@@ -68,3 +68,11 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 
 reference/
+
+# OpenTofu local development
+.bin/
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+tofu.rc

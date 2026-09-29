@@ -47,8 +47,9 @@ Scenario:
 Alice comes and speaks to me and says "Hey I'm teaching a class. My students are Charlie and Dave, and Bob is my TA. I've made a package that will create a deployment for my class. Can you deploy it for me? I don't need any major changes after it's been deployed, just basic administration stuff."
 
 Alice's package creates for each student:
-- Firewall VM with a WAN address and a LAN
+- A LAN network device (with no subnet or connected devices)
 - Two Linux VMs connected to the LAN
+- One of the VMs will also have a NIC on the `cyber.lab` network, and will get its IP address from a request from a pool for the entire deployment.
 
 He also discusses that:
 - Each student can view, power control, and console control their own VMs.
