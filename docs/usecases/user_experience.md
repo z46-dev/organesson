@@ -32,7 +32,6 @@ The access control of the resources within a deployment is defined by the deploy
 Another important permission aspect of this is that there are permissions that relate to the deployment itself. These permissions are more administrative and can be used to grant other permissions in some cases:
 
 - Deployment Admin: Can manage the deployment itself, including adding/removing users, changing roles/responsibilities of users in relation to the resources in the deployment, and changing the configuration of the deployment itself. This is a very powerful permission and should be granted sparingly.
-- Deployment Auditor: Can view/audit the deployment and its resources, but cannot make any changes to the deployment or its resources. This is a read-only permission and is needed for anyone who needs to do anything with the deployment.
 - Deployment Manager: Can manage the users and groups in the deployment, including adding/removing users, changing roles/responsibilities of users in relation to the resources in the deployment, and changing the configuration of the deployment itself. It would not allow the user to grant/revoke the Deployment Admin permission to themselves or others.
 
 ---
@@ -60,7 +59,7 @@ So I create a deployment for Alice. The package details the roles/responsibiliti
 - 2 Firewalls (one for Charlie, one for Dave)
 - 4 Linux VMs (two for Charlie, two for Dave)
 
-Alive also detailed himself as an administrator of the deployment. Thus, he can manage the access control of the deployment. However, because I am an administrator of the platform, I can also manage the access control of the deployment. I can add/remove users, change roles, and change responsibilities of users in relation to the resources in the deployment. Alice cannot change my absolute administrative status of the deployment, but I can change hers. I can also change the roles/responsibilities of Bob, Charlie, and Dave in relation to the resources in the deployment.
+Alice also detailed herself as an administrator of the deployment. Thus, she can manage the access control of the deployment. However, because I am an administrator of the platform, I can also manage the access control of the deployment. I can add/remove users, change roles, and change responsibilities of users in relation to the resources in the deployment. Alice cannot change my absolute administrative status of the deployment, but I can change hers. I can also change the roles/responsibilities of Bob, Charlie, and Dave in relation to the resources in the deployment.
 
 ---
 
