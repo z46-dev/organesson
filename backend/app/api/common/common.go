@@ -3,6 +3,7 @@ package common
 import (
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/session"
@@ -58,6 +59,53 @@ func RequireSession(authentication *auth.Service) (handler fiber.Handler) {
 		err = ctx.Next()
 		return
 	}
+	return
+}
+
+// RequireActor accepts either a browser session or a bearer token on protected routes.
+func RequireActor(authentication *auth.Service) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var authorization string = ctx.Get(fiber.HeaderAuthorization)
+		if strings.HasPrefix(authorization, "Bearer ") {
+			var accountID int
+			var tokenErr error
+			if accountID, tokenErr = authenticateBearer(authentication, strings.TrimPrefix(authorization, "Bearer ")); tokenErr != nil {
+				return ctx.SendStatus(fiber.StatusUnauthorized)
+			}
+			ctx.Locals("account_id", accountID)
+			err = ctx.Next()
+			return
+		}
+		var middleware = session.FromContext(ctx)
+		if middleware == nil {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var accountID int
+		var valid bool
+		if accountID, valid = middleware.Get("account_id").(int); !valid {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var account *db.Account
+		if account, err = authentication.AccountByID(accountID); err != nil {
+			return ctx.SendStatus(fiber.StatusInternalServerError)
+		}
+		if account == nil {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		ctx.Locals("account_id", account.ID)
+		err = ctx.Next()
+		return
+	}
+	return
+}
+
+// authenticateBearer validates a token without exposing token records to handlers.
+func authenticateBearer(authentication *auth.Service, token string) (accountID int, err error) {
+	var accountIDRecord *db.Account
+	if accountIDRecord, err = authentication.AuthenticateAPIToken(token); err != nil {
+		return
+	}
+	accountID = accountIDRecord.ID
 	return
 }
 

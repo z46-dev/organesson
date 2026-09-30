@@ -107,6 +107,49 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 	if csrfToken, err = requestCSRFToken(t, application, jar); err != nil {
 		t.Fatalf("get deployment CSRF token: %v", err)
 	}
+	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/auth/api-tokens", `{"name":"provider acceptance","lifetime_days":7}`, csrfToken)
+	var apiTokenResult struct {
+		ID    int    `json:"id"`
+		Token string `json:"token"`
+	}
+	if response.StatusCode != fiber.StatusCreated {
+		var body []byte
+		body, _ = io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("expected API token create 201, got %d: %s", response.StatusCode, body)
+	}
+	if err = json.NewDecoder(response.Body).Decode(&apiTokenResult); err != nil {
+		response.Body.Close()
+		t.Fatalf("decode API token response: %v", err)
+	}
+	response.Body.Close()
+	if apiTokenResult.ID < 1 || apiTokenResult.Token == "" {
+		t.Fatalf("API token response lacks one-time secret or identifier: %#v", apiTokenResult)
+	}
+	response = performBearerRequest(t, application, http.MethodPost, "/api/v1/deployments", `{"name":"provider-deployment","description":"Bearer API acceptance"}`, apiTokenResult.Token)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusCreated {
+		t.Fatalf("expected bearer-authenticated mutation without CSRF to return 201, got %d", response.StatusCode)
+	}
+	response = performBearerRequest(t, application, http.MethodGet, "/api/v1/deployments", "", "invalid-token")
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected invalid bearer credential to return 401, got %d", response.StatusCode)
+	}
+	if csrfToken, err = requestCSRFToken(t, application, jar); err != nil {
+		t.Fatalf("get token revoke CSRF token: %v", err)
+	}
+	response = performRequest(t, application, jar, http.MethodDelete, "/api/v1/auth/api-tokens/"+strconv.Itoa(apiTokenResult.ID), "", csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("expected API token revocation to return 204, got %d", response.StatusCode)
+	}
+	response = performBearerRequest(t, application, http.MethodGet, "/api/v1/deployments", "", apiTokenResult.Token)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected revoked bearer credential to return 401, got %d", response.StatusCode)
+	}
+
 	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/deployments", `{"name":"smoke-deployment","description":"API test"}`, csrfToken)
 	var deploymentResult struct {
 		Deployment struct {
@@ -195,6 +238,14 @@ func requestCSRFToken(t *testing.T, application *fiber.App, jar *cookiejar.Jar) 
 }
 
 func performRequest(t *testing.T, application *fiber.App, jar *cookiejar.Jar, method string, path string, body string, csrfToken string) (response *http.Response) {
+	return performRequestWithAuthorization(t, application, jar, method, path, body, csrfToken, "")
+}
+
+func performBearerRequest(t *testing.T, application *fiber.App, method string, path string, body string, token string) (response *http.Response) {
+	return performRequestWithAuthorization(t, application, nil, method, path, body, "", "Bearer "+token)
+}
+
+func performRequestWithAuthorization(t *testing.T, application *fiber.App, jar *cookiejar.Jar, method string, path string, body string, csrfToken string, authorization string) (response *http.Response) {
 	t.Helper()
 	var requestURL *url.URL
 	var err error
@@ -209,8 +260,10 @@ func performRequest(t *testing.T, application *fiber.App, jar *cookiejar.Jar, me
 	if request, err = http.NewRequest(method, requestURL.String(), requestBody); err != nil {
 		t.Fatalf("create request: %v", err)
 	}
-	for _, cookie := range jar.Cookies(requestURL) {
-		request.AddCookie(cookie)
+	if jar != nil {
+		for _, cookie := range jar.Cookies(requestURL) {
+			request.AddCookie(cookie)
+		}
 	}
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
@@ -218,9 +271,14 @@ func performRequest(t *testing.T, application *fiber.App, jar *cookiejar.Jar, me
 	if csrfToken != "" {
 		request.Header.Set("X-Csrf-Token", csrfToken)
 	}
+	if authorization != "" {
+		request.Header.Set("Authorization", authorization)
+	}
 	if response, err = application.Test(request); err != nil {
 		t.Fatalf("perform %s %s: %v", method, path, err)
 	}
-	jar.SetCookies(requestURL, response.Cookies())
+	if jar != nil {
+		jar.SetCookies(requestURL, response.Cookies())
+	}
 	return
 }

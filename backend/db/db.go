@@ -18,6 +18,7 @@ type (
 		AccountIdentities       *gosqlite.RegisteredStruct[AccountIdentity]
 		LocalCredentials        *gosqlite.RegisteredStruct[LocalCredential]
 		PasswordResetTokens     *gosqlite.RegisteredStruct[PasswordResetToken]
+		APITokens               *gosqlite.RegisteredStruct[APIToken]
 		Deployments             *gosqlite.RegisteredStruct[Deployment]
 		OwnershipNodes          *gosqlite.RegisteredStruct[OwnershipNode]
 		UserGroups              *gosqlite.RegisteredStruct[UserGroup]
@@ -170,6 +171,9 @@ func (store *Store) registerTables() (err error) {
 	if store.PasswordResetTokens, err = gosqlite.Register(store.driver, PasswordResetToken{}); err != nil {
 		return
 	}
+	if store.APITokens, err = gosqlite.Register(store.driver, APIToken{}); err != nil {
+		return
+	}
 	if store.Deployments, err = gosqlite.Register(store.driver, Deployment{}); err != nil {
 		return
 	}
@@ -211,6 +215,9 @@ func (store *Store) migrations() (migrations []func(gosqlite.MigrationOptions) e
 		},
 		func(options gosqlite.MigrationOptions) (err error) {
 			return migrateTable(store.PasswordResetTokens, options, store.logger)
+		},
+		func(options gosqlite.MigrationOptions) (err error) {
+			return migrateTable(store.APITokens, options, store.logger)
 		},
 		func(options gosqlite.MigrationOptions) (err error) {
 			return migrateTable(store.Deployments, options, store.logger)

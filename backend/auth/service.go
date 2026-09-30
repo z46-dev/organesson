@@ -54,6 +54,12 @@ type (
 		QualifiedName string
 		SetupToken    string
 	}
+
+	// APITokenCredential contains the raw token exactly once and its safe metadata.
+	APITokenCredential struct {
+		Token  *db.APIToken
+		Secret string
+	}
 )
 
 // New creates a local authentication service with a timing equalization hash.
@@ -188,6 +194,33 @@ func (service *Service) CreateLocalAccount(actorID int, username string, display
 	return
 }
 
+// CreateDevelopmentTestUsers creates the four documented test identities with activation links.
+func (service *Service) CreateDevelopmentTestUsers(actorID int) (setups []*LocalAccountSetup, err error) {
+	var identities []*db.AccountIdentity
+	if identities, err = service.store.AccountIdentities.SelectAll(); err != nil {
+		return
+	}
+	var usernames []string = []string{"alice", "bob", "charlie", "dave"}
+	for _, username := range usernames {
+		var exists bool
+		for _, identity := range identities {
+			if strings.EqualFold(identity.QualifiedName, username+"@organesson") {
+				exists = true
+				break
+			}
+		}
+		if exists {
+			continue
+		}
+		var setup *LocalAccountSetup
+		if setup, err = service.CreateLocalAccount(actorID, username, strings.ToUpper(username[:1])+username[1:]); err != nil {
+			return
+		}
+		setups = append(setups, setup)
+	}
+	return
+}
+
 // ResetLocalAccountLink replaces unused local activation or password-reset links.
 func (service *Service) ResetLocalAccountLink(actorID int, accountID int) (token string, err error) {
 	service.tokenLock.Lock()
@@ -299,6 +332,121 @@ func (service *Service) ResetInitialAdministratorLink() (token string, err error
 		purpose = db.PasswordResetPurposeActivation
 	}
 	token, err = service.createPasswordLink(account.ID, purpose)
+	return
+}
+
+// CreateAPIToken creates a bounded-lifetime bearer credential for an active account.
+func (service *Service) CreateAPIToken(accountID int, name string, lifetime time.Duration) (credential *APITokenCredential, err error) {
+	var account *db.Account
+	if account, err = service.AccountByID(accountID); err != nil {
+		return
+	}
+	if account == nil {
+		err = ErrForbidden
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 100 || lifetime < time.Hour || lifetime > 365*24*time.Hour {
+		err = ErrInvalidInput
+		return
+	}
+
+	var randomBytes [tokenLength]byte
+	if _, err = rand.Read(randomBytes[:]); err != nil {
+		return
+	}
+	var secret string = "orgn_" + base64.RawURLEncoding.EncodeToString(randomBytes[:])
+	var tokenHash [sha256.Size]byte = sha256.Sum256([]byte(secret))
+	var now time.Time = service.now()
+	var expiresAt time.Time = now.Add(lifetime)
+	var token *db.APIToken = &db.APIToken{
+		AccountID: accountID,
+		Name:      name,
+		Prefix:    secret[:13],
+		TokenHash: tokenHash[:],
+		CreatedAt: now,
+		ExpiresAt: &expiresAt,
+	}
+	if err = service.store.APITokens.Insert(token); err != nil {
+		return
+	}
+	var actorIDPointer *int = &accountID
+	if err = service.store.AuditEvents.Insert(&db.AuditEvent{
+		ActorAccountID: actorIDPointer,
+		Action:         "api_token.create",
+		Target:         fmt.Sprintf("api_token:%d", token.ID),
+		Result:         "succeeded",
+		DetailsJSON:    "{}",
+		CreatedAt:      now,
+	}); err != nil {
+		_ = service.store.APITokens.Delete(token.ID)
+		return
+	}
+	credential = &APITokenCredential{Token: token, Secret: secret}
+	return
+}
+
+// AuthenticateAPIToken validates an opaque bearer token and returns its current account.
+func (service *Service) AuthenticateAPIToken(secret string) (account *db.Account, err error) {
+	if len(secret) < 16 || len(secret) > 128 {
+		err = ErrInvalidCredentials
+		return
+	}
+	var tokens []*db.APIToken
+	if tokens, err = service.store.APITokens.SelectAll(); err != nil {
+		return
+	}
+	var suppliedHash [sha256.Size]byte = sha256.Sum256([]byte(secret))
+	var matched *db.APIToken
+	for _, token := range tokens {
+		if token.Prefix == secret[:13] && len(token.TokenHash) == len(suppliedHash) && subtle.ConstantTimeCompare(token.TokenHash, suppliedHash[:]) == 1 {
+			matched = token
+			break
+		}
+	}
+	if matched == nil || matched.RevokedAt != nil || matched.ExpiresAt == nil || !matched.ExpiresAt.After(service.now()) {
+		err = ErrInvalidCredentials
+		return
+	}
+	if account, err = service.AccountByID(matched.AccountID); err != nil {
+		return
+	}
+	if account == nil {
+		err = ErrInvalidCredentials
+		return
+	}
+	var now time.Time = service.now()
+	matched.LastUsedAt = &now
+	if err = service.store.APITokens.Update(matched); err != nil {
+		return nil, err
+	}
+	return
+}
+
+// RevokeAPIToken disables one bearer credential owned by the current account.
+func (service *Service) RevokeAPIToken(accountID int, tokenID int) (err error) {
+	var token *db.APIToken
+	if token, err = service.store.APITokens.Select(tokenID); err != nil {
+		return
+	}
+	if token == nil || token.AccountID != accountID || token.RevokedAt != nil {
+		err = ErrInvalidToken
+		return
+	}
+	var now time.Time = service.now()
+	token.RevokedAt = &now
+	if err = service.store.APITokens.Update(token); err != nil {
+		return
+	}
+	var actorIDPointer *int = &accountID
+	err = service.store.AuditEvents.Insert(&db.AuditEvent{
+		ActorAccountID: actorIDPointer,
+		Action:         "api_token.revoke",
+		Target:         fmt.Sprintf("api_token:%d", tokenID),
+		Result:         "succeeded",
+		DetailsJSON:    "{}",
+		CreatedAt:      now,
+	})
 	return
 }
 

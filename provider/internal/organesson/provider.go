@@ -1,10 +1,31 @@
 package organesson
 
-import "github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+import (
+	"context"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+)
 
 // Provider returns the initial local-only Organesson provider.
 func Provider() (provider *schema.Provider) {
 	provider = &schema.Provider{
+		Schema: map[string]*schema.Schema{
+			"endpoint": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				DefaultFunc: schema.EnvDefaultFunc("ORGANESSON_ENDPOINT", "http://127.0.0.1:6800"),
+				Description: "Organesson API origin. Set ORGANESSON_ENDPOINT to override.",
+			},
+			"token": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Sensitive:   true,
+				DefaultFunc: schema.EnvDefaultFunc("ORGANESSON_TOKEN", nil),
+				Description: "Personal API token. Set ORGANESSON_TOKEN; do not store it in OpenTofu configuration.",
+			},
+		},
+		ConfigureContextFunc: configureProvider,
 		ResourcesMap: map[string]*schema.Resource{
 			"organesson_address_pool_request":        resourceAddressPoolRequest(),
 			"organesson_artifact":                    resourceArtifact(),
@@ -21,5 +42,17 @@ func Provider() (provider *schema.Provider) {
 		},
 	}
 
+	return
+}
+
+// configureProvider validates provider settings and builds its API client.
+func configureProvider(ctx context.Context, data *schema.ResourceData) (meta interface{}, diagnostics diag.Diagnostics) {
+	var client *apiClient
+	var err error
+	if client, err = configuredClient(data.Get("endpoint").(string), data.Get("token").(string)); err != nil {
+		diagnostics = diag.FromErr(err)
+		return
+	}
+	meta = client
 	return
 }

@@ -36,6 +36,12 @@ func main() {
 				} else {
 					_ = parser.WriteHelpForSubcommand(os.Stdout, "bootstrap")
 				}
+			} else if arguments.Development != nil {
+				if arguments.Development.SeedTestUsers != nil {
+					_ = parser.WriteHelpForSubcommand(os.Stdout, "development", "seed-test-users")
+				} else {
+					_ = parser.WriteHelpForSubcommand(os.Stdout, "development")
+				}
 			} else {
 				parser.WriteHelp(os.Stdout)
 			}
@@ -69,6 +75,26 @@ func main() {
 			log.Panicf("Failed to create administrator password link: %v\n", err)
 		}
 		fmt.Printf("One-time administrator password link token: %s\n", token)
+		return
+	}
+	if arguments.Development != nil && arguments.Development.SeedTestUsers != nil {
+		if !config.Cfg.Development.EnableTestFixtures {
+			log.Panic("Test identities require development.enable_test_fixtures = true in config.toml")
+		}
+		var administrator *db.Account
+		if administrator, _, err = store.InitialAdministrator(); err != nil {
+			log.Panicf("Failed to load the administrator account: %v\n", err)
+		}
+		var setups []*localauth.LocalAccountSetup
+		if setups, err = authentication.CreateDevelopmentTestUsers(administrator.ID); err != nil {
+			log.Panicf("Failed to create development test users: %v\n", err)
+		}
+		if len(setups) == 0 {
+			log.Info("All development test identities already exist.")
+		}
+		for _, setup := range setups {
+			fmt.Printf("One-time activation token for %s (account %d): %s\n", setup.QualifiedName, setup.Account.ID, setup.SetupToken)
+		}
 		return
 	}
 

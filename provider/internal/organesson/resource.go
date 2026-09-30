@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 
@@ -12,6 +13,66 @@ import (
 )
 
 type resourceDescriptionFunc func(*schema.ResourceData) (string, error)
+
+type (
+	remoteResourceOperation func(context.Context, *schema.ResourceData, *apiClient) error
+
+	remoteResourceOperations struct {
+		Create remoteResourceOperation
+		Read   remoteResourceOperation
+		Update remoteResourceOperation
+		Delete remoteResourceOperation
+	}
+)
+
+// apiResource binds a Terraform resource to authenticated Organesson API lifecycle calls.
+func apiResource(fields map[string]*schema.Schema, operations remoteResourceOperations) (resource *schema.Resource) {
+	resource = &schema.Resource{
+		CreateContext: func(ctx context.Context, data *schema.ResourceData, meta interface{}) (diagnostics diag.Diagnostics) {
+			var client *apiClient = meta.(*apiClient)
+			var err error
+			if err = operations.Create(ctx, data, client); err != nil {
+				diagnostics = diag.FromErr(err)
+			}
+			return
+		},
+		ReadContext: func(ctx context.Context, data *schema.ResourceData, meta interface{}) (diagnostics diag.Diagnostics) {
+			var client *apiClient = meta.(*apiClient)
+			var err error
+			if err = operations.Read(ctx, data, client); err != nil {
+				if errors.Is(err, errRemoteNotFound) {
+					data.SetId("")
+				} else {
+					diagnostics = diag.FromErr(err)
+				}
+			}
+			return
+		},
+		DeleteContext: func(ctx context.Context, data *schema.ResourceData, meta interface{}) (diagnostics diag.Diagnostics) {
+			var client *apiClient = meta.(*apiClient)
+			var err error
+			if err = operations.Delete(ctx, data, client); err != nil && !errors.Is(err, errRemoteNotFound) {
+				diagnostics = diag.FromErr(err)
+				return
+			}
+			data.SetId("")
+			return
+		},
+		Importer: &schema.ResourceImporter{StateContext: schema.ImportStatePassthroughContext},
+		Schema:   fields,
+	}
+	if operations.Update != nil {
+		resource.UpdateContext = func(ctx context.Context, data *schema.ResourceData, meta interface{}) (diagnostics diag.Diagnostics) {
+			var client *apiClient = meta.(*apiClient)
+			var err error
+			if err = operations.Update(ctx, data, client); err != nil {
+				diagnostics = diag.FromErr(err)
+			}
+			return
+		}
+	}
+	return
+}
 
 // localResource defines a parsed-only resource with shared local lifecycle behavior.
 func localResource(resourceType string, fields map[string]*schema.Schema, describe resourceDescriptionFunc) (resource *schema.Resource) {

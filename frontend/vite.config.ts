@@ -8,6 +8,14 @@ export default defineConfig({
         allowedHosts: true,
         host: "0.0.0.0",
         port: 8080,
-        strictPort: true
+        strictPort: true,
+        proxy: {
+            "/api": {
+                target: process.env.ORGANESSON_API_TARGET ?? "http://127.0.0.1:6800",
+                // Preserve the browser Host so Fiber's CSRF origin check sees
+                // the same origin the browser sends for the dev UI.
+                changeOrigin: false
+            }
+        }
     }
 });

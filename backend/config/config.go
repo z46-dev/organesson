@@ -17,6 +17,10 @@ type Configuration struct {
 	Database struct {
 		File string `toml:"file" default:"organesson.db" validate:"required"` // Path to the SQLite database file
 	} `toml:"database"` // Database configuration
+
+	Development struct {
+		EnableTestFixtures bool `toml:"enable_test_fixtures" default:"false"` // Explicitly permit local test fixture commands.
+	} `toml:"development"` // Opt-in development-only features.
 }
 
 var Cfg Configuration

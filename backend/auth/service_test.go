@@ -142,3 +142,80 @@ func TestLocalAccountProvisioningAndReset(t *testing.T) {
 		t.Fatalf("non-admin password-link reset should be forbidden, got %v", err)
 	}
 }
+
+// TestAPITokenLifecycleEnsuresBearerSecretsAreExpiringAndRevocable exercises provider auth.
+func TestAPITokenLifecycleEnsuresBearerSecretsAreExpiringAndRevocable(t *testing.T) {
+	var store *db.Store
+	var err error
+	if store, err = db.Open(filepath.Join(t.TempDir(), "organesson.db"), golog.New(), false); err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+
+	var service *Service
+	if service, err = New(store); err != nil {
+		t.Fatalf("create auth service: %v", err)
+	}
+	var token string
+	var created bool
+	if token, created, err = service.EnsureInitialActivationLink(); err != nil || !created {
+		t.Fatalf("create activation token: created=%t err=%v", created, err)
+	}
+	var administrator *db.Account
+	if administrator, err = service.RedeemPasswordLink(token, "api-token-test-password"); err != nil {
+		t.Fatalf("activate administrator: %v", err)
+	}
+	var credential *APITokenCredential
+	if credential, err = service.CreateAPIToken(administrator.ID, "tofu acceptance", 24*time.Hour); err != nil {
+		t.Fatalf("create API token: %v", err)
+	}
+	if credential.Secret == "" || len(credential.Token.TokenHash) != 32 {
+		t.Fatalf("API token secret or digest missing: %#v", credential)
+	}
+	var tokenRows []*db.APIToken
+	if tokenRows, err = store.APITokens.SelectAll(); err != nil {
+		t.Fatalf("load API tokens: %v", err)
+	}
+	if len(tokenRows) != 1 || string(tokenRows[0].TokenHash) == credential.Secret {
+		t.Fatalf("expected hashed token storage, found %#v", tokenRows)
+	}
+	var authenticated *db.Account
+	if authenticated, err = service.AuthenticateAPIToken(credential.Secret); err != nil || authenticated.ID != administrator.ID {
+		t.Fatalf("authenticate API token: account=%#v err=%v", authenticated, err)
+	}
+	if err = service.RevokeAPIToken(administrator.ID, credential.Token.ID); err != nil {
+		t.Fatalf("revoke API token: %v", err)
+	}
+	if _, err = service.AuthenticateAPIToken(credential.Secret); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("revoked API token should fail, got %v", err)
+	}
+}
+
+// TestDevelopmentFixtureCreationIsRepeatable checks explicit fake-user seeding behavior.
+func TestDevelopmentFixtureCreationIsRepeatable(t *testing.T) {
+	var store *db.Store
+	var err error
+	if store, err = db.Open(filepath.Join(t.TempDir(), "organesson.db"), golog.New(), false); err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+	var service *Service
+	if service, err = New(store); err != nil {
+		t.Fatalf("create auth service: %v", err)
+	}
+	var admin *db.Account
+	if admin, _, err = store.InitialAdministrator(); err != nil {
+		t.Fatalf("load administrator: %v", err)
+	}
+	var setups []*LocalAccountSetup
+	if setups, err = service.CreateDevelopmentTestUsers(admin.ID); err != nil || len(setups) != 4 {
+		t.Fatalf("create test identities: count=%d err=%v", len(setups), err)
+	}
+	if setups, err = service.CreateDevelopmentTestUsers(admin.ID); err != nil || len(setups) != 0 {
+		t.Fatalf("repeat should not duplicate test identities: count=%d err=%v", len(setups), err)
+	}
+	var identities []*db.AccountIdentity
+	if identities, err = store.AccountIdentities.SelectAll(); err != nil || len(identities) != 5 {
+		t.Fatalf("expected admin plus four test identities, count=%d err=%v", len(identities), err)
+	}
+}

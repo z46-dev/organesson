@@ -58,6 +58,19 @@ type (
 		CreatedAt time.Time            `gosqlite:"created_at,notnull"`
 	}
 
+	// APIToken stores only a digest of an opaque non-browser API credential.
+	APIToken struct {
+		ID         int        `gosqlite:"id,primary,increment"`
+		AccountID  int        `gosqlite:"account_id,notnull,fkey:Account.id,ondelete:cascade"`
+		Name       string     `gosqlite:"name,notnull"`
+		Prefix     string     `gosqlite:"prefix,notnull"`
+		TokenHash  []byte     `gosqlite:"token_hash,unique,notnull"`
+		CreatedAt  time.Time  `gosqlite:"created_at,notnull"`
+		ExpiresAt  *time.Time `gosqlite:"expires_at"`
+		LastUsedAt *time.Time `gosqlite:"last_used_at"`
+		RevokedAt  *time.Time `gosqlite:"revoked_at"`
+	}
+
 	// Deployment is the root container for an independently managed resource set.
 	Deployment struct {
 		ID          int       `gosqlite:"id,primary,increment" json:"id"`
@@ -80,10 +93,10 @@ type (
 
 	// UserGroup contains deployment-local members and is distinct from logical resource groups.
 	UserGroup struct {
-		ID           int       `gosqlite:"id,primary,increment"`
-		DeploymentID int       `gosqlite:"deployment_id,notnull,fkey:Deployment.id,ondelete:cascade"`
-		Name         string    `gosqlite:"name,notnull"`
-		CreatedAt    time.Time `gosqlite:"created_at,notnull"`
+		ID           int       `gosqlite:"id,primary,increment" json:"id"`
+		DeploymentID int       `gosqlite:"deployment_id,notnull,fkey:Deployment.id,ondelete:cascade" json:"deployment_id"`
+		Name         string    `gosqlite:"name,notnull" json:"name"`
+		CreatedAt    time.Time `gosqlite:"created_at,notnull" json:"created_at"`
 	}
 
 	// GroupMembership links one local account to one deployment-local user group.
@@ -96,13 +109,14 @@ type (
 
 	// PermissionGrant assigns one fixed Organesson permission to an account or group on a tree node.
 	PermissionGrant struct {
-		ID           int              `gosqlite:"id,primary,increment"`
-		SubjectKind  GrantSubjectKind `gosqlite:"subject_kind,notnull"`
-		SubjectID    int              `gosqlite:"subject_id,notnull"`
-		Permission   string           `gosqlite:"permission,notnull"`
-		TargetNodeID int              `gosqlite:"target_node_id,notnull,fkey:OwnershipNode.id,ondelete:cascade"`
-		CreatedByID  int              `gosqlite:"created_by_id,notnull,fkey:Account.id"`
-		CreatedAt    time.Time        `gosqlite:"created_at,notnull"`
+		ID                 int              `gosqlite:"id,primary,increment" json:"id"`
+		SubjectKind        GrantSubjectKind `gosqlite:"subject_kind,notnull" json:"subject_kind"`
+		SubjectID          int              `gosqlite:"subject_id,notnull" json:"subject_id"`
+		Permission         string           `gosqlite:"permission,notnull" json:"permission"`
+		InheritDescendants bool             `gosqlite:"inherit_descendants,notnull" json:"inherit_descendants"`
+		TargetNodeID       int              `gosqlite:"target_node_id,notnull,fkey:OwnershipNode.id,ondelete:cascade" json:"target_node_id"`
+		CreatedByID        int              `gosqlite:"created_by_id,notnull,fkey:Account.id" json:"created_by_id"`
+		CreatedAt          time.Time        `gosqlite:"created_at,notnull" json:"created_at"`
 	}
 
 	// ManagedResource stores a resource whose owner is its unique ownership-tree node.
@@ -152,10 +166,29 @@ const (
 )
 
 const (
-	PermissionDeploymentView   = "deployment.view"
-	PermissionDeploymentManage = "deployment.manage"
-	PermissionResourceView     = "resource.view"
-	PermissionResourceCreate   = "resource.create"
-	PermissionResourcePower    = "vm.power"
-	PermissionPermissionManage = "permission.manage"
+	PermissionDeploymentView              = "deployment.view"
+	PermissionDeploymentManage            = "deployment.manage_configuration"
+	PermissionDeploymentManageGroups      = "deployment.manage_groups"
+	PermissionDeploymentManagePermissions = "deployment.manage_permissions"
+	PermissionDeploymentManageUsers       = "deployment.manage_users"
+	PermissionResourceView                = "resource.view"
+	PermissionResourceCreate              = "resource.create"
+	PermissionResourcePower               = "vm.power_control"
+	PermissionVMConsole                   = "vm.console_control"
+	PermissionVMSnapshot                  = "vm.snapshot_control"
+	PermissionPermissionManage            = PermissionDeploymentManagePermissions
 )
+
+// PermissionCatalog is the fixed set accepted by both the API and provider.
+var PermissionCatalog = []string{
+	PermissionDeploymentView,
+	PermissionDeploymentManage,
+	PermissionDeploymentManageGroups,
+	PermissionDeploymentManagePermissions,
+	PermissionDeploymentManageUsers,
+	PermissionResourceView,
+	PermissionResourceCreate,
+	PermissionResourcePower,
+	PermissionVMConsole,
+	PermissionVMSnapshot,
+}

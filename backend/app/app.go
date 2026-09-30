@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -43,6 +44,10 @@ func New(services api.Services, secureCookies bool, allowedOrigins []string) (ap
 		CookieSecure:   secureCookies,
 		CookieHTTPOnly: true,
 		CookieSameSite: "Lax",
+		Next: func(ctx fiber.Ctx) (skip bool) {
+			skip = strings.HasPrefix(ctx.Get(fiber.HeaderAuthorization), "Bearer ")
+			return
+		},
 	}))
 	ApplyAuthenticationLimit(application)
 	api.Init(application, services)

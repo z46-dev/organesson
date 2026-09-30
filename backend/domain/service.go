@@ -33,12 +33,16 @@ type (
 )
 
 var validPermissions = map[string]struct{}{
-	db.PermissionDeploymentView:   {},
-	db.PermissionDeploymentManage: {},
-	db.PermissionResourceView:     {},
-	db.PermissionResourceCreate:   {},
-	db.PermissionResourcePower:    {},
-	db.PermissionPermissionManage: {},
+	db.PermissionDeploymentView:              {},
+	db.PermissionDeploymentManage:            {},
+	db.PermissionDeploymentManageGroups:      {},
+	db.PermissionDeploymentManagePermissions: {},
+	db.PermissionDeploymentManageUsers:       {},
+	db.PermissionResourceView:                {},
+	db.PermissionResourceCreate:              {},
+	db.PermissionResourcePower:               {},
+	db.PermissionVMConsole:                   {},
+	db.PermissionVMSnapshot:                  {},
 }
 
 // New creates the domain service over an initialized database.
@@ -92,6 +96,62 @@ func (service *Service) CreateDeployment(actorID int, name string, description s
 	return
 }
 
+// DeleteDeployment removes a deployment tree after platform-administrator authorization.
+func (service *Service) DeleteDeployment(actorID int, deploymentID int) (err error) {
+	var actor *db.Account
+	if actor, err = service.store.Accounts.Select(actorID); err != nil {
+		return
+	}
+	if actor == nil || actor.Disabled || !actor.PlatformAdministrator {
+		err = ErrForbidden
+		return
+	}
+	var deployment *db.Deployment
+	if deployment, err = service.store.Deployments.Select(deploymentID); err != nil {
+		return
+	}
+	if deployment == nil {
+		err = ErrNotFound
+		return
+	}
+	if err = service.store.Deployments.Delete(deploymentID); err != nil {
+		return
+	}
+	err = service.writeAudit(actorID, "deployment.delete", fmt.Sprintf("deployment:%d", deploymentID), "succeeded", map[string]string{"name": deployment.Name})
+	return
+}
+
+// UpdateDeployment modifies editable metadata of a platform-managed deployment.
+func (service *Service) UpdateDeployment(actorID int, deploymentID int, name string, description string) (deployment *db.Deployment, err error) {
+	var actor *db.Account
+	if actor, err = service.store.Accounts.Select(actorID); err != nil {
+		return
+	}
+	if actor == nil || actor.Disabled || !actor.PlatformAdministrator {
+		err = ErrForbidden
+		return
+	}
+	if deployment, err = service.store.Deployments.Select(deploymentID); err != nil {
+		return
+	}
+	if deployment == nil {
+		err = ErrNotFound
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 128 || len(description) > 2048 {
+		err = fmt.Errorf("%w: deployment metadata is invalid", ErrInvalidInput)
+		return
+	}
+	deployment.Name = name
+	deployment.Description = description
+	if err = service.store.Deployments.Update(deployment); err != nil {
+		return
+	}
+	err = service.writeAudit(actorID, "deployment.update", fmt.Sprintf("deployment:%d", deploymentID), "succeeded", map[string]string{"name": name})
+	return
+}
+
 // CreateLogicalGroup adds a child ownership node to a deployment's resource tree.
 func (service *Service) CreateLogicalGroup(actorID int, deploymentID int, parentNodeID int, name string) (node *db.OwnershipNode, err error) {
 	var parent *db.OwnershipNode
@@ -135,7 +195,7 @@ func (service *Service) CreateVirtualMachine(actorID int, deploymentID int, pare
 		err = ErrNotFound
 		return
 	}
-	if err = service.Require(actorID, db.PermissionResourceCreate, parentNodeID); err != nil {
+	if err = service.Require(actorID, db.PermissionDeploymentManage, parentNodeID); err != nil {
 		return
 	}
 	name = strings.TrimSpace(name)
@@ -169,8 +229,87 @@ func (service *Service) CreateVirtualMachine(actorID int, deploymentID int, pare
 	return
 }
 
+// GetVirtualMachine returns one simulated managed VM after checking view authorization.
+func (service *Service) GetVirtualMachine(actorID int, resourceID int) (resource *db.ManagedResource, err error) {
+	if resource, err = service.store.ManagedResources.Select(resourceID); err != nil {
+		return
+	}
+	if resource == nil || resource.Kind != "virtual_machine" {
+		err = ErrNotFound
+		return
+	}
+	var viewErr error = service.Require(actorID, db.PermissionResourceView, resource.OwnershipID)
+	if viewErr != nil {
+		viewErr = service.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID)
+	}
+	if viewErr != nil {
+		err = viewErr
+		resource = nil
+	}
+	return
+}
+
+// DeleteVirtualMachine removes one simulated VM after configuration authorization.
+func (service *Service) DeleteVirtualMachine(actorID int, resourceID int) (err error) {
+	var resource *db.ManagedResource
+	if resource, err = service.store.ManagedResources.Select(resourceID); err != nil {
+		return
+	}
+	if resource == nil || resource.Kind != "virtual_machine" {
+		err = ErrNotFound
+		return
+	}
+	if err = service.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
+		return
+	}
+	if err = service.store.ManagedResources.Delete(resource.ID); err != nil {
+		return
+	}
+	if err = service.store.OwnershipNodes.Delete(resource.OwnershipID); err != nil {
+		return
+	}
+	err = service.writeAudit(actorID, "resource.delete", fmt.Sprintf("resource:%d", resourceID), "succeeded", map[string]string{"kind": resource.Kind})
+	return
+}
+
+// DeleteLogicalGroup removes an empty child ownership node after configuration authorization.
+func (service *Service) DeleteLogicalGroup(actorID int, nodeID int) (err error) {
+	var node *db.OwnershipNode
+	if node, err = service.store.OwnershipNodes.Select(nodeID); err != nil {
+		return
+	}
+	if node == nil || node.Kind != db.OwnershipNodeKindGroup {
+		err = ErrNotFound
+		return
+	}
+	if err = service.Require(actorID, db.PermissionDeploymentManage, nodeID); err != nil {
+		return
+	}
+	var nodes []*db.OwnershipNode
+	if nodes, err = service.store.OwnershipNodes.SelectAll(); err != nil {
+		return
+	}
+	for _, child := range nodes {
+		if child.ParentID != nil && *child.ParentID == nodeID {
+			err = fmt.Errorf("%w: ownership group is not empty", ErrInvalidInput)
+			return
+		}
+	}
+	err = service.store.OwnershipNodes.Delete(nodeID)
+	if err == nil {
+		err = service.writeAudit(actorID, "ownership.group.delete", fmt.Sprintf("ownership:%d", nodeID), "succeeded", map[string]string{"name": node.Name})
+	}
+	return
+}
+
 // CreatePermissionGrant assigns one valid permission to an account or user group.
 func (service *Service) CreatePermissionGrant(actorID int, kind db.GrantSubjectKind, subjectID int, permission string, targetNodeID int) (grant *db.PermissionGrant, err error) {
+	grant, err = service.CreatePermissionGrantScoped(actorID, kind, subjectID, permission, targetNodeID, true)
+	return
+}
+
+// CreatePermissionGrantScoped assigns one fixed permission with explicit descendant inheritance.
+func (service *Service) CreatePermissionGrantScoped(actorID int, kind db.GrantSubjectKind, subjectID int, permission string, targetNodeID int, inheritDescendants bool) (grant *db.PermissionGrant, err error) {
 	if _, valid := validPermissions[permission]; !valid {
 		err = ErrInvalidPermission
 		return
@@ -183,7 +322,7 @@ func (service *Service) CreatePermissionGrant(actorID int, kind db.GrantSubjectK
 		err = ErrNotFound
 		return
 	}
-	if err = service.Require(actorID, db.PermissionPermissionManage, targetNodeID); err != nil {
+	if err = service.Require(actorID, db.PermissionDeploymentManagePermissions, targetNodeID); err != nil {
 		return
 	}
 	if err = service.validateGrantSubject(kind, subjectID, target.DeploymentID); err != nil {
@@ -194,19 +333,20 @@ func (service *Service) CreatePermissionGrant(actorID int, kind db.GrantSubjectK
 		return
 	}
 	for _, existing := range grants {
-		if existing.SubjectKind == kind && existing.SubjectID == subjectID && existing.Permission == permission && existing.TargetNodeID == targetNodeID {
+		if existing.SubjectKind == kind && existing.SubjectID == subjectID && existing.Permission == permission && existing.TargetNodeID == targetNodeID && existing.InheritDescendants == inheritDescendants {
 			grant = existing
 			return
 		}
 	}
 
 	grant = &db.PermissionGrant{
-		SubjectKind:  kind,
-		SubjectID:    subjectID,
-		Permission:   permission,
-		TargetNodeID: targetNodeID,
-		CreatedByID:  actorID,
-		CreatedAt:    service.now(),
+		SubjectKind:        kind,
+		SubjectID:          subjectID,
+		Permission:         permission,
+		TargetNodeID:       targetNodeID,
+		InheritDescendants: inheritDescendants,
+		CreatedByID:        actorID,
+		CreatedAt:          service.now(),
 	}
 	err = service.store.PermissionGrants.Insert(grant)
 	if err == nil {
@@ -225,7 +365,7 @@ func (service *Service) DeletePermissionGrant(actorID int, grantID int) (err err
 		err = ErrNotFound
 		return
 	}
-	if err = service.Require(actorID, db.PermissionPermissionManage, grant.TargetNodeID); err != nil {
+	if err = service.Require(actorID, db.PermissionDeploymentManagePermissions, grant.TargetNodeID); err != nil {
 		return
 	}
 	if err = service.store.PermissionGrants.Delete(grantID); err != nil {
@@ -311,6 +451,9 @@ func (service *Service) Can(actorID int, permission string, targetNodeID int) (a
 		visited[current.ID] = struct{}{}
 		for _, grant := range grants {
 			if grant.TargetNodeID != current.ID || grant.Permission != permission {
+				continue
+			}
+			if current.ID != target.ID && !grant.InheritDescendants {
 				continue
 			}
 			if grant.SubjectKind == db.GrantSubjectKindAccount && grant.SubjectID == actorID {
@@ -470,7 +613,7 @@ func (service *Service) CreateUserGroup(actorID int, deploymentID int, name stri
 		err = ErrNotFound
 		return
 	}
-	if err = service.Require(actorID, db.PermissionDeploymentManage, *deployment.RootNodeID); err != nil {
+	if err = service.Require(actorID, db.PermissionDeploymentManageGroups, *deployment.RootNodeID); err != nil {
 		return
 	}
 	name = strings.TrimSpace(name)
@@ -504,7 +647,7 @@ func (service *Service) AddGroupMember(actorID int, groupID int, accountID int) 
 		err = ErrNotFound
 		return
 	}
-	if err = service.Require(actorID, db.PermissionDeploymentManage, *deployment.RootNodeID); err != nil {
+	if err = service.Require(actorID, db.PermissionDeploymentManageGroups, *deployment.RootNodeID); err != nil {
 		return
 	}
 	var account *db.Account
@@ -531,6 +674,73 @@ func (service *Service) AddGroupMember(actorID int, groupID int, accountID int) 
 	return
 }
 
+// SetGroupMembers replaces one deployment-local group's complete member set.
+func (service *Service) SetGroupMembers(actorID int, groupID int, accountIDs []int) (err error) {
+	var group *db.UserGroup
+	if group, err = service.store.UserGroups.Select(groupID); err != nil {
+		return
+	}
+	if group == nil {
+		err = ErrNotFound
+		return
+	}
+	var deployment *db.Deployment
+	if deployment, err = service.store.Deployments.Select(group.DeploymentID); err != nil {
+		return
+	}
+	if deployment == nil || deployment.RootNodeID == nil {
+		err = ErrNotFound
+		return
+	}
+	if err = service.Require(actorID, db.PermissionDeploymentManageGroups, *deployment.RootNodeID); err != nil {
+		return
+	}
+	var desired map[int]struct{} = make(map[int]struct{}, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if accountID < 1 {
+			err = ErrInvalidInput
+			return
+		}
+		if _, duplicate := desired[accountID]; duplicate {
+			continue
+		}
+		var account *db.Account
+		if account, err = service.store.Accounts.Select(accountID); err != nil {
+			return
+		}
+		if account == nil || account.Disabled || account.ActivatedAt == nil {
+			err = ErrNotFound
+			return
+		}
+		desired[accountID] = struct{}{}
+	}
+	var memberships []*db.GroupMembership
+	if memberships, err = service.store.GroupMemberships.SelectAll(); err != nil {
+		return
+	}
+	var current map[int]struct{} = make(map[int]struct{})
+	for _, membership := range memberships {
+		if membership.GroupID == groupID {
+			current[membership.AccountID] = struct{}{}
+		}
+	}
+	for accountID := range current {
+		if _, keep := desired[accountID]; !keep {
+			if err = service.RemoveGroupMember(actorID, groupID, accountID); err != nil {
+				return
+			}
+		}
+	}
+	for accountID := range desired {
+		if _, exists := current[accountID]; !exists {
+			if err = service.AddGroupMember(actorID, groupID, accountID); err != nil {
+				return
+			}
+		}
+	}
+	return
+}
+
 // RemoveGroupMember revokes one account's membership in a deployment-local group.
 func (service *Service) RemoveGroupMember(actorID int, groupID int, accountID int) (err error) {
 	var group *db.UserGroup
@@ -549,7 +759,7 @@ func (service *Service) RemoveGroupMember(actorID int, groupID int, accountID in
 		err = ErrNotFound
 		return
 	}
-	if err = service.Require(actorID, db.PermissionDeploymentManage, *deployment.RootNodeID); err != nil {
+	if err = service.Require(actorID, db.PermissionDeploymentManageGroups, *deployment.RootNodeID); err != nil {
 		return
 	}
 	var rowsAffected int64
@@ -566,6 +776,45 @@ func (service *Service) RemoveGroupMember(actorID int, groupID int, accountID in
 		return
 	}
 	err = service.writeAudit(actorID, "group.member.remove", fmt.Sprintf("user_group:%d", groupID), "succeeded", map[string]int{"account_id": accountID})
+	return
+}
+
+// DeleteUserGroup removes a deployment-local group and its permission grants.
+func (service *Service) DeleteUserGroup(actorID int, groupID int) (err error) {
+	var group *db.UserGroup
+	if group, err = service.store.UserGroups.Select(groupID); err != nil {
+		return
+	}
+	if group == nil {
+		err = ErrNotFound
+		return
+	}
+	var deployment *db.Deployment
+	if deployment, err = service.store.Deployments.Select(group.DeploymentID); err != nil {
+		return
+	}
+	if deployment == nil || deployment.RootNodeID == nil {
+		err = ErrNotFound
+		return
+	}
+	if err = service.Require(actorID, db.PermissionDeploymentManageGroups, *deployment.RootNodeID); err != nil {
+		return
+	}
+	var grants []*db.PermissionGrant
+	if grants, err = service.store.PermissionGrants.SelectAll(); err != nil {
+		return
+	}
+	for _, grant := range grants {
+		if grant.SubjectKind == db.GrantSubjectKindGroup && grant.SubjectID == groupID {
+			if err = service.store.PermissionGrants.Delete(grant.ID); err != nil {
+				return
+			}
+		}
+	}
+	if err = service.store.UserGroups.Delete(groupID); err != nil {
+		return
+	}
+	err = service.writeAudit(actorID, "user_group.delete", fmt.Sprintf("user_group:%d", groupID), "succeeded", map[string]string{"name": group.Name})
 	return
 }
 

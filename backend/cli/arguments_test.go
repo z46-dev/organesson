@@ -21,3 +21,19 @@ func TestResetAdministratorPasswordCommandParses(t *testing.T) {
 		t.Fatalf("unexpected parsed arguments: %#v", arguments)
 	}
 }
+
+// TestDevelopmentFixtureCommandParses ensures fake identities require an explicit local command.
+func TestDevelopmentFixtureCommandParses(t *testing.T) {
+	var arguments Arguments
+	var parser *arg.Parser
+	var err error
+	if parser, err = NewParser(&arguments); err != nil {
+		t.Fatalf("create parser: %v", err)
+	}
+	if err = parser.Parse([]string{"development", "seed-test-users"}); err != nil {
+		t.Fatalf("parse fixture command: %v", err)
+	}
+	if arguments.Development == nil || arguments.Development.SeedTestUsers == nil {
+		t.Fatalf("expected explicit development fixture command, got %#v", arguments)
+	}
+}
