@@ -3,96 +3,74 @@ package organesson
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/z46-dev/organesson/backend/db"
 )
 
-var supportedPermissions = []string{
-	"deployment.manage_configuration",
-	"deployment.manage_groups",
-	"deployment.manage_permissions",
-	"deployment.manage_users",
-	"resource.view",
-	"vm.console_control",
-	"vm.power_control",
-	"vm.snapshot_control",
-}
+var supportedPermissions []string = db.PermissionCatalog
 
 // resourceDeployment defines a deployment root.
 func resourceDeployment() (resource *schema.Resource) {
-	resource = localResource("deployment", map[string]*schema.Schema{
-		"environment": requiredStringSchema("The authorized Organesson environment."),
-		"name":        requiredStringSchema("The deployment name."),
-		"owner":       requiredStringSchema("The deployment owner group."),
-		"summary":     summarySchema(),
-	}, func(data *schema.ResourceData) (description string, err error) {
-		description = fmt.Sprintf("create deployment %q in environment %q owned by %q", data.Get("name").(string), data.Get("environment").(string), data.Get("owner").(string))
-
-		return
-	})
+	resource = apiResource(map[string]*schema.Schema{
+		"description":  {Type: schema.TypeString, Optional: true, Description: "Deployment description."},
+		"environment":  {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Authorized Organesson environment label."},
+		"name":         {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Deployment name."},
+		"owner":        {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Informational owner label; this first slice assigns the deployment to its creator."},
+		"root_node_id": {Type: schema.TypeInt, Computed: true, Description: "The deployment ownership-tree root identifier."},
+		"summary":      summarySchema(),
+	}, deploymentOperations())
 
 	return
 }
 
 // resourceLogicalGroup defines a deployment-owned logical resource group.
 func resourceLogicalGroup() (resource *schema.Resource) {
-	resource = localResource("logical-group", map[string]*schema.Schema{
-		"deployment_id": requiredStringSchema("The parent deployment identifier."),
-		"name":          requiredStringSchema("The logical group name."),
-		"owner":         requiredStringSchema("The logical group owner."),
-		"summary":       summarySchema(),
-	}, func(data *schema.ResourceData) (description string, err error) {
-		description = fmt.Sprintf("create logical group %q under deployment %q owned by %q", data.Get("name").(string), data.Get("deployment_id").(string), data.Get("owner").(string))
-
-		return
-	})
+	resource = apiResource(map[string]*schema.Schema{
+		"deployment_id":  {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Parent deployment identifier."},
+		"name":           {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Logical group name."},
+		"owner":          {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Owner group identifier."},
+		"parent_node_id": {Type: schema.TypeInt, Optional: true, Computed: true, ForceNew: true, Description: "Parent ownership node; defaults to the deployment root."},
+		"summary":        summarySchema(),
+	}, logicalGroupOperations())
 
 	return
 }
 
 // resourceUserGroup defines a deployment-local group of Organesson-resolved users.
 func resourceUserGroup() (resource *schema.Resource) {
-	resource = localResource("user-group", map[string]*schema.Schema{
-		"deployment_id": requiredStringSchema("The parent deployment identifier."),
-		"members":       optionalStringSetSchema("Organesson-resolved user identities in this group."),
-		"name":          requiredStringSchema("The deployment-local group name."),
+	resource = apiResource(map[string]*schema.Schema{
+		"deployment_id": {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Parent deployment identifier."},
+		"members":       {Type: schema.TypeSet, Optional: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Resolved Organesson account names."},
+		"name":          {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Deployment-local group name."},
 		"summary":       summarySchema(),
-	}, func(data *schema.ResourceData) (description string, err error) {
-		var members []string = stringSetValues(data.Get("members").(*schema.Set))
-
-		description = fmt.Sprintf("create deployment-local user group %q under deployment %q with members [%s]", data.Get("name").(string), data.Get("deployment_id").(string), strings.Join(members, ", "))
-
-		return
-	})
+	}, userGroupOperations())
 
 	return
 }
 
 // resourcePermissionGrant defines one fixed Organesson permission over a resource-tree target.
 func resourcePermissionGrant() (resource *schema.Resource) {
-	resource = localResource("permission-grant", map[string]*schema.Schema{
+	resource = apiResource(map[string]*schema.Schema{
 		"permission": {
 			Type:         schema.TypeString,
 			Required:     true,
+			ForceNew:     true,
 			ValidateFunc: validation.StringInSlice(supportedPermissions, false),
 			Description:  "A fixed Organesson permission.",
 		},
 		"scope": {
 			Type:         schema.TypeString,
 			Required:     true,
+			ForceNew:     true,
 			ValidateFunc: validation.StringInSlice([]string{"self", "descendants"}, false),
 			Description:  "Whether the grant applies only to its target or inherited descendants.",
 		},
-		"subject_id": requiredStringSchema("An Organesson user identity or deployment-local group identifier."),
-		"target_id":  requiredStringSchema("The deployment, logical group, or resource receiving the grant."),
+		"subject_id": {Type: schema.TypeString, Required: true, ForceNew: true, Description: "An Organesson qualified user name or deployment-local group ID."},
+		"target_id":  {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The ownership node receiving the grant."},
 		"summary":    summarySchema(),
-	}, func(data *schema.ResourceData) (description string, err error) {
-		description = fmt.Sprintf("grant fixed permission %q to subject %q on target %q with scope %q", data.Get("permission").(string), data.Get("subject_id").(string), data.Get("target_id").(string), data.Get("scope").(string))
-
-		return
-	})
+	}, permissionGrantOperations())
 
 	return
 }
@@ -202,19 +180,17 @@ func resourceAddressPoolRequest() (resource *schema.Resource) {
 
 // resourceVirtualMachine defines a catalog-template virtual machine.
 func resourceVirtualMachine() (resource *schema.Resource) {
-	resource = localResource("virtual-machine", map[string]*schema.Schema{
-		"cpu_cores":        requiredIntSchema("Requested CPU core count."),
-		"boot_disk_gib":    requiredIntSchema("Requested boot disk size in GiB."),
-		"logical_group_id": requiredStringSchema("The owning logical group identifier."),
-		"memory_mib":       requiredIntSchema("Requested memory in MiB."),
-		"name":             requiredStringSchema("The virtual machine name."),
-		"template":         requiredStringSchema("The approved template catalog identifier."),
-		"summary":          summarySchema(),
-	}, func(data *schema.ResourceData) (description string, err error) {
-		description = fmt.Sprintf("create VM %q in logical group %q from template %q with %d CPU cores, %d MiB memory, and a %d GiB boot disk", data.Get("name").(string), data.Get("logical_group_id").(string), data.Get("template").(string), data.Get("cpu_cores").(int), data.Get("memory_mib").(int), data.Get("boot_disk_gib").(int))
-
-		return
-	})
+	resource = apiResource(map[string]*schema.Schema{
+		"boot_disk_gib":     {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested boot disk size in GiB (recorded, not provisioned in simulation)."},
+		"cpu_cores":         {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested CPU cores (recorded, not provisioned in simulation)."},
+		"logical_group_id":  {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Parent logical ownership node identifier."},
+		"memory_mib":        {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested memory in MiB (recorded, not provisioned in simulation)."},
+		"name":              {Type: schema.TypeString, Required: true, ForceNew: true, Description: "VM name."},
+		"ownership_node_id": {Type: schema.TypeInt, Computed: true, Description: "The VM's ownership node identifier."},
+		"power_state":       {Type: schema.TypeString, Computed: true, Description: "Simulated VM power state."},
+		"template":          {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Template catalog identifier (recorded, not provisioned in simulation)."},
+		"summary":           summarySchema(),
+	}, virtualMachineOperations())
 
 	return
 }

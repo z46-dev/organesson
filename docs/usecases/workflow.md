@@ -1,4 +1,4 @@
-The way this *should* work is that there will be a set of bare-bones VM templates that can be used to then expand upon during the deployments. The template VMs are intentionally kept minimal and up to date with security patches.
+The way this *should* work is that there will be a set of bare-bones VM templates that can be used to then expand upon during the deployments. The template VMs are intentionally kept minimal and up to date with security patches. For the current operator procedure, see [Creating an Organesson source VM](../creating-source-vms.md).
 
 For example, we would have a few VMs:
 

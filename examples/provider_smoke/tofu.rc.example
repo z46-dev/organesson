@@ -1,0 +1,7 @@
+provider_installation {
+    dev_overrides {
+        "tofu.organesson.dev/organesson/organesson" = "REPOSITORY_ROOT/.bin"
+    }
+
+    direct {}
+}
