@@ -13,6 +13,7 @@ import (
 	"github.com/z46-dev/organesson/backend/config"
 	"github.com/z46-dev/organesson/backend/db"
 	"github.com/z46-dev/organesson/backend/domain"
+	"github.com/z46-dev/organesson/backend/proxmox"
 )
 
 // Note: any log.<level>f() method requires you to put a \n at the end of the string otherwise it will not go to a new line.
@@ -109,7 +110,8 @@ func main() {
 	}
 
 	var domainService *domain.Service = domain.New(store)
-	var services api.Services = api.Services{Authentication: authentication, Domain: domainService, Store: store}
+	var proxmoxService *proxmox.Service = proxmox.New(config.Cfg.Proxmox)
+	var services api.Services = api.Services{Authentication: authentication, Domain: domainService, Store: store, Proxmox: proxmoxService}
 	if err = app.Start(services, config.Cfg.WebServer.Address, config.Cfg.WebServer.TLSDir, config.Cfg.WebServer.CORSAllowedOrigins); err != nil {
 		log.Panicf("Failed to start web application: %v\n", err)
 	}

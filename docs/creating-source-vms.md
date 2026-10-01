@@ -11,6 +11,10 @@ Organesson “templates” are ordinary, editable Proxmox VMs used as clone sour
 5. Shut down the source VM. Make a disposable full clone, boot it on an isolated test network, and confirm it gets a unique identity and that guest-agent execution still works. Discard the test clone; leave the source VM powered off.
 6. Register the stable Organesson source name and its Proxmox VM ID only after these checks pass.
 
+## Catalog record
+
+Each source VM is one catalog record with one or more unique aliases. The record holds its source platform and identifier, display name, OS/version/edition, architecture, privileged execution method, and whether it has passed provisioning-readiness checks. Aliases are stable selectors such as `og-template-fedora-workstation-latest` and `og-template-fedora-server-latest`; a `latest` alias can be moved to a newly validated source without changing deployment configuration. Do not store passwords or other credentials in this catalog metadata. The current administration UI requires a successful [read-only Proxmox preflight](proxmox-readonly-preflight.md), followed by confirmation of the root-level guest-agent check and removal of the temporary provisioning account, before a source can be marked ready.
+
 ## Common OS cases
 
 | Source | Keep in the baseline | Additional check |

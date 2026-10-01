@@ -7,21 +7,34 @@ import (
 	"github.com/z46-dev/goconf"
 )
 
-type Configuration struct {
-	WebServer struct {
-		Address            string   `toml:"address" default:":6800" validate:"required"` // Listen address for the web application server e.g. ":6800" or "0.0.0.0:6800"
-		TLSDir             string   `toml:"tls_dir" default:""`                          // Directory containing a certificate and key file for TLS.
-		CORSAllowedOrigins []string `toml:"cors_allowed_origins" default:"[]"`           // Explicit browser origins allowed to access the API.
-	} `toml:"web_server"` // Web server configuration
+type (
+	// ProxmoxConfiguration contains the read-only Proxmox API connection settings.
+	ProxmoxConfiguration struct {
+		APIURL             string `toml:"api_url" default:""`
+		APITokenID         string `toml:"api_token_id" default:""`
+		APITokenSecret     string `toml:"api_token_secret" default:""`
+		RootCABundlePath   string `toml:"root_ca_bundle_path" default:""`
+		InsecureSkipVerify bool   `toml:"insecure_skip_verify" default:"false"`
+	}
 
-	Database struct {
-		File string `toml:"file" default:"organesson.db" validate:"required"` // Path to the SQLite database file
-	} `toml:"database"` // Database configuration
+	Configuration struct {
+		WebServer struct {
+			Address            string   `toml:"address" default:":6800" validate:"required"` // Listen address for the web application server e.g. ":6800" or "0.0.0.0:6800"
+			TLSDir             string   `toml:"tls_dir" default:""`                          // Directory containing a certificate and key file for TLS.
+			CORSAllowedOrigins []string `toml:"cors_allowed_origins" default:"[]"`           // Explicit browser origins allowed to access the API.
+		} `toml:"web_server"` // Web server configuration
 
-	Development struct {
-		EnableTestFixtures bool `toml:"enable_test_fixtures" default:"false"` // Explicitly permit local test fixture commands.
-	} `toml:"development"` // Opt-in development-only features.
-}
+		Database struct {
+			File string `toml:"file" default:"organesson.db" validate:"required"` // Path to the SQLite database file
+		} `toml:"database"` // Database configuration
+
+		Proxmox ProxmoxConfiguration `toml:"proxmox"`
+
+		Development struct {
+			EnableTestFixtures bool `toml:"enable_test_fixtures" default:"false"` // Explicitly permit local test fixture commands.
+		} `toml:"development"` // Opt-in development-only features.
+	}
+)
 
 var Cfg Configuration
 

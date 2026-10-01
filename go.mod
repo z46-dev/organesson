@@ -6,6 +6,7 @@ require (
 	github.com/alexflint/go-arg v1.6.1
 	github.com/gofiber/fiber/v3 v3.5.0
 	github.com/hashicorp/terraform-plugin-sdk/v2 v2.38.1
+	github.com/luthermonson/go-proxmox v0.8.2
 	github.com/z46-dev/goconf v0.0.0-20260527232714-5c4e1d4a89e7
 	github.com/z46-dev/golog v0.0.0-20260324172018-d1a87bbdeb64
 	github.com/z46-dev/gosqlite v0.0.0-20260719175548-e15201acdb53
@@ -18,7 +19,10 @@ require (
 	github.com/alexflint/go-scalar v1.2.0 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
+	github.com/buger/goterm v1.0.4 // indirect
 	github.com/creasty/defaults v1.8.0 // indirect
+	github.com/diskfs/go-diskfs v1.9.3 // indirect
+	github.com/djherbis/times v1.6.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fatih/color v1.16.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
@@ -30,6 +34,7 @@ require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/hashicorp/go-cty v1.5.0 // indirect
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/go-plugin v1.7.0 // indirect
@@ -42,8 +47,10 @@ require (
 	github.com/hashicorp/terraform-registry-address v0.4.0 // indirect
 	github.com/hashicorp/terraform-svchost v0.1.1 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
+	github.com/jinzhu/copier v0.3.4 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/magefile/mage v1.14.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	localauth "github.com/z46-dev/organesson/backend/auth"
 	"github.com/z46-dev/organesson/backend/db"
 	"github.com/z46-dev/organesson/backend/domain"
+	"github.com/z46-dev/organesson/backend/proxmox"
 )
 
 // TestHTTPBoundaryReportsSetupAndRejectsUnauthenticatedMutations checks the initial API boundary.
@@ -87,6 +89,7 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 		Authentication: authentication,
 		Domain:         domain.New(store),
 		Store:          store,
+		Proxmox:        proxmox.NewWithInspector(testProxmoxInspector{}),
 	}, false, nil)
 	var jar *cookiejar.Jar
 	if jar, err = cookiejar.New(nil); err != nil {
@@ -107,6 +110,44 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 	if csrfToken, err = requestCSRFToken(t, application, jar); err != nil {
 		t.Fatalf("get deployment CSRF token: %v", err)
 	}
+	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/admin/vm-templates", `{"display_name":"Fedora Workstation","description":"Test source","source_id":"156","guest_os":"fedora","guest_os_version":"44","edition":"workstation","architecture":"x86_64","execution_method":"qemu_guest_agent","aliases":["og-template-fedora-workstation-latest"]}`, csrfToken)
+	var sourceResult struct {
+		Template struct {
+			Template struct {
+				ID int `json:"id"`
+			} `json:"template"`
+			Aliases []struct {
+				Alias string `json:"alias"`
+			} `json:"aliases"`
+		} `json:"template"`
+	}
+	if response.StatusCode != fiber.StatusCreated {
+		var body []byte
+		body, _ = io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("expected template create 201, got %d: %s", response.StatusCode, body)
+	}
+	if err = json.NewDecoder(response.Body).Decode(&sourceResult); err != nil {
+		response.Body.Close()
+		t.Fatalf("decode source template response: %v", err)
+	}
+	response.Body.Close()
+	if sourceResult.Template.Template.ID < 1 || len(sourceResult.Template.Aliases) != 1 {
+		t.Fatalf("template response is missing source record or alias: %#v", sourceResult)
+	}
+	var preflightPath string = "/api/v1/admin/vm-templates/" + strconv.Itoa(sourceResult.Template.Template.ID) + "/preflight"
+	response = performRequest(t, application, jar, http.MethodPost, preflightPath, "{}", csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected read-only preflight 200, got %d", response.StatusCode)
+	}
+	var readinessPath string = "/api/v1/admin/vm-templates/" + strconv.Itoa(sourceResult.Template.Template.ID) + "/readiness"
+	response = performRequest(t, application, jar, http.MethodPut, readinessPath, `{"guest_agent_root_verified":true,"provisioning_account_removed":true}`, csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected readiness confirmation 200, got %d", response.StatusCode)
+	}
+
 	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/auth/api-tokens", `{"name":"provider acceptance","lifetime_days":7}`, csrfToken)
 	var apiTokenResult struct {
 		ID    int    `json:"id"`
@@ -218,6 +259,22 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 	if response.StatusCode != fiber.StatusUnauthorized {
 		t.Fatalf("expected request after logout to return 401, got %d", response.StatusCode)
 	}
+}
+
+type testProxmoxInspector struct{}
+
+func (testProxmoxInspector) Inspect(_ context.Context, sourceID string, _ string) (result proxmox.PreflightResult, err error) {
+	result = proxmox.PreflightResult{
+		SourceID:        sourceID,
+		Node:            "test-node",
+		Name:            "test-source",
+		PowerState:      "stopped",
+		AgentConfigured: true,
+		IsQEMU:          true,
+		Passed:          true,
+		Checks:          []proxmox.Check{{Name: "source_exists", Passed: true, Required: true}},
+	}
+	return
 }
 
 func requestCSRFToken(t *testing.T, application *fiber.App, jar *cookiejar.Jar) (token string, err error) {

@@ -131,6 +131,35 @@ type (
 		CreatedAt    time.Time `gosqlite:"created_at,notnull" json:"created_at"`
 	}
 
+	// VMTemplate is an administrator-managed source VM that can be selected for provisioning.
+	VMTemplate struct {
+		ID                         int        `gosqlite:"id,primary,increment" json:"id"`
+		DisplayName                string     `gosqlite:"display_name,notnull" json:"display_name"`
+		Description                string     `gosqlite:"description,notnull" json:"description"`
+		SourcePlatform             string     `gosqlite:"source_platform,notnull" json:"source_platform"`
+		SourceID                   string     `gosqlite:"source_id,unique,notnull" json:"source_id"`
+		GuestOS                    string     `gosqlite:"guest_os,notnull" json:"guest_os"`
+		GuestOSVersion             string     `gosqlite:"guest_os_version,notnull" json:"guest_os_version"`
+		Edition                    string     `gosqlite:"edition,notnull" json:"edition"`
+		Architecture               string     `gosqlite:"architecture,notnull" json:"architecture"`
+		ExecutionMethod            string     `gosqlite:"execution_method,notnull" json:"execution_method"`
+		ProvisioningReady          bool       `gosqlite:"provisioning_ready,notnull" json:"provisioning_ready"`
+		GuestAgentRootVerified     bool       `gosqlite:"guest_agent_root_verified,notnull" json:"guest_agent_root_verified"`
+		ProvisioningAccountRemoved bool       `gosqlite:"provisioning_account_removed,notnull" json:"provisioning_account_removed"`
+		LastPreflightAt            *time.Time `gosqlite:"last_preflight_at" json:"last_preflight_at,omitempty"`
+		LastPreflightJSON          string     `gosqlite:"last_preflight_json,notnull" json:"last_preflight_json"`
+		CreatedAt                  time.Time  `gosqlite:"created_at,notnull" json:"created_at"`
+		UpdatedAt                  time.Time  `gosqlite:"updated_at,notnull" json:"updated_at"`
+	}
+
+	// VMTemplateAlias maps a stable selector to one source VM catalog record.
+	VMTemplateAlias struct {
+		ID           int       `gosqlite:"id,primary,increment" json:"id"`
+		VMTemplateID int       `gosqlite:"vm_template_id,notnull,fkey:VMTemplate.id,ondelete:cascade" json:"vm_template_id"`
+		Alias        string    `gosqlite:"alias,unique,notnull" json:"alias"`
+		CreatedAt    time.Time `gosqlite:"created_at,notnull" json:"created_at"`
+	}
+
 	// AuditEvent records security-sensitive operations and their outcomes.
 	AuditEvent struct {
 		ID             int       `gosqlite:"id,primary,increment"`

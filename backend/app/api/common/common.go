@@ -10,6 +10,7 @@ import (
 	"github.com/z46-dev/organesson/backend/auth"
 	"github.com/z46-dev/organesson/backend/db"
 	"github.com/z46-dev/organesson/backend/domain"
+	"github.com/z46-dev/organesson/backend/proxmox"
 )
 
 type (
@@ -18,6 +19,7 @@ type (
 		Authentication *auth.Service
 		Domain         *domain.Service
 		Store          *db.Store
+		Proxmox        *proxmox.Service
 	}
 
 	// AccountResponse is the public account shape returned to browser clients.
@@ -33,6 +35,35 @@ type (
 func AccountID(ctx fiber.Ctx) (id int, ok bool) {
 	var value any = ctx.Locals("account_id")
 	id, ok = value.(int)
+	return
+}
+
+// RequirePlatformAdministrator restricts an endpoint to active platform admins with browser sessions.
+func RequirePlatformAdministrator(authentication *auth.Service) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var middleware = session.FromContext(ctx)
+		if middleware == nil {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var accountID int
+		var valid bool
+		if accountID, valid = middleware.Get("account_id").(int); !valid {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var account *db.Account
+		if account, err = authentication.AccountByID(accountID); err != nil {
+			return ctx.SendStatus(fiber.StatusInternalServerError)
+		}
+		if account == nil || account.Disabled {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		if !account.PlatformAdministrator {
+			return ctx.SendStatus(fiber.StatusForbidden)
+		}
+		ctx.Locals("account_id", account.ID)
+		err = ctx.Next()
+		return
+	}
 	return
 }
 

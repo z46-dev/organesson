@@ -25,6 +25,8 @@ type (
 		GroupMemberships        *gosqlite.RegisteredStruct[GroupMembership]
 		PermissionGrants        *gosqlite.RegisteredStruct[PermissionGrant]
 		ManagedResources        *gosqlite.RegisteredStruct[ManagedResource]
+		VMTemplates             *gosqlite.RegisteredStruct[VMTemplate]
+		VMTemplateAliases       *gosqlite.RegisteredStruct[VMTemplateAlias]
 		AuditEvents             *gosqlite.RegisteredStruct[AuditEvent]
 	}
 )
@@ -192,6 +194,12 @@ func (store *Store) registerTables() (err error) {
 	if store.ManagedResources, err = gosqlite.Register(store.driver, ManagedResource{}); err != nil {
 		return
 	}
+	if store.VMTemplates, err = gosqlite.Register(store.driver, VMTemplate{}); err != nil {
+		return
+	}
+	if store.VMTemplateAliases, err = gosqlite.Register(store.driver, VMTemplateAlias{}); err != nil {
+		return
+	}
 	if store.AuditEvents, err = gosqlite.Register(store.driver, AuditEvent{}); err != nil {
 		return
 	}
@@ -236,6 +244,12 @@ func (store *Store) migrations() (migrations []func(gosqlite.MigrationOptions) e
 		},
 		func(options gosqlite.MigrationOptions) (err error) {
 			return migrateTable(store.ManagedResources, options, store.logger)
+		},
+		func(options gosqlite.MigrationOptions) (err error) {
+			return migrateTable(store.VMTemplates, options, store.logger)
+		},
+		func(options gosqlite.MigrationOptions) (err error) {
+			return migrateTable(store.VMTemplateAliases, options, store.logger)
 		},
 		func(options gosqlite.MigrationOptions) (err error) {
 			return migrateTable(store.AuditEvents, options, store.logger)

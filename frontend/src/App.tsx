@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ArrowRight, Boxes, CircleAlert, Copy, KeyRound, LogOut, RefreshCw, Server, ShieldCheck, UserRound } from "lucide-react";
+import { TemplateCatalog } from "./TemplateCatalog";
 import "./index.css";
 
 type Account = {
@@ -312,6 +313,8 @@ export function App() {
                                 ) : <div className="empty-state detail-placeholder"><Server size={24} /><p>Select a deployment to see its resources.</p></div>}
                             </section>
                         </div>
+
+                        {account.platform_administrator && <TemplateCatalog request={apiRequest} onError={setError} onNotice={setNotice} />}
 
                         {account.platform_administrator && <section className="panel token-panel">
                             <div className="token-copy"><span className="panel-icon"><KeyRound size={17} /></span><div><p className="eyebrow">OpenTofu access</p><h2>Provider API token</h2><p>Create a short-lived token for the local provider smoke example. It belongs to your account and can be revoked by signing in again.</p></div></div>

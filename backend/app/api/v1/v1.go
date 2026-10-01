@@ -12,4 +12,5 @@ func Init(parent fiber.Router, services common.Services) {
 	auth.Init(v1Router, services)
 	initAccounts(v1Router, services)
 	initDeployments(v1Router, services)
+	initVMTemplates(v1Router, services)
 }

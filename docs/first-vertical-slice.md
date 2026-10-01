@@ -30,6 +30,10 @@ This slice exercises SQLite initialization, local administrator activation, sess
 7. As the student, use `POST /api/v1/virtual-machines/{vm-id}/power` with `{"action":"start"}` only after granting `vm.power` on the VM’s ownership node or an ancestor. It should return `power_state: "running"`; without that permission it returns `403`. Remove the student from the group with `DELETE /api/v1/user-groups/{group-id}/members/{account-id}` and verify the deployment is no longer listed. `GET /api/v1/auth/me` shows the current account.
 8. `GET /api/v1/deployments` without a session cookie should return `401`. A state-changing request without a valid CSRF token should return `403`.
 
-These APIs currently manage Organesson's local catalog and authorization records only. VM creation and power transitions are simulated; no Proxmox calls happen yet. The frontend is not part of this slice, so curl is the human-test interface.
+Deployment and VM lifecycle APIs still manage only Organesson's local catalog; VM creation and power transitions are simulated. The template catalog now has a small admin UI and an optional, read-only Proxmox preflight. It does not clone, power, or modify Proxmox VMs.
+
+## Test the source VM catalog UI
+
+Run the frontend with `cd frontend && bun run dev` while the backend is running. Sign in as `administrator@organesson`; the Platform administration section appears below the deployment workspace. Register VMID `156` as Fedora Workstation and VMID `157` as Fedora Server, providing the actual Fedora release and aliases `og-template-fedora-workstation-latest` and `og-template-fedora-server-latest`. Edit metadata and add/remove aliases; each source starts as not ready. Without Proxmox connection settings, the read-only preflight and ready action remain unavailable. See [Proxmox read-only source preflight](proxmox-readonly-preflight.md) to configure it for live testing.
 
 To reset the test instance, stop the server and remove only the database file named by `database.file` in your local `config.toml`. Starting again creates a new database and a new one-time setup token.
