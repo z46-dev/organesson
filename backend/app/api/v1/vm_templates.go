@@ -24,7 +24,7 @@ type (
 	}
 )
 
-// initVMTemplates registers platform-admin source catalog and read-only preflight routes.
+// initVMTemplates registers platform-admin source catalog and preflight routes.
 func initVMTemplates(parent fiber.Router, services common.Services) {
 	var admin fiber.Router = parent.Group("/admin", common.RequirePlatformAdministrator(services.Authentication))
 	admin.Get("/vm-templates", listVMTemplates(services))
@@ -149,7 +149,7 @@ func removeVMTemplateAlias(services common.Services) (handler fiber.Handler) {
 	return
 }
 
-// preflightVMTemplate reads source status and configuration from the configured Proxmox cluster.
+// preflightVMTemplate inspects the source and performs a harmless guest identity query when running.
 func preflightVMTemplate(services common.Services) (handler fiber.Handler) {
 	handler = func(ctx fiber.Ctx) (err error) {
 		var actorID int

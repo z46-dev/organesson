@@ -13,7 +13,7 @@ resource "organesson_permission_grant" "teaching_staff" {
   permission = each.value
   scope      = "descendants"
   subject_id = organesson_user_group.teaching_staff.id
-  target_id  = organesson_deployment.class_lab.id
+  target_id  = tostring(organesson_deployment.class_lab.root_node_id)
 }
 
 resource "organesson_permission_grant" "alice_deployment" {
@@ -22,5 +22,5 @@ resource "organesson_permission_grant" "alice_deployment" {
   permission = each.value
   scope      = "self"
   subject_id = "alice@organesson"
-  target_id  = organesson_deployment.class_lab.id
+  target_id  = tostring(organesson_deployment.class_lab.root_node_id)
 }

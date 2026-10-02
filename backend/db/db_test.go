@@ -98,3 +98,31 @@ func TestOpenMigratesTemplateCatalog(t *testing.T) {
 		t.Fatalf("expected two aliases for template %d, got %#v", template.ID, aliases)
 	}
 }
+
+// TestOpenMigratesProxmoxPolicy supports the singleton admin policy across process restarts.
+func TestOpenMigratesProxmoxPolicy(t *testing.T) {
+	var path string = filepath.Join(t.TempDir(), "organesson.db")
+	var store *Store
+	var err error
+	if store, err = Open(path, golog.New(), false); err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	var policy *ProxmoxResourcePolicy = &ProxmoxResourcePolicy{ID: 1, ConfigurationJSON: `{"resource_pools":["lab"]}`, ValidationJSON: `{"valid":true}`, ValidatedConfigHash: "abc", UpdatedAt: time.Now()}
+	if err = store.ProxmoxResourcePolicies.Insert(policy); err != nil {
+		t.Fatalf("insert Proxmox resource policy: %v", err)
+	}
+	if err = store.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+	if store, err = Open(path, golog.New(), false); err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+	defer store.Close()
+	var loaded *ProxmoxResourcePolicy
+	if loaded, err = store.ProxmoxResourcePolicies.Select(1); err != nil {
+		t.Fatalf("read Proxmox resource policy: %v", err)
+	}
+	if loaded == nil || loaded.ValidatedConfigHash != "abc" {
+		t.Fatalf("resource policy did not persist: %#v", loaded)
+	}
+}

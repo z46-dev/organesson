@@ -28,3 +28,7 @@ Permissions are fixed Organesson capabilities:
 - Alice: deployment user, group, permission, and configuration management on the deployment itself.
 
 The package never creates test users. `@organesson` references a test identity source seeded by Organesson during application development.
+
+## Current lifecycle acceptance boundary
+
+The complete classroom topology above is the intended test-project shape, not yet a live Proxmox deployment. Set `proxmox_lifecycle_smoke = true` in `examples/test_project` to clone only Charlie's `internet_fedora` from a catalog source marked ready. The other VM instances use the simulated lifecycle; networks, disks, and guest setup remain declarations and do not create PVE resources. Use [`examples/proxmox_vm_lifecycle/README.md`](../../examples/proxmox_vm_lifecycle/README.md) for the one-clone live-lab acceptance procedure.

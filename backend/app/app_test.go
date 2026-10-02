@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/z46-dev/golog"
@@ -261,18 +263,321 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 	}
 }
 
+// TestAuthenticatedProxmoxVMLifecycle exercises readiness, policy, permissions, power, and deletion over HTTP.
+func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
+	var store *db.Store
+	var err error
+	if store, err = db.Open(filepath.Join(t.TempDir(), "organesson.db"), golog.New(), false); err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+	var authentication *localauth.Service
+	if authentication, err = localauth.New(store); err != nil {
+		t.Fatalf("create authentication service: %v", err)
+	}
+	var bootstrapToken string
+	if bootstrapToken, _, err = authentication.EnsureInitialActivationLink(); err != nil {
+		t.Fatalf("create bootstrap token: %v", err)
+	}
+	var fakeDriver *fakeProxmoxVMDriver = &fakeProxmoxVMDriver{state: "stopped"}
+	var proxmoxService *proxmox.Service = proxmox.NewWithDrivers(fakeDriver, fakeProxmoxInventory{}, testProxmoxInspector{})
+	var application *fiber.App = New(api.Services{
+		Authentication: authentication,
+		Domain:         domain.New(store),
+		Store:          store,
+		Proxmox:        proxmoxService,
+	}, false, nil)
+	var jar *cookiejar.Jar
+	if jar, err = cookiejar.New(nil); err != nil {
+		t.Fatalf("create cookie jar: %v", err)
+	}
+	var csrfToken string
+	if csrfToken, err = requestCSRFToken(t, application, jar); err != nil {
+		t.Fatalf("get setup CSRF token: %v", err)
+	}
+	var response *http.Response = performRequest(t, application, jar, http.MethodPost, "/api/v1/auth/bootstrap/redeem", `{"token":"`+bootstrapToken+`","password":"Smoke-test-password-2026!"}`, csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusCreated {
+		t.Fatalf("activate administrator: status %d", response.StatusCode)
+	}
+	var admin *db.Account
+	if admin, err = authentication.Authenticate("administrator@organesson", "Smoke-test-password-2026!"); err != nil {
+		t.Fatalf("authenticate administrator: %v", err)
+	}
+	var charlieSetup *localauth.LocalAccountSetup
+	if charlieSetup, err = authentication.CreateLocalAccount(admin.ID, "charlie", "Charlie"); err != nil {
+		t.Fatalf("create Charlie: %v", err)
+	}
+	var charlie *db.Account
+	if charlie, err = authentication.RedeemPasswordLink(charlieSetup.SetupToken, "Charlie-test-password-2026!"); err != nil {
+		t.Fatalf("activate Charlie: %v", err)
+	}
+	var daveSetup *localauth.LocalAccountSetup
+	if daveSetup, err = authentication.CreateLocalAccount(admin.ID, "dave", "Dave"); err != nil {
+		t.Fatalf("create Dave: %v", err)
+	}
+	var dave *db.Account
+	if dave, err = authentication.RedeemPasswordLink(daveSetup.SetupToken, "Dave-test-password-2026!"); err != nil {
+		t.Fatalf("activate Dave: %v", err)
+	}
+	var charlieCredential *localauth.APITokenCredential
+	if charlieCredential, err = authentication.CreateAPIToken(charlie.ID, "lifecycle test", 24*time.Hour); err != nil {
+		t.Fatalf("create Charlie API token: %v", err)
+	}
+	var daveCredential *localauth.APITokenCredential
+	if daveCredential, err = authentication.CreateAPIToken(dave.ID, "lifecycle test", 24*time.Hour); err != nil {
+		t.Fatalf("create Dave API token: %v", err)
+	}
+	if csrfToken, err = requestCSRFToken(t, application, jar); err != nil {
+		t.Fatalf("get admin CSRF token: %v", err)
+	}
+	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/admin/vm-templates", `{"display_name":"Fedora Server","description":"Lifecycle source","source_id":"157","guest_os":"fedora","guest_os_version":"44","edition":"server","architecture":"x86_64","execution_method":"qemu_guest_agent","aliases":["fedora-server-latest"]}`, csrfToken)
+	var templateResult struct {
+		Template struct {
+			Template struct {
+				ID int `json:"id"`
+			} `json:"template"`
+		} `json:"template"`
+	}
+	if response.StatusCode != fiber.StatusCreated || json.NewDecoder(response.Body).Decode(&templateResult) != nil {
+		response.Body.Close()
+		t.Fatalf("create source catalog record: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	var readinessPath string = "/api/v1/admin/vm-templates/" + strconv.Itoa(templateResult.Template.Template.ID)
+	response = performRequest(t, application, jar, http.MethodPost, readinessPath+"/preflight", "{}", csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("run passing source preflight: status %d", response.StatusCode)
+	}
+	response = performRequest(t, application, jar, http.MethodPut, readinessPath+"/readiness", `{"guest_agent_root_verified":true,"provisioning_account_removed":true}`, csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("mark source ready: status %d", response.StatusCode)
+	}
+	response = performRequest(t, application, jar, http.MethodPut, "/api/v1/admin/proxmox/resources", `{"limits":{"virtual_cpus":8,"memory_mib":16384,"storage_gib":256},"resource_pools":["class-labs"],"storages":["local-lvm"],"networks":[]}`, csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("validate and save resource policy: status %d", response.StatusCode)
+	}
+	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/deployments", `{"name":"vm-lifecycle","description":"Proxmox integration"}`, csrfToken)
+	var deploymentResult struct {
+		Deployment struct {
+			ID         int `json:"id"`
+			RootNodeID int `json:"root_node_id"`
+		} `json:"deployment"`
+	}
+	if response.StatusCode != fiber.StatusCreated || json.NewDecoder(response.Body).Decode(&deploymentResult) != nil {
+		response.Body.Close()
+		t.Fatalf("create deployment: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	var createPath string = "/api/v1/deployments/" + strconv.Itoa(deploymentResult.Deployment.ID) + "/virtual-machines"
+	var createBody string = `{"parent_node_id":` + strconv.Itoa(deploymentResult.Deployment.RootNodeID) + `,"name":"charlie-fedora","provisioning_mode":"proxmox","template":"fedora-server-latest","pool":"class-labs","storage":"local-lvm","cpu_cores":2,"memory_mib":4096,"boot_disk_gib":64}`
+	response = performRequest(t, application, jar, http.MethodPost, createPath, createBody, csrfToken)
+	var vmResult struct {
+		Resource struct {
+			ID          int    `json:"id"`
+			OwnershipID int    `json:"ownership_id"`
+			ExternalID  string `json:"external_id"`
+		} `json:"resource"`
+	}
+	if response.StatusCode != fiber.StatusCreated || json.NewDecoder(response.Body).Decode(&vmResult) != nil {
+		response.Body.Close()
+		t.Fatalf("clone ready VM source: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if fakeDriver.cloneCount != 1 || vmResult.Resource.ExternalID != "901" {
+		t.Fatalf("expected one persisted Proxmox clone mapping, clones=%d resource=%#v", fakeDriver.cloneCount, vmResult.Resource)
+	}
+	var overCapacityBody string = strings.Replace(strings.Replace(createBody, "charlie-fedora", "over-capacity-vm", 1), `"cpu_cores":2`, `"cpu_cores":7`, 1)
+	response = performRequest(t, application, jar, http.MethodPost, createPath, overCapacityBody, csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusBadRequest || fakeDriver.cloneCount != 1 {
+		t.Fatalf("over-capacity request must be rejected before PVE clone: status=%d clones=%d", response.StatusCode, fakeDriver.cloneCount)
+	}
+	var unauthorizedPoolBody string = strings.Replace(strings.Replace(createBody, "charlie-fedora", "unauthorized-pool-vm", 1), "class-labs", "unapproved-pool", 1)
+	response = performRequest(t, application, jar, http.MethodPost, createPath, unauthorizedPoolBody, csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusBadRequest || fakeDriver.cloneCount != 1 {
+		t.Fatalf("unapproved pool must be rejected before PVE clone: status=%d clones=%d", response.StatusCode, fakeDriver.cloneCount)
+	}
+	var recoveryBody string = strings.Replace(createBody, "charlie-fedora", "recoverable-fedora", 1)
+	fakeDriver.failNextClone = true
+	response = performRequest(t, application, jar, http.MethodPost, createPath, recoveryBody, csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusBadGateway || fakeDriver.cloneCount != 2 {
+		t.Fatalf("interrupted clone should retain one recoverable PVE VM: status=%d clones=%d", response.StatusCode, fakeDriver.cloneCount)
+	}
+	var pendingResources []*db.ManagedResource
+	if pendingResources, err = store.ManagedResources.SelectAll(); err != nil {
+		t.Fatalf("load retry reservation: %v", err)
+	}
+	var pendingID int
+	for _, pending := range pendingResources {
+		if pending.Name == "recoverable-fedora" && pending.ExternalID == "" {
+			pendingID = pending.ID
+		}
+	}
+	if pendingID < 1 {
+		t.Fatal("interrupted provisioning must keep an ownership reservation for retry")
+	}
+	response = performRequest(t, application, jar, http.MethodPost, createPath, recoveryBody, csrfToken)
+	var recoveredResult struct {
+		Resource struct {
+			ID         int    `json:"id"`
+			ExternalID string `json:"external_id"`
+		} `json:"resource"`
+	}
+	if response.StatusCode != fiber.StatusCreated || json.NewDecoder(response.Body).Decode(&recoveredResult) != nil {
+		response.Body.Close()
+		t.Fatalf("retry should recover the interrupted clone: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if recoveredResult.Resource.ID != pendingID || recoveredResult.Resource.ExternalID != "902" || fakeDriver.cloneCount != 2 {
+		t.Fatalf("retry duplicated or remapped the interrupted clone: resource=%#v clones=%d", recoveredResult.Resource, fakeDriver.cloneCount)
+	}
+	for _, permission := range []string{db.PermissionResourceView, db.PermissionResourcePower} {
+		var grantBody string = `{"subject_kind":0,"subject_id":` + strconv.Itoa(charlie.ID) + `,"permission":"` + permission + `","inherit_descendants":false}`
+		response = performRequest(t, application, jar, http.MethodPost, "/api/v1/ownership-nodes/"+strconv.Itoa(vmResult.Resource.OwnershipID)+"/grants", grantBody, csrfToken)
+		response.Body.Close()
+		if response.StatusCode != fiber.StatusCreated {
+			t.Fatalf("grant Charlie %s: status %d", permission, response.StatusCode)
+		}
+	}
+	response = performBearerRequest(t, application, http.MethodGet, "/api/v1/deployments/"+strconv.Itoa(deploymentResult.Deployment.ID), "", charlieCredential.Secret)
+	var detail struct {
+		Resources []struct {
+			PowerState      string `json:"power_state"`
+			CanPowerControl bool   `json:"can_power_control"`
+		} `json:"resources"`
+	}
+	if response.StatusCode != fiber.StatusOK || json.NewDecoder(response.Body).Decode(&detail) != nil {
+		response.Body.Close()
+		t.Fatalf("read authorized live deployment: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if len(detail.Resources) != 1 || detail.Resources[0].PowerState != "stopped" || !detail.Resources[0].CanPowerControl {
+		t.Fatalf("deployment summary did not return live state and power capability: %#v", detail)
+	}
+	var powerPath string = "/api/v1/virtual-machines/" + strconv.Itoa(vmResult.Resource.ID) + "/power"
+	response = performBearerRequest(t, application, http.MethodPost, powerPath, `{"action":"start"}`, charlieCredential.Secret)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK || fakeDriver.state != "running" {
+		t.Fatalf("authorized start did not reach Proxmox: status=%d state=%s", response.StatusCode, fakeDriver.state)
+	}
+	response = performBearerRequest(t, application, http.MethodGet, "/api/v1/deployments/"+strconv.Itoa(deploymentResult.Deployment.ID), "", charlieCredential.Secret)
+	if response.StatusCode != fiber.StatusOK || json.NewDecoder(response.Body).Decode(&detail) != nil {
+		response.Body.Close()
+		t.Fatalf("refresh live VM state after start: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if len(detail.Resources) != 1 || detail.Resources[0].PowerState != "running" {
+		t.Fatalf("deployment refresh did not reflect Proxmox running state: %#v", detail.Resources)
+	}
+	response = performBearerRequest(t, application, http.MethodPost, powerPath, `{"action":"stop"}`, daveCredential.Secret)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusForbidden || fakeDriver.state != "running" {
+		t.Fatalf("unauthorized power request must be 403 without changing PVE: status=%d state=%s", response.StatusCode, fakeDriver.state)
+	}
+	response = performBearerRequest(t, application, http.MethodPost, powerPath, `{"action":"stop"}`, charlieCredential.Secret)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK || fakeDriver.state != "stopped" {
+		t.Fatalf("authorized stop did not reach Proxmox: status=%d state=%s", response.StatusCode, fakeDriver.state)
+	}
+	response = performBearerRequest(t, application, http.MethodDelete, "/api/v1/virtual-machines/"+strconv.Itoa(vmResult.Resource.ID), "", charlieCredential.Secret)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusForbidden || fakeDriver.deleteCount != 0 {
+		t.Fatalf("unauthorized destroy must be rejected without deleting the VM: status=%d deletes=%d", response.StatusCode, fakeDriver.deleteCount)
+	}
+	response = performRequest(t, application, jar, http.MethodDelete, "/api/v1/virtual-machines/"+strconv.Itoa(recoveredResult.Resource.ID), "", csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusNoContent || fakeDriver.deletedVMIDs[len(fakeDriver.deletedVMIDs)-1] != "902" {
+		t.Fatalf("destroy of recovered VM removed the wrong Proxmox resource: status=%d deleted=%v", response.StatusCode, fakeDriver.deletedVMIDs)
+	}
+	response = performRequest(t, application, jar, http.MethodDelete, "/api/v1/virtual-machines/"+strconv.Itoa(vmResult.Resource.ID), "", csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusNoContent || fakeDriver.deleteCount != 2 || fakeDriver.deletedVMIDs[len(fakeDriver.deletedVMIDs)-1] != "901" {
+		t.Fatalf("admin destroy must delete only the managed clone: status=%d deletes=%d vmids=%v", response.StatusCode, fakeDriver.deleteCount, fakeDriver.deletedVMIDs)
+	}
+}
+
+type fakeProxmoxInventory struct{}
+
+func (fakeProxmoxInventory) ReadResourceInventory(context.Context) (inventory proxmox.ResourceInventory, err error) {
+	inventory = proxmox.ResourceInventory{Pools: []string{"class-labs"}, Storages: []string{"local-lvm"}}
+	return
+}
+
+type fakeProxmoxVMDriver struct {
+	state           string
+	cloneCount      int
+	deleteCount     int
+	failNextClone   bool
+	placementsByKey map[string]proxmox.VMPlacement
+	deletedVMIDs    []string
+}
+
+func (driver *fakeProxmoxVMDriver) Clone(_ context.Context, request proxmox.VMCloneRequest) (placement proxmox.VMPlacement, err error) {
+	if placement, exists := driver.placementsByKey[request.OperationKey]; exists {
+		return placement, nil
+	}
+	driver.cloneCount++
+	var vmid string = "901"
+	if driver.cloneCount > 1 {
+		vmid = "902"
+	}
+	placement = proxmox.VMPlacement{VMID: vmid, Node: "pve1", Name: request.Name, PowerState: "stopped"}
+	if driver.placementsByKey == nil {
+		driver.placementsByKey = make(map[string]proxmox.VMPlacement)
+	}
+	driver.placementsByKey[request.OperationKey] = placement
+	if driver.failNextClone {
+		driver.failNextClone = false
+		err = errors.New("simulated response interruption after Proxmox accepted the clone")
+	}
+	return
+}
+
+func (driver *fakeProxmoxVMDriver) Read(_ context.Context, node string, vmid string, _ string) (placement proxmox.VMPlacement, err error) {
+	placement = proxmox.VMPlacement{VMID: vmid, Node: node, Name: "charlie-fedora", PowerState: driver.state}
+	return
+}
+
+func (driver *fakeProxmoxVMDriver) Power(_ context.Context, node string, vmid string, _ string, action string) (placement proxmox.VMPlacement, err error) {
+	if action == "start" {
+		driver.state = "running"
+	} else {
+		driver.state = "stopped"
+	}
+	placement = proxmox.VMPlacement{VMID: vmid, Node: node, Name: "charlie-fedora", PowerState: driver.state}
+	return
+}
+
+func (driver *fakeProxmoxVMDriver) Delete(_ context.Context, _ string, vmid string, _ string) (err error) {
+	driver.deleteCount++
+	driver.deletedVMIDs = append(driver.deletedVMIDs, vmid)
+	return
+}
+
 type testProxmoxInspector struct{}
 
 func (testProxmoxInspector) Inspect(_ context.Context, sourceID string, _ string) (result proxmox.PreflightResult, err error) {
 	result = proxmox.PreflightResult{
-		SourceID:        sourceID,
-		Node:            "test-node",
-		Name:            "test-source",
-		PowerState:      "stopped",
-		AgentConfigured: true,
-		IsQEMU:          true,
-		Passed:          true,
-		Checks:          []proxmox.Check{{Name: "source_exists", Passed: true, Required: true}},
+		SourceID:               sourceID,
+		Node:                   "test-node",
+		Name:                   "test-source",
+		PowerState:             "running",
+		GuestOSID:              "fedora",
+		AgentConfigured:        true,
+		AgentReachable:         true,
+		GuestAgentRootVerified: true,
+		IsQEMU:                 true,
+		Passed:                 true,
+		Checks: []proxmox.Check{
+			{Name: "source_exists", Passed: true, Required: true},
+			{Name: "guest_agent_root_execution", Passed: true, Required: true},
+		},
 	}
 	return
 }

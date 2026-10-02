@@ -66,11 +66,32 @@ func TestVMTemplateCatalogLifecycle(t *testing.T) {
 	if record.Template.ProvisioningReady {
 		t.Fatal("a passing Proxmox preflight must not skip the operator readiness checks")
 	}
+	if _, err = service.SetVMTemplateReadiness(administrator.ID, record.Template.ID, true, true); err == nil {
+		t.Fatal("a stopped source must not be marked ready")
+	}
+	result.PowerState = "running"
+	result.GuestOSID = "fedora"
+	result.AgentReachable = true
+	result.GuestAgentRootVerified = true
+	result.Checks = []proxmox.Check{{Name: "guest_agent_root_execution", Passed: true, Required: true}}
+	if record, err = service.RecordVMTemplatePreflight(administrator.ID, record.Template.ID, result, nil); err != nil {
+		t.Fatalf("record running source preflight: %v", err)
+	}
 	if record, err = service.SetVMTemplateReadiness(administrator.ID, record.Template.ID, true, true); err != nil {
-		t.Fatalf("mark source ready: %v", err)
+		t.Fatalf("mark running source ready: %v", err)
 	}
 	if !record.Template.ProvisioningReady {
 		t.Fatal("source should be ready after the preflight and both operator checks")
+	}
+	result.PowerState = "stopped"
+	result.AgentReachable = false
+	result.GuestAgentRootVerified = false
+	result.Checks = nil
+	if record, err = service.RecordVMTemplatePreflight(administrator.ID, record.Template.ID, result, nil); err != nil {
+		t.Fatalf("record stopped source preflight: %v", err)
+	}
+	if record.Template.ProvisioningAccountRemoved || record.Template.GuestAgentRootVerified || record.Template.ProvisioningReady {
+		t.Fatal("a new preflight must clear stale readiness confirmations")
 	}
 
 	if record, err = service.AddVMTemplateAlias(administrator.ID, record.Template.ID, "fedora-desktop"); err != nil {

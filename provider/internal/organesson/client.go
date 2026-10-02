@@ -78,7 +78,7 @@ func configuredClient(endpoint string, token string) (client *apiClient, err err
 	client = &apiClient{
 		endpoint: strings.TrimRight(parsed.String(), "/"),
 		token:    token,
-		client:   &http.Client{Timeout: 20 * time.Second},
+		client:   &http.Client{Timeout: 12 * time.Minute},
 	}
 	return
 }

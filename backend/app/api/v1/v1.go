@@ -13,4 +13,5 @@ func Init(parent fiber.Router, services common.Services) {
 	initAccounts(v1Router, services)
 	initDeployments(v1Router, services)
 	initVMTemplates(v1Router, services)
+	initProxmoxResources(v1Router, services)
 }

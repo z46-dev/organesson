@@ -265,10 +265,8 @@ func (service *Service) RecordVMTemplatePreflight(actorID int, templateID int, r
 	var now time.Time = service.now()
 	template.LastPreflightAt = &now
 	template.ProvisioningReady = false
-	if !result.Passed {
-		template.GuestAgentRootVerified = false
-		template.ProvisioningAccountRemoved = false
-	}
+	template.GuestAgentRootVerified = result.GuestAgentRootVerified
+	template.ProvisioningAccountRemoved = false
 	template.UpdatedAt = now
 	if err = service.store.VMTemplates.Update(template); err != nil {
 		return
@@ -304,6 +302,27 @@ func (service *Service) SetVMTemplateReadiness(actorID int, templateID int, gues
 	}
 	if !preflight.Passed || template.LastPreflightAt == nil {
 		err = fmt.Errorf("%w: a passing Proxmox preflight is required first", ErrInvalidInput)
+		return
+	}
+	if preflight.PowerState != "running" || !preflight.AgentReachable {
+		err = fmt.Errorf("%w: source VM must be running with a reachable guest agent", ErrInvalidInput)
+		return
+	}
+	var rootCheckRequired bool
+	var rootCheckPassed bool
+	for _, check := range preflight.Checks {
+		if check.Name == "guest_agent_root_execution" {
+			rootCheckRequired = check.Required
+			rootCheckPassed = check.Passed
+			break
+		}
+	}
+	if rootCheckRequired && (!rootCheckPassed || !preflight.GuestAgentRootVerified) {
+		err = fmt.Errorf("%w: guest agent must verify Linux root-level command execution", ErrInvalidInput)
+		return
+	}
+	if !rootCheckRequired && !strings.Contains(strings.ToLower(preflight.GuestOSID), "windows") {
+		err = fmt.Errorf("%w: preflight did not verify guest-agent root execution", ErrInvalidInput)
 		return
 	}
 	template.GuestAgentRootVerified = guestAgentRootVerified

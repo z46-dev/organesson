@@ -27,10 +27,12 @@ type (
 	}
 	vmResult struct {
 		Resource struct {
-			ID          int    `json:"id"`
-			OwnershipID int    `json:"ownership_id"`
-			Name        string `json:"name"`
-			PowerState  string `json:"power_state"`
+			ID           int    `json:"id"`
+			OwnershipID  int    `json:"ownership_id"`
+			ExternalID   string `json:"external_id"`
+			ExternalNode string `json:"external_node"`
+			Name         string `json:"name"`
+			PowerState   string `json:"power_state"`
 		} `json:"resource"`
 	}
 	userGroupResult struct {
@@ -52,7 +54,322 @@ type (
 		} `json:"permission_grant"`
 		SubjectName string `json:"subject_name"`
 	}
+	addressPoolRequestResult struct {
+		Resource struct {
+			ID          int    `json:"id"`
+			OwnershipID int    `json:"ownership_id"`
+			Name        string `json:"name"`
+		} `json:"resource"`
+		Allocation struct {
+			Addresses []string `json:"addresses"`
+			PoolName  string   `json:"pool_name"`
+			Prefix    string   `json:"prefix"`
+			Gateway   string   `json:"gateway"`
+			DNS       []string `json:"dns"`
+		} `json:"allocation"`
+	}
+	networkResult struct {
+		Resource struct {
+			ID           int    `json:"id"`
+			OwnershipID  int    `json:"ownership_id"`
+			ExternalID   string `json:"external_id"`
+			ExternalNode string `json:"external_node"`
+			Name         string `json:"name"`
+			PowerState   string `json:"power_state"`
+		} `json:"resource"`
+		Configuration struct {
+			Request struct {
+				Name         string `json:"name"`
+				Mode         string `json:"mode"`
+				Subnet       string `json:"subnet"`
+				Gateway      string `json:"gateway"`
+				DHCPEnabled  bool   `json:"dhcp_enabled"`
+				EgressPolicy string `json:"egress_policy"`
+			} `json:"request"`
+		} `json:"configuration"`
+	}
+	networkAttachmentResult struct {
+		Resource struct {
+			ID         int    `json:"id"`
+			Name       string `json:"name"`
+			PowerState string `json:"power_state"`
+		} `json:"resource"`
+		Configuration struct {
+			Addresses      []string `json:"addresses"`
+			AddressPrefix  string   `json:"address_prefix"`
+			AddressGateway string   `json:"address_gateway"`
+			AddressDNS     []string `json:"address_dns"`
+			Placement      struct {
+				Device string `json:"device"`
+				MAC    string `json:"mac"`
+			} `json:"placement"`
+		} `json:"configuration"`
+	}
+	guestNetworkConfigurationResult struct {
+		GuestNetwork struct {
+			Method  string   `json:"ipv4_method"`
+			Address string   `json:"ipv4_address,omitempty"`
+			Gateway string   `json:"ipv4_gateway,omitempty"`
+			DNS     []string `json:"ipv4_dns,omitempty"`
+		} `json:"guest_network"`
+	}
 )
+
+// addressPoolRequestOperations manages durable environment-network address reservations.
+func addressPoolRequestOperations() (operations remoteResourceOperations) {
+	operations.Create = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var deploymentID string
+		if deploymentID, err = remoteID(data.Get("deployment_id").(string)); err != nil {
+			return
+		}
+		var result addressPoolRequestResult
+		err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+deploymentID+"/address-pool-requests", map[string]any{
+			"name":                data.Get("name").(string),
+			"environment_network": data.Get("environment_network").(string),
+			"address_family":      data.Get("address_family").(string),
+			"address_count":       data.Get("address_count").(int),
+		}, &result)
+		if err != nil {
+			return
+		}
+		data.SetId(strconv.Itoa(result.Resource.ID))
+		_ = data.Set("addresses", result.Allocation.Addresses)
+		_ = data.Set("prefix", result.Allocation.Prefix)
+		_ = data.Set("gateway", result.Allocation.Gateway)
+		_ = data.Set("dns", result.Allocation.DNS)
+		_ = data.Set("pool_name", result.Allocation.PoolName)
+		_ = data.Set("summary", fmt.Sprintf("reserved %d addresses from %s pool %q", len(result.Allocation.Addresses), data.Get("environment_network").(string), result.Allocation.PoolName))
+		return
+	}
+	operations.Read = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var id string
+		if id, err = remoteID(data.Id()); err != nil {
+			return
+		}
+		var result addressPoolRequestResult
+		err = client.request(ctx, http.MethodGet, "/api/v1/address-pool-requests/"+id, nil, &result)
+		if err == nil {
+			_ = data.Set("name", result.Resource.Name)
+			_ = data.Set("addresses", result.Allocation.Addresses)
+			_ = data.Set("prefix", result.Allocation.Prefix)
+			_ = data.Set("gateway", result.Allocation.Gateway)
+			_ = data.Set("dns", result.Allocation.DNS)
+			_ = data.Set("pool_name", result.Allocation.PoolName)
+		}
+		return
+	}
+	operations.Delete = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var id string
+		if id, err = remoteID(data.Id()); err != nil {
+			return
+		}
+		return client.request(ctx, http.MethodDelete, "/api/v1/address-pool-requests/"+id, nil, nil)
+	}
+	return
+}
+
+// networkOperations manages isolated Proxmox SDN resources through Organesson.
+func networkOperations() (operations remoteResourceOperations) {
+	operations.Create = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var parentID string
+		var deploymentID string
+		if deploymentID, err = remoteID(data.Get("deployment_id").(string)); err == nil {
+			var result deploymentResult
+			if err = client.request(ctx, http.MethodGet, "/api/v1/deployments/"+deploymentID, nil, &result); err != nil {
+				return
+			}
+			if result.Deployment.RootNodeID == nil {
+				return fmt.Errorf("Organesson deployment has no ownership root")
+			}
+			parentID = strconv.Itoa(*result.Deployment.RootNodeID)
+		} else if data.Get("logical_group_id").(string) != "" {
+			err = nil
+			if parentID, err = remoteID(data.Get("logical_group_id").(string)); err != nil {
+				return
+			}
+			var parent nodeResult
+			if err = client.request(ctx, http.MethodGet, "/api/v1/ownership-nodes/"+parentID, nil, &parent); err != nil {
+				return
+			}
+			deploymentID = strconv.Itoa(parent.Node.DeploymentID)
+		} else {
+			return fmt.Errorf("one of deployment_id or logical_group_id is required")
+		}
+		var parentNodeID int
+		if parentNodeID, err = strconv.Atoi(parentID); err != nil {
+			return
+		}
+		var result networkResult
+		err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+deploymentID+"/networks", map[string]any{
+			"parent_node_id": parentNodeID, "name": data.Get("name").(string), "mode": data.Get("mode").(string),
+			"ipv4_subnet": data.Get("ipv4_subnet").(string), "ipv4_gateway": data.Get("ipv4_gateway").(string),
+			"dhcp_enabled": data.Get("dhcp_enabled").(bool), "egress_policy": data.Get("egress_policy").(string),
+		}, &result)
+		if err != nil {
+			return
+		}
+		data.SetId(strconv.Itoa(result.Resource.ID))
+		_ = data.Set("power_state", result.Resource.PowerState)
+		_ = data.Set("proxmox_vnet", result.Resource.ExternalID)
+		_ = data.Set("proxmox_zone", result.Resource.ExternalNode)
+		_ = data.Set("summary", fmt.Sprintf("created isolated Proxmox SDN VNet %q in Simple zone %q", result.Resource.ExternalID, result.Resource.ExternalNode))
+		return
+	}
+	operations.Read = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var id string
+		if id, err = remoteID(data.Id()); err != nil {
+			return
+		}
+		var result networkResult
+		err = client.request(ctx, http.MethodGet, "/api/v1/networks/"+id, nil, &result)
+		if err == nil {
+			_ = data.Set("name", result.Resource.Name)
+			_ = data.Set("mode", result.Configuration.Request.Mode)
+			_ = data.Set("ipv4_subnet", result.Configuration.Request.Subnet)
+			_ = data.Set("ipv4_gateway", result.Configuration.Request.Gateway)
+			_ = data.Set("dhcp_enabled", result.Configuration.Request.DHCPEnabled)
+			_ = data.Set("egress_policy", result.Configuration.Request.EgressPolicy)
+			_ = data.Set("power_state", result.Resource.PowerState)
+			_ = data.Set("proxmox_vnet", result.Resource.ExternalID)
+			_ = data.Set("proxmox_zone", result.Resource.ExternalNode)
+		}
+		return
+	}
+	operations.Delete = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var id string
+		if id, err = remoteID(data.Id()); err != nil {
+			return
+		}
+		return client.request(ctx, http.MethodDelete, "/api/v1/networks/"+id, nil, nil)
+	}
+	return
+}
+
+// networkAttachmentOperations manages a VM's PVE NIC and environment address claims.
+func networkAttachmentOperations() (operations remoteResourceOperations) {
+	operations.Create = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var vmID string
+		if vmID, err = remoteID(data.Get("virtual_machine_id").(string)); err != nil {
+			return
+		}
+		var body map[string]any = map[string]any{
+			"name":                    data.Get("name").(string),
+			"environment_network":     data.Get("environment_network").(string),
+			"address_pool_request_id": 0,
+			"requested_address_count": data.Get("requested_address_count").(int),
+			"logical_network_id":      0,
+		}
+		if value := data.Get("logical_network_id").(string); value != "" {
+			if body["logical_network_id"], err = strconv.Atoi(value); err != nil {
+				return
+			}
+		}
+		if value := data.Get("address_pool_request_id").(string); value != "" {
+			if body["address_pool_request_id"], err = strconv.Atoi(value); err != nil {
+				return
+			}
+		}
+		var result networkAttachmentResult
+		err = client.request(ctx, http.MethodPost, "/api/v1/virtual-machines/"+vmID+"/network-attachments", body, &result)
+		if err != nil {
+			return
+		}
+		data.SetId(strconv.Itoa(result.Resource.ID))
+		_ = data.Set("addresses", result.Configuration.Addresses)
+		_ = data.Set("address_prefix", result.Configuration.AddressPrefix)
+		_ = data.Set("address_gateway", result.Configuration.AddressGateway)
+		_ = data.Set("address_dns", result.Configuration.AddressDNS)
+		_ = data.Set("net_device", result.Configuration.Placement.Device)
+		_ = data.Set("mac_address", result.Configuration.Placement.MAC)
+		_ = data.Set("summary", fmt.Sprintf("attached %s to %s with MAC %s", result.Configuration.Placement.Device, data.Get("virtual_machine_id").(string), result.Configuration.Placement.MAC))
+		return
+	}
+	operations.Read = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var id string
+		if id, err = remoteID(data.Id()); err != nil {
+			return
+		}
+		var result networkAttachmentResult
+		err = client.request(ctx, http.MethodGet, "/api/v1/network-attachments/"+id, nil, &result)
+		if err == nil {
+			_ = data.Set("name", result.Resource.Name)
+			_ = data.Set("addresses", result.Configuration.Addresses)
+			_ = data.Set("address_prefix", result.Configuration.AddressPrefix)
+			_ = data.Set("address_gateway", result.Configuration.AddressGateway)
+			_ = data.Set("address_dns", result.Configuration.AddressDNS)
+			_ = data.Set("net_device", result.Configuration.Placement.Device)
+			_ = data.Set("mac_address", result.Configuration.Placement.MAC)
+		}
+		return
+	}
+	operations.Delete = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var id string
+		if id, err = remoteID(data.Id()); err != nil {
+			return
+		}
+		return client.request(ctx, http.MethodDelete, "/api/v1/network-attachments/"+id, nil, nil)
+	}
+	return
+}
+
+// guestNetworkConfigurationOperations applies and refreshes guest IPv4 setup through the API/QGA path.
+func guestNetworkConfigurationOperations() (operations remoteResourceOperations) {
+	operations.Create = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var attachmentID string
+		if attachmentID, err = remoteID(data.Get("network_attachment_id").(string)); err != nil {
+			return
+		}
+		var dns []string
+		for _, entry := range data.Get("ipv4_dns").([]interface{}) {
+			dns = append(dns, entry.(string))
+		}
+		var result guestNetworkConfigurationResult
+		err = client.request(ctx, http.MethodPost, "/api/v1/network-attachments/"+attachmentID+"/guest-network-configuration", map[string]any{
+			"ipv4_method": data.Get("ipv4_method").(string), "ipv4_address": data.Get("ipv4_address").(string),
+			"ipv4_gateway": data.Get("ipv4_gateway").(string), "ipv4_dns": dns,
+		}, &result)
+		if err != nil {
+			return
+		}
+		data.SetId(attachmentID)
+		setGuestNetworkConfiguration(data, result.GuestNetwork)
+		return
+	}
+	operations.Read = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var attachmentID string
+		if attachmentID, err = remoteID(data.Id()); err != nil {
+			return
+		}
+		var result guestNetworkConfigurationResult
+		err = client.request(ctx, http.MethodGet, "/api/v1/network-attachments/"+attachmentID+"/guest-network-configuration", nil, &result)
+		if err == nil {
+			_ = data.Set("network_attachment_id", attachmentID)
+			setGuestNetworkConfiguration(data, result.GuestNetwork)
+		}
+		return
+	}
+	operations.Delete = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var attachmentID string
+		if attachmentID, err = remoteID(data.Id()); err != nil {
+			return
+		}
+		return client.request(ctx, http.MethodDelete, "/api/v1/network-attachments/"+attachmentID+"/guest-network-configuration", nil, nil)
+	}
+	return
+}
+
+func setGuestNetworkConfiguration(data *schema.ResourceData, configuration struct {
+	Method  string   `json:"ipv4_method"`
+	Address string   `json:"ipv4_address,omitempty"`
+	Gateway string   `json:"ipv4_gateway,omitempty"`
+	DNS     []string `json:"ipv4_dns,omitempty"`
+}) {
+	_ = data.Set("ipv4_method", configuration.Method)
+	_ = data.Set("ipv4_address", configuration.Address)
+	_ = data.Set("ipv4_gateway", configuration.Gateway)
+	_ = data.Set("ipv4_dns", configuration.DNS)
+	_ = data.Set("summary", fmt.Sprintf("configured %s IPv4 on attachment %q", configuration.Method, data.Get("network_attachment_id")))
+}
 
 // deploymentOperations supplies the API lifecycle for a managed deployment root.
 func deploymentOperations() (operations remoteResourceOperations) {
@@ -202,7 +519,7 @@ func userGroupOperations() (operations remoteResourceOperations) {
 	return
 }
 
-// virtualMachineOperations manages the backend's simulated VM resource records.
+// virtualMachineOperations manages simulated or Proxmox-backed VM records through Organesson.
 func virtualMachineOperations() (operations remoteResourceOperations) {
 	operations.Create = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
 		var parentID string
@@ -215,13 +532,22 @@ func virtualMachineOperations() (operations remoteResourceOperations) {
 		}
 		var result vmResult
 		err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+strconv.Itoa(parentResult.Node.DeploymentID)+"/virtual-machines", map[string]any{
-			"parent_node_id": parentResult.Node.ID,
-			"name":           data.Get("name").(string),
+			"parent_node_id":    parentResult.Node.ID,
+			"name":              data.Get("name").(string),
+			"provisioning_mode": data.Get("provisioning_mode").(string),
+			"template":          data.Get("template").(string),
+			"pool":              data.Get("pool").(string),
+			"storage":           data.Get("storage").(string),
+			"cpu_cores":         data.Get("cpu_cores").(int),
+			"memory_mib":        data.Get("memory_mib").(int),
+			"boot_disk_gib":     data.Get("boot_disk_gib").(int),
 		}, &result)
 		if err == nil {
 			data.SetId(strconv.Itoa(result.Resource.ID))
 			_ = data.Set("ownership_node_id", result.Resource.OwnershipID)
 			_ = data.Set("power_state", result.Resource.PowerState)
+			_ = data.Set("proxmox_vmid", result.Resource.ExternalID)
+			_ = data.Set("proxmox_node", result.Resource.ExternalNode)
 		}
 		return
 	}
@@ -236,6 +562,8 @@ func virtualMachineOperations() (operations remoteResourceOperations) {
 			_ = data.Set("name", result.Resource.Name)
 			_ = data.Set("ownership_node_id", result.Resource.OwnershipID)
 			_ = data.Set("power_state", result.Resource.PowerState)
+			_ = data.Set("proxmox_vmid", result.Resource.ExternalID)
+			_ = data.Set("proxmox_node", result.Resource.ExternalNode)
 		}
 		return
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 type (
-	// ProxmoxConfiguration contains the read-only Proxmox API connection settings.
+	// ProxmoxConfiguration contains the Proxmox API settings used for inspection and VM lifecycle operations.
 	ProxmoxConfiguration struct {
 		APIURL             string `toml:"api_url" default:""`
 		APITokenID         string `toml:"api_token_id" default:""`

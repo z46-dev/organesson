@@ -49,6 +49,9 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Check Linux template prep script syntax
+        run: bash -n public/scripts/template-prep/linux/og-prep-linux.sh
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
 
@@ -57,6 +60,9 @@ jobs:
 
       - name: Type check
         run: bun run typecheck
+
+      - name: Test frontend route access
+        run: bun run test
 
       - name: Build
         run: bun run build
@@ -98,3 +104,37 @@ jobs:
 
       - name: Scan frontend dependencies
         run: bun audit --audit-level high
+
+  tofu-examples:
+    name: OpenTofu example validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: 1.11.5
+          tofu_wrapper: false
+
+      - name: Check OpenTofu formatting
+        run: tofu fmt -check -recursive examples/test_project examples/proxmox_vm_lifecycle
+
+      - name: Build local provider
+        run: |
+          mkdir -p .bin
+          go build -o .bin/terraform-provider-organesson ./provider
+
+      - name: Validate test project against local provider schema
+        run: |
+          cli_config="$RUNNER_TEMP/organesson-tofu.rc"
+          sed "s|REPOSITORY_ROOT|$GITHUB_WORKSPACE|g" examples/test_project/tofu.rc.example > "$cli_config"
+          TF_CLI_CONFIG_FILE="$cli_config" tofu -chdir=examples/test_project validate
+          TF_CLI_CONFIG_FILE="$cli_config" tofu -chdir=examples/proxmox_vm_lifecycle validate

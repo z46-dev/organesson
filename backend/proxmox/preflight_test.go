@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -58,8 +59,8 @@ func TestInspectTemplateUsesReadOnlyProxmoxRequests(t *testing.T) {
 	if result, err = service.InspectTemplate(t.Context(), "156", "fedora"); err != nil {
 		t.Fatalf("inspect source: %v", err)
 	}
-	if !result.Passed || !result.IsQEMU || result.IsProxmoxTemplate || !result.AgentConfigured {
-		t.Fatalf("unexpected passing source preflight: %#v", result)
+	if result.Passed || !result.IsQEMU || result.IsProxmoxTemplate || !result.AgentConfigured {
+		t.Fatalf("stopped source must fail required guest checks: %#v", result)
 	}
 	if result.PowerState != "stopped" || result.Node != "pve1" {
 		t.Fatalf("preflight did not capture the source location/state: %#v", result)
@@ -71,6 +72,77 @@ func TestInspectTemplateUsesReadOnlyProxmoxRequests(t *testing.T) {
 		if strings.Contains(path, "/agent/") {
 			t.Fatalf("stopped source should not receive guest-agent commands: %s", path)
 		}
+	}
+}
+
+// TestInspectTemplateVerifiesLinuxGuestAgentRunsAsRoot checks the privileged execution path.
+func TestInspectTemplateVerifiesLinuxGuestAgentRunsAsRoot(t *testing.T) {
+	var execRequests int
+	var guestExitCode int
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		var response string
+		switch request.URL.Path {
+		case "/api2/json/cluster/status":
+			response = `{"data":[]}`
+		case "/api2/json/cluster/resources":
+			response = `{"data":[{"type":"qemu","vmid":158,"node":"pve1","name":"fedora","status":"running","template":0}]}`
+		case "/api2/json/nodes/pve1/status":
+			response = `{"data":{"node":"pve1","status":"online"}}`
+		case "/api2/json/nodes/pve1/qemu/158/status/current":
+			response = `{"data":{"vmid":158,"name":"fedora","status":"running"}}`
+		case "/api2/json/nodes/pve1/qemu/158/config":
+			response = `{"data":{"agent":"1"}}`
+		case "/api2/json/nodes/pve1/qemu/158/agent/get-osinfo":
+			response = `{"data":{"result":{"id":"fedora","pretty-name":"Fedora Linux 44"}}}`
+		case "/api2/json/nodes/pve1/qemu/158/agent/exec":
+			execRequests++
+			var body map[string]interface{}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Errorf("decode guest exec request: %v", err)
+			}
+			var commandValues, commandValid = body["command"].([]any)
+			if !commandValid || len(commandValues) != 3 || commandValues[0] != "/bin/sh" || commandValues[1] != "-c" || !strings.Contains(commandValues[2].(string), "/usr/libexec/qemu-ga/fsfreeze-hook.d/organesson-qga-exec") || !strings.Contains(commandValues[2].(string), "*:virt_qemu_ga_t:*") {
+				t.Errorf("guest exec must verify root through the optional SELinux wrapper: %#v", body)
+			}
+			response = `{"data":{"pid":987}}`
+		case "/api2/json/nodes/pve1/qemu/158/agent/exec-status":
+			if request.URL.Query().Get("pid") != "987" {
+				t.Errorf("unexpected guest exec pid %q", request.URL.Query().Get("pid"))
+			}
+			response = `{"data":{"exited":1,"exitcode":` + strconv.Itoa(guestExitCode) + `}}`
+		default:
+			http.NotFound(writer, request)
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(json.RawMessage(response))
+	}))
+	defer server.Close()
+	var caPath string = filepath.Join(t.TempDir(), "pve-ca.pem")
+	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatalf("write test CA: %v", err)
+	}
+	var service *Service = New(config.ProxmoxConfiguration{
+		APIURL:           server.URL + "/api2/json",
+		APITokenID:       "organesson@pve!catalog",
+		APITokenSecret:   "test-secret",
+		RootCABundlePath: caPath,
+	})
+	var result PreflightResult
+	var err error
+	if result, err = service.InspectTemplate(t.Context(), "158", "fedora"); err != nil {
+		t.Fatalf("inspect running Linux source: %v", err)
+	}
+	if !result.Passed || !result.AgentReachable || !result.GuestAgentRootVerified || execRequests != 1 {
+		t.Fatalf("expected passing root execution preflight, got %#v (exec requests %d)", result, execRequests)
+	}
+	guestExitCode = 1
+	if result, err = service.InspectTemplate(t.Context(), "158", "fedora"); err != nil {
+		t.Fatalf("inspect non-root Linux source: %v", err)
+	}
+	if result.Passed || result.GuestAgentRootVerified || execRequests != 2 {
+		t.Fatalf("non-root guest-agent execution must fail preflight, got %#v (exec requests %d)", result, execRequests)
 	}
 }
 
@@ -165,8 +237,8 @@ func TestInspectTemplateCanUseExplicitInsecureTLS(t *testing.T) {
 	if result, err = insecureService.InspectTemplate(t.Context(), "156", "fedora"); err != nil {
 		t.Fatalf("inspect source with explicit insecure TLS: %v", err)
 	}
-	if !result.Passed || requests != 5 || !insecureService.InsecureTLS() {
-		t.Fatalf("explicit insecure TLS did not complete read-only preflight: result=%#v requests=%d", result, requests)
+	if result.Passed || !result.AgentConfigured || requests != 5 || !insecureService.InsecureTLS() {
+		t.Fatalf("explicit insecure TLS did not complete Proxmox inspection: result=%#v requests=%d", result, requests)
 	}
 }
 

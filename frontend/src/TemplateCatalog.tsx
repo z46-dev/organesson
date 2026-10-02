@@ -41,7 +41,10 @@ type PreflightCheck = {
 type PreflightResult = {
     passed: boolean;
     checks: PreflightCheck[];
+    guest_os_id?: string;
     guest_os_name?: string;
+    agent_reachable?: boolean;
+    guest_agent_root_verified?: boolean;
     power_state?: string;
     checked_at: string;
 };
@@ -196,7 +199,7 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
         try {
             const result = await request<{ preflight: PreflightResult }>(`/admin/vm-templates/${templateId}/preflight`, "POST", {});
             await refresh();
-            onNotice(result.preflight.passed ? "Proxmox preflight passed. Complete the two source checks to mark it ready." : "Proxmox preflight found checks that need attention.");
+            onNotice(result.preflight.passed ? "Source checks passed. Complete the remaining readiness check." : "Source checks found issues that need attention.");
         } catch (error) {
             onError((error as Error).message);
         } finally {
@@ -264,6 +267,9 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                     {templates.map((record) => {
                         const { template } = record;
                         const preflight = preflightFor(template);
+                        const rootCheck = preflight?.checks?.find((check) => check.name === "guest_agent_root_execution");
+                        const linuxRootCheck = !template.guest_os.toLowerCase().includes("windows");
+                        const canConfirmReadiness = preflight?.passed && preflight.power_state === "running" && preflight.agent_reachable;
                         return (
                             <article className="template-card" key={template.id}>
                                 <div className="template-card-heading">
@@ -275,12 +281,13 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                                     {record.aliases.map((alias) => <span className="template-alias" key={alias.id}><code>{alias.alias}</code><button type="button" disabled={busy || record.aliases.length < 2} onClick={() => removeAlias(template.id, alias.id)} aria-label={`Remove alias ${alias.alias}`} title={record.aliases.length < 2 ? "Every source needs at least one alias" : "Remove alias"}><Trash2 size={13} /></button></span>)}
                                 </div>
                                 <div className="template-alias-add"><input aria-label={`New alias for ${template.display_name}`} value={aliasDrafts[template.id] ?? ""} onChange={(event) => setAliasDrafts((current) => ({ ...current, [template.id]: event.target.value }))} placeholder="Add another alias" /><button className="secondary-action" type="button" disabled={busy || !aliasDrafts[template.id]?.trim()} onClick={() => addAlias(template.id)}><Plus size={14} /> Add alias</button></div>
-                                <div className="template-card-actions"><button className="secondary-action" type="button" disabled={busy} onClick={() => startEditing(record)}><Pencil size={14} /> Edit metadata</button><button className="secondary-action" type="button" disabled={busy || !proxmoxConfigured} onClick={() => runPreflight(template.id)}><RefreshCw size={14} /> Read-only preflight</button></div>
+                                <div className="template-card-actions"><button className="secondary-action" type="button" disabled={busy} onClick={() => startEditing(record)}><Pencil size={14} /> Edit metadata</button><button className="secondary-action" type="button" title="Checks VM configuration and guest OS; Linux also must pass the QEMU Guest Agent root and SELinux execution check." disabled={busy || !proxmoxConfigured} onClick={() => runPreflight(template.id)}><RefreshCw size={14} /> Check source</button></div>
                                 {preflight && <div className="preflight-results"><div className="preflight-summary"><strong>{preflight.passed ? "Preflight passed" : "Preflight needs attention"}</strong><time dateTime={preflight.checked_at}>{new Date(preflight.checked_at).toLocaleString()}</time></div>{preflight.checks?.map((check) => <p className={`preflight-check${check.passed ? " is-passed" : ""}`} key={check.name}><span>{check.passed ? "✓" : check.required ? "!" : "·"}</span>{check.details}</p>)}</div>}
                                 <div className="template-readiness">
-                                    <label><input type="checkbox" checked={rootVerified[template.id] ?? template.guest_agent_root_verified} onChange={(event) => setRootVerified((current) => ({ ...current, [template.id]: event.target.checked }))} /> I verified the guest agent executes as root and the guest OS matches this record.</label>
+                                    {linuxRootCheck ? <p className="template-readiness-status">Linux guest-agent system-level check: {rootCheck?.passed && preflight?.guest_agent_root_verified ? "verified" : "not verified"}</p> : <label><input type="checkbox" checked={rootVerified[template.id] ?? template.guest_agent_root_verified} onChange={(event) => setRootVerified((current) => ({ ...current, [template.id]: event.target.checked }))} /> I verified the guest agent executes as SYSTEM and the guest OS matches this record.</label>}
                                     <label><input type="checkbox" checked={accountRemoved[template.id] ?? template.provisioning_account_removed} onChange={(event) => setAccountRemoved((current) => ({ ...current, [template.id]: event.target.checked }))} /> The temporary provisioning account has been removed.</label>
-                                    <button className="secondary-action" type="button" disabled={busy || !preflight?.passed || rootVerified[template.id] !== true && !template.guest_agent_root_verified || accountRemoved[template.id] !== true && !template.provisioning_account_removed} onClick={() => updateReadiness(template.id)}><ShieldCheck size={14} /> Confirm readiness</button>
+                                    {!canConfirmReadiness && <p className="template-readiness-status">Start the source VM and rerun preflight to verify guest access.</p>}
+                                    <button className="secondary-action" type="button" disabled={busy || !canConfirmReadiness || linuxRootCheck && (!rootCheck?.passed || !preflight?.guest_agent_root_verified) || !linuxRootCheck && rootVerified[template.id] !== true && !template.guest_agent_root_verified || accountRemoved[template.id] !== true && !template.provisioning_account_removed} onClick={() => updateReadiness(template.id)}><ShieldCheck size={14} /> Confirm readiness</button>
                                 </div>
                             </article>
                         );

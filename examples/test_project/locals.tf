@@ -4,6 +4,11 @@
 locals {
   students = toset(["charlie", "dave"])
 
+  proxmox_internet_vms = {
+    for student in local.students : student => student
+    if var.proxmox_test_deployment || (var.proxmox_lifecycle_smoke && student == "charlie")
+  }
+
   student_permissions = toset([
     "resource.view",
     "vm.console_control",

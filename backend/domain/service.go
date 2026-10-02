@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/z46-dev/gosqlite"
@@ -21,14 +22,21 @@ var (
 type (
 	// Service implements ownership, fixed permission grants, and deployment operations.
 	Service struct {
-		store *db.Store
-		now   func() time.Time
+		store            *db.Store
+		now              func() time.Time
+		provisioningLock sync.Mutex
 	}
 
 	// DeploymentSummary contains only resources the caller is allowed to view.
 	DeploymentSummary struct {
-		Deployment *db.Deployment        `json:"deployment"`
-		Resources  []*db.ManagedResource `json:"resources"`
+		Deployment *db.Deployment     `json:"deployment"`
+		Resources  []*ResourceSummary `json:"resources"`
+	}
+
+	// ResourceSummary adds actor-specific capabilities to one visible resource.
+	ResourceSummary struct {
+		*db.ManagedResource
+		CanPowerControl bool `json:"can_power_control"`
 	}
 )
 
@@ -559,7 +567,14 @@ func (service *Service) GetDeployment(actorID int, deploymentID int) (summary *D
 			}
 		}
 		if visible {
-			summary.Resources = append(summary.Resources, resource)
+			var canPowerControl bool
+			if canPowerControl, err = service.Can(actorID, db.PermissionResourcePower, resource.OwnershipID); err != nil {
+				return
+			}
+			summary.Resources = append(summary.Resources, &ResourceSummary{
+				ManagedResource: resource,
+				CanPowerControl: canPowerControl,
+			})
 		}
 	}
 	return

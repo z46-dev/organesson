@@ -1,16 +1,31 @@
 # Alice's class-lab provider example
 
-This is the runnable acceptance fixture for the Alice, Bob, Charlie, and Dave scenario in [`docs/usecases/user_experience.md`](../../docs/usecases/user_experience.md).
+This is the Alice, Bob, Charlie, and Dave ownership/access scenario from [`docs/usecases/user_experience.md`](../../docs/usecases/user_experience.md). `@organesson` users are local test identities; this project defines deployment groups, logical ownership groups, and fixed permission grants in OpenTofu.
 
-- Alice teaches the class and receives deployment-management permissions.
-- Bob is the TA and, with Alice, belongs to `teaching-staff`; that group can view, power-control, console-control, and manage snapshots for the deployment.
-- Charlie and Dave each receive an isolated logical lab. Each can view, power-control, and console-control only their own lab and its descendants.
-- The deployment requests one `cyber.lab` IPv4 pool address per student. Each dual-homed Fedora VM consumes one address from that pool and receives it through DHCP.
-- Every student has a private, unmanaged Layer-2 link between their two Fedora VMs, using static `/30` addresses.
-- A single managed, Proxmox SDN-backed `shared-student-lan` is created for the deployment. Every `lan_fedora` connects to it and receives a DHCP address from its isolated `192.168.100.0/24` subnet; it has no uplink.
+The topology has one internet-facing Fedora VM and one LAN-only Fedora VM per student. Each pair has a private static `/30` link. All LAN-only VMs also join one shared, isolated Proxmox SDN subnet and use DHCP there. The internet NICs request addresses from the configured `cyber.lab` pool and retain that network's prefix, gateway, and DNS values; allocation does not carve out a new subnet.
 
-`@organesson` identifies users from Organesson's future built-in test identity source. This configuration creates no users in an external identity system. Deployment-local groups, their set-based membership, logical resource groups, and fixed permission grants are defined across the root `.tf` files.
+## Proxmox modes
 
-Both Fedora templates must provide QEMU Guest Agent support. `artifacts/first-time-setup/` is source material for an immutable package, not a live guest filesystem. The future provider will package it, hash it, and deliver it through temporary read-only ISO media. `ansible/verify.yml` is the future post-provision verification playbook. Neither is executed by the current prototype.
+By default, VMs use the provider's simulated lifecycle. Two opt-in modes are available:
 
-The current provider parses and validates this configuration locally; it does not call Organesson or Proxmox yet. Build and run it using [provider/README.md](../../provider/README.md).
+- `proxmox_lifecycle_smoke = true` clones Charlie's internet Fedora VM, attaches its `cyber.lab` NIC, claims one address, and applies its static guest configuration through QEMU Guest Agent. Other test resources stay simulated/declarative.
+- `proxmox_test_deployment = true` provisions all four VMs, the per-student private SDN networks, the once-per-deployment shared DHCP subnet, all NIC attachments, and the guest IPv4 configurations. The current VM sizes request 8 vCPUs, 16 GiB RAM, and 256 GiB boot storage in total. It powers guests on for QGA setup.
+
+The guest-network provider resource starts a stopped managed VM, waits for QEMU Guest Agent, writes a short-lived shell script to `/run`, and applies a MAC-bound NetworkManager connection. The script removes itself. Refresh checks the saved settings; destroy removes only that Organesson-managed connection before detaching NICs or deleting VMs.
+
+Before a full apply, the administrator must validate a Proxmox resource policy with the selected resource pool/storage, sufficient optional capacity limits, the `cyber.lab` address pool, and isolated SDN networking enabled. Proxmox Simple-zone DHCP uses its dnsmasq integration, which requires the `dnsmasq` package on every node that can host these guests; the shared VNet has no physical uplink or SNAT. See the [Proxmox SDN documentation](https://github.com/proxmox/pve-docs/blob/master/pvesdn.adoc). This example's Debian/Proxmox host prerequisite must be handled before enabling DHCP; Organesson does not install host packages.
+
+Virtual disks and artifact/Ansible setup declarations are still prototypes; they do not create disks or execute the artifact/playbook. The test-project lifecycle covered here is VM clone, SDN network, address allocation, NIC attachment, guest IPv4 setup, permissions/power UI, refresh, and destroy.
+
+## Run the single-VM smoke
+
+Follow [the lifecycle acceptance guide](../proxmox_vm_lifecycle/README.md) for backend, fake-user, source-catalog, policy, and API-token setup. From the repository root, build the local provider and set the documented provider environment variables, then run:
+
+```sh
+TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" tofu -chdir=examples/test_project validate
+TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" tofu -chdir=examples/test_project plan -var='proxmox_lifecycle_smoke=true'
+TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" tofu -chdir=examples/test_project apply -var='proxmox_lifecycle_smoke=true'
+TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" tofu -chdir=examples/test_project plan -var='proxmox_lifecycle_smoke=true'
+```
+
+The second plan should show no changes. The full deployment uses the same sequence with `-var='proxmox_test_deployment=true'` and should be destroyed with the same variable. Keep provider tokens and OpenTofu state private.

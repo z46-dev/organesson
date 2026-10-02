@@ -77,103 +77,80 @@ func resourcePermissionGrant() (resource *schema.Resource) {
 
 // resourceNetwork defines a virtual network owned by one deployment or logical group.
 func resourceNetwork() (resource *schema.Resource) {
-	resource = localResource("network", map[string]*schema.Schema{
+	resource = apiResource(map[string]*schema.Schema{
 		"deployment_id": {
 			Type:         schema.TypeString,
 			Optional:     true,
+			ForceNew:     true,
 			ExactlyOneOf: []string{"deployment_id", "logical_group_id"},
 			Description:  "The owning deployment identifier for a shared network.",
 		},
 		"dhcp_enabled": {
 			Type:        schema.TypeBool,
 			Required:    true,
+			ForceNew:    true,
 			Description: "Whether Organesson provides DHCP on this virtual network.",
 		},
 		"egress_policy": {
 			Type:         schema.TypeString,
 			Required:     true,
-			ValidateFunc: validation.StringInSlice([]string{"isolated", "environment-network", "platform-route"}, false),
+			ForceNew:     true,
+			ValidateFunc: validation.StringInSlice([]string{"isolated"}, false),
 			Description:  "The network's explicit egress policy.",
 		},
-		"ipv4_gateway": optionalStringSchema("The managed IPv4 gateway address."),
-		"ipv4_subnet":  optionalStringSchema("The managed IPv4 subnet in CIDR notation."),
+		"ipv4_gateway": {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The managed IPv4 gateway address."},
+		"ipv4_subnet":  {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The managed IPv4 subnet in CIDR notation."},
 		"logical_group_id": {
 			Type:         schema.TypeString,
 			Optional:     true,
+			ForceNew:     true,
 			ExactlyOneOf: []string{"deployment_id", "logical_group_id"},
 			Description:  "The owning logical group identifier for a private network.",
 		},
 		"mode": {
 			Type:         schema.TypeString,
 			Required:     true,
+			ForceNew:     true,
 			ValidateFunc: validation.StringInSlice([]string{"managed", "unmanaged-layer-2"}, false),
 			Description:  "The requested network mode.",
 		},
-		"name":    requiredStringSchema("The virtual network name."),
-		"summary": summarySchema(),
-	}, func(data *schema.ResourceData) (description string, err error) {
-		var (
-			dhcpEnabled  bool   = data.Get("dhcp_enabled").(bool)
-			egressPolicy string = data.Get("egress_policy").(string)
-			gateway      string = data.Get("ipv4_gateway").(string)
-			mode         string = data.Get("mode").(string)
-			subnet       string = data.Get("ipv4_subnet").(string)
-			owner        string
-		)
-
-		if value := data.Get("deployment_id").(string); value != "" {
-			owner = fmt.Sprintf("deployment %q", value)
-		} else {
-			owner = fmt.Sprintf("logical group %q", data.Get("logical_group_id").(string))
-		}
-
-		if mode == "managed" && (subnet == "" || gateway == "") {
-			err = fmt.Errorf("managed network requires ipv4_subnet and ipv4_gateway")
-
-			return
-		}
-
-		if mode == "unmanaged-layer-2" && (dhcpEnabled || subnet != "" || gateway != "") {
-			err = fmt.Errorf("unmanaged-layer-2 network cannot define DHCP, ipv4_subnet, or ipv4_gateway")
-
-			return
-		}
-
-		description = fmt.Sprintf("create %q virtual network %q in %s with egress policy %q", mode, data.Get("name").(string), owner, egressPolicy)
-		if mode == "managed" {
-			description += fmt.Sprintf(" using subnet %q, gateway %q, and DHCP %t", subnet, gateway, dhcpEnabled)
-		}
-
-		return
-	})
+		"name":         {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The virtual network name."},
+		"power_state":  {Type: schema.TypeString, Computed: true, Description: "Proxmox SDN provisioning state."},
+		"proxmox_vnet": {Type: schema.TypeString, Computed: true, Description: "The Organesson-owned Proxmox SDN VNet identifier."},
+		"proxmox_zone": {Type: schema.TypeString, Computed: true, Description: "The Organesson-owned Proxmox SDN Simple zone identifier."},
+		"summary":      summarySchema(),
+	}, networkOperations())
 
 	return
 }
 
 // resourceAddressPoolRequest defines a deployment request for addresses from one environment network.
 func resourceAddressPoolRequest() (resource *schema.Resource) {
-	resource = localResource("address-pool-request", map[string]*schema.Schema{
+	resource = apiResource(map[string]*schema.Schema{
 		"address_count": {
 			Type:         schema.TypeInt,
 			Required:     true,
+			ForceNew:     true,
 			ValidateFunc: validation.IntAtLeast(1),
 			Description:  "The number of addresses requested from the environment network.",
 		},
 		"address_family": {
 			Type:         schema.TypeString,
 			Required:     true,
+			ForceNew:     true,
 			ValidateFunc: validation.StringInSlice([]string{"ipv4", "ipv6"}, false),
 			Description:  "The requested address family.",
 		},
-		"deployment_id":       requiredStringSchema("The owning deployment identifier."),
-		"environment_network": requiredStringSchema("The environment network supplying addresses."),
-		"name":                requiredStringSchema("The deployment-local address pool request name."),
+		"deployment_id":       {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The owning deployment identifier."},
+		"environment_network": {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The environment network supplying addresses."},
+		"name":                {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The deployment-local address pool request name."},
+		"addresses":           {Type: schema.TypeList, Computed: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Persistently allocated addresses supplied by the selected environment network pool."},
+		"dns":                 {Type: schema.TypeList, Computed: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "DNS servers associated with the source network."},
+		"gateway":             {Type: schema.TypeString, Computed: true, Description: "Gateway associated with the source network."},
+		"prefix":              {Type: schema.TypeString, Computed: true, Description: "Original source network prefix; this request does not create a subnet."},
+		"pool_name":           {Type: schema.TypeString, Computed: true, Description: "Administrator-configured address pool that supplied this request."},
 		"summary":             summarySchema(),
-	}, func(data *schema.ResourceData) (description string, err error) {
-		description = fmt.Sprintf("request %d %s addresses from environment network %q as pool %q for deployment %q", data.Get("address_count").(int), data.Get("address_family").(string), data.Get("environment_network").(string), data.Get("name").(string), data.Get("deployment_id").(string))
-
-		return
-	})
+	}, addressPoolRequestOperations())
 
 	return
 }
@@ -181,14 +158,19 @@ func resourceAddressPoolRequest() (resource *schema.Resource) {
 // resourceVirtualMachine defines a catalog-template virtual machine.
 func resourceVirtualMachine() (resource *schema.Resource) {
 	resource = apiResource(map[string]*schema.Schema{
-		"boot_disk_gib":     {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested boot disk size in GiB (recorded, not provisioned in simulation)."},
-		"cpu_cores":         {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested CPU cores (recorded, not provisioned in simulation)."},
+		"boot_disk_gib":     {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested boot disk size in GiB."},
+		"cpu_cores":         {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested virtual CPU cores."},
 		"logical_group_id":  {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Parent logical ownership node identifier."},
-		"memory_mib":        {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested memory in MiB (recorded, not provisioned in simulation)."},
+		"memory_mib":        {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested memory in MiB."},
 		"name":              {Type: schema.TypeString, Required: true, ForceNew: true, Description: "VM name."},
-		"ownership_node_id": {Type: schema.TypeInt, Computed: true, Description: "The VM's ownership node identifier."},
-		"power_state":       {Type: schema.TypeString, Computed: true, Description: "Simulated VM power state."},
-		"template":          {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Template catalog identifier (recorded, not provisioned in simulation)."},
+		"pool":              {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Authorized Proxmox resource pool; omitted when policy allows exactly one."},
+		"provisioning_mode": {Type: schema.TypeString, Optional: true, Default: "simulated", ForceNew: true, ValidateFunc: validation.StringInSlice([]string{"simulated", "proxmox"}, false), Description: "Use simulated lifecycle for smoke tests or clone a real QEMU VM through Organesson."},
+		"proxmox_node":      {Type: schema.TypeString, Computed: true, Description: "The Proxmox node hosting this VM."},
+		"proxmox_vmid":      {Type: schema.TypeString, Computed: true, Description: "The Proxmox VMID assigned to this resource."},
+		"ownership_node_id": {Type: schema.TypeInt, Computed: true, Description: "The VM's ownership-tree node identifier."},
+		"power_state":       {Type: schema.TypeString, Computed: true, Description: "Current VM power state."},
+		"storage":           {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Authorized Proxmox storage; omitted when policy allows exactly one."},
+		"template":          {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Ready Organesson VM template alias."},
 		"summary":           summarySchema(),
 	}, virtualMachineOperations())
 
@@ -214,100 +196,60 @@ func resourceVirtualDisk() (resource *schema.Resource) {
 
 // resourceNetworkAttachment defines a virtual-machine network attachment.
 func resourceNetworkAttachment() (resource *schema.Resource) {
-	resource = localResource("network-attachment", map[string]*schema.Schema{
+	resource = apiResource(map[string]*schema.Schema{
 		"address_pool_request_id": {
 			Type:         schema.TypeString,
 			Optional:     true,
+			ForceNew:     true,
 			RequiredWith: []string{"requested_address_count"},
 			Description:  "The single environment address pool request supplying this interface.",
 		},
 		"environment_network": {
 			Type:         schema.TypeString,
 			Optional:     true,
+			ForceNew:     true,
 			ExactlyOneOf: []string{"environment_network", "logical_network_id"},
 			Description:  "The authorized environment network name.",
 		},
 		"logical_network_id": {
 			Type:         schema.TypeString,
 			Optional:     true,
+			ForceNew:     true,
 			ExactlyOneOf: []string{"environment_network", "logical_network_id"},
 			Description:  "The deployment virtual network identifier.",
 		},
-		"name": requiredStringSchema("The attachment name."),
+		"addresses":       {Type: schema.TypeList, Computed: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Addresses claimed from the referenced environment address pool."},
+		"address_prefix":  {Type: schema.TypeString, Computed: true, Description: "Original prefix for the claimed environment addresses."},
+		"address_gateway": {Type: schema.TypeString, Computed: true, Description: "Original gateway for the claimed environment addresses."},
+		"address_dns":     {Type: schema.TypeList, Computed: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Original DNS servers for the claimed environment addresses."},
+		"mac_address":     {Type: schema.TypeString, Computed: true, Description: "Deterministic Proxmox NIC MAC address."},
+		"name":            {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The attachment name."},
+		"net_device":      {Type: schema.TypeString, Computed: true, Description: "Proxmox network device slot, such as net0."},
 		"requested_address_count": {
 			Type:         schema.TypeInt,
 			Optional:     true,
+			ForceNew:     true,
 			RequiredWith: []string{"address_pool_request_id"},
 			ValidateFunc: validation.IntAtLeast(1),
 			Description:  "The number of addresses this interface consumes from its one address pool.",
 		},
-		"virtual_machine_id": requiredStringSchema("The attached virtual machine identifier."),
+		"virtual_machine_id": {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The attached Proxmox-backed VM resource identifier."},
 		"summary":            summarySchema(),
-	}, func(data *schema.ResourceData) (description string, err error) {
-		var target string
-
-		if value := data.Get("environment_network").(string); value != "" {
-			target = fmt.Sprintf("environment network %q", value)
-		} else if value := data.Get("logical_network_id").(string); value != "" {
-			target = fmt.Sprintf("logical network %q", value)
-		} else {
-			err = fmt.Errorf("one of environment_network or logical_network_id must be set")
-
-			return
-		}
-
-		description = fmt.Sprintf("attach VM %q to %s as %q", data.Get("virtual_machine_id").(string), target, data.Get("name").(string))
-		if poolRequestID, exists := data.GetOk("address_pool_request_id"); exists {
-			description += fmt.Sprintf(" and request %d address(es) from pool %q", data.Get("requested_address_count").(int), poolRequestID.(string))
-		}
-
-		return
-	})
+	}, networkAttachmentOperations())
 
 	return
 }
 
 // resourceGuestNetworkConfiguration defines guest-side configuration for one attached NIC.
 func resourceGuestNetworkConfiguration() (resource *schema.Resource) {
-	resource = localResource("guest-network-configuration", map[string]*schema.Schema{
-		"ipv4_address":          optionalStringSchema("The static IPv4 address and prefix."),
-		"ipv4_gateway":          optionalStringSchema("The optional IPv4 gateway."),
-		"ipv4_method":           requiredStringSchema("The IPv4 configuration method: dhcp or static."),
-		"network_attachment_id": requiredStringSchema("The target network attachment identifier."),
+	resource = apiResource(map[string]*schema.Schema{
+		"ipv4_address":          {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The static IPv4 address and prefix."},
+		"ipv4_dns":              {Type: schema.TypeList, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "DNS servers to configure on this interface."},
+		"ipv4_gateway":          {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The optional IPv4 gateway."},
+		"ipv4_method":           {Type: schema.TypeString, Required: true, ForceNew: true, ValidateFunc: validation.StringInSlice([]string{"dhcp", "static"}, false), Description: "The IPv4 configuration method: dhcp or static."},
+		"network_attachment_id": {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The target network attachment identifier."},
 		"summary":               summarySchema(),
-	}, func(data *schema.ResourceData) (description string, err error) {
-		var (
-			ipv4Address string = data.Get("ipv4_address").(string)
-			ipv4Gateway string = data.Get("ipv4_gateway").(string)
-			ipv4Method  string = data.Get("ipv4_method").(string)
-		)
-
-		switch ipv4Method {
-		case "dhcp":
-			if ipv4Address != "" || ipv4Gateway != "" {
-				err = fmt.Errorf("DHCP network configuration cannot define ipv4_address or ipv4_gateway")
-
-				return
-			}
-
-			description = fmt.Sprintf("configure attachment %q for IPv4 DHCP", data.Get("network_attachment_id").(string))
-		case "static":
-			if ipv4Address == "" {
-				err = fmt.Errorf("static network configuration requires ipv4_address")
-
-				return
-			}
-
-			description = fmt.Sprintf("configure attachment %q with static IPv4 %q", data.Get("network_attachment_id").(string), ipv4Address)
-			if ipv4Gateway != "" {
-				description += fmt.Sprintf(" and gateway %q", ipv4Gateway)
-			}
-		default:
-			err = fmt.Errorf("ipv4_method must be dhcp or static")
-		}
-
-		return
-	})
+	}, guestNetworkConfigurationOperations())
 
 	return
 }

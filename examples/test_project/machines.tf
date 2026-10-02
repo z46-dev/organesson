@@ -1,25 +1,29 @@
-# This Fedora VM is dual-homed: DHCP on cyber.lab and a static private-link address.
+# Enable one real VM lifecycle check without cloning the entire classroom topology.
 resource "organesson_virtual_machine" "internet_fedora" {
   for_each = local.students
 
-  boot_disk_gib    = 64
-  cpu_cores        = 2
-  logical_group_id = organesson_logical_group.student_lab[each.key].id
-  memory_mib       = 4096
-  name             = "internet-fedora"
-  template         = "og-template-fedora-server-latest"
+  boot_disk_gib     = 64
+  cpu_cores         = 2
+  logical_group_id  = organesson_logical_group.student_lab[each.key].id
+  memory_mib        = 4096
+  name              = "internet-fedora"
+  pool              = "organesson"
+  provisioning_mode = var.proxmox_test_deployment || (var.proxmox_lifecycle_smoke && each.key == "charlie") ? "proxmox" : "simulated"
+  storage           = "laas"
+  template          = "og-template-fedora-server-latest"
 }
 
 # This Fedora VM joins both its student's private link and the shared DHCP subnet.
 resource "organesson_virtual_machine" "lan_fedora" {
   for_each = local.students
 
-  boot_disk_gib    = 64
-  cpu_cores        = 2
-  logical_group_id = organesson_logical_group.student_lab[each.key].id
-  memory_mib       = 4096
-  name             = "lan-fedora"
-  template         = "og-template-fedora-server-latest"
+  boot_disk_gib     = 64
+  cpu_cores         = 2
+  logical_group_id  = organesson_logical_group.student_lab[each.key].id
+  memory_mib        = 4096
+  name              = "lan-fedora"
+  provisioning_mode = var.proxmox_test_deployment ? "proxmox" : "simulated"
+  template          = "og-template-fedora-server-latest"
 }
 
 resource "organesson_virtual_disk" "internet_fedora_data" {

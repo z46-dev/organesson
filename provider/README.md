@@ -1,8 +1,8 @@
 # Organesson OpenTofu provider
 
-The provider now connects to Organesson using a revocable, expiring bearer token. Deployment, logical-group, user-group membership, fixed permission-grant, and simulated-VM resources have API-backed create/read/update/delete behavior. The remaining network, address-pool, disk, and artifact resources are still local parse-only prototypes. No resource calls Proxmox yet.
+The provider connects to Organesson using a revocable, expiring bearer token. Deployment, ownership/group/permission, VM, address-pool, SDN network, NIC attachment, and guest IPv4 configuration resources have API-backed lifecycle behavior. Proxmox VM, SDN, NIC, and guest operations are performed by Organesson after ownership and platform-policy checks; guest networking uses a short-lived QEMU Guest Agent script and a MAC-bound NetworkManager profile. Virtual-disk and artifact resources remain local modeling declarations in this slice.
 
-For the first real `tofu plan` / `apply` / refresh / access-control smoke test, use [`examples/provider_smoke`](../examples/provider_smoke/README.md). It exercises Charlie/Dave isolation with fake users and changes membership in place. The full `examples/test_project` still includes resource types that are not wired to the API.
+Use [`examples/provider_smoke`](../examples/provider_smoke/README.md) for the simulated Charlie/Dave API and access-control path. For one real clone within the Alice/Bob/Charlie/Dave configuration, set `proxmox_lifecycle_smoke=true` in [`examples/test_project`](../examples/test_project/README.md); that keeps only Charlie's internet Fedora VM Proxmox-backed while the rest remain simulated. The separate [`examples/proxmox_vm_lifecycle`](../examples/proxmox_vm_lifecycle/README.md) guide has a minimal live-lab checklist.
 
 Build the provider from the repository root:
 

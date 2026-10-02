@@ -1,12 +1,15 @@
 package v1
 
 import (
+	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/z46-dev/organesson/backend/app/api/common"
 	"github.com/z46-dev/organesson/backend/db"
 	"github.com/z46-dev/organesson/backend/domain"
+	"github.com/z46-dev/organesson/backend/proxmox"
 )
 
 type (
@@ -16,8 +19,40 @@ type (
 	}
 
 	createVMRequest struct {
+		ParentNodeID     int    `json:"parent_node_id"`
+		Name             string `json:"name"`
+		ProvisioningMode string `json:"provisioning_mode"`
+		Template         string `json:"template"`
+		Pool             string `json:"pool"`
+		Storage          string `json:"storage"`
+		Cores            int    `json:"cpu_cores"`
+		MemoryMiB        int    `json:"memory_mib"`
+		BootDiskGiB      int    `json:"boot_disk_gib"`
+	}
+
+	createAddressPoolRequest struct {
+		Name               string `json:"name"`
+		EnvironmentNetwork string `json:"environment_network"`
+		AddressFamily      string `json:"address_family"`
+		AddressCount       int    `json:"address_count"`
+	}
+
+	createNetworkRequest struct {
 		ParentNodeID int    `json:"parent_node_id"`
 		Name         string `json:"name"`
+		Mode         string `json:"mode"`
+		Subnet       string `json:"ipv4_subnet"`
+		Gateway      string `json:"ipv4_gateway"`
+		DHCPEnabled  bool   `json:"dhcp_enabled"`
+		EgressPolicy string `json:"egress_policy"`
+	}
+
+	createNetworkAttachmentRequest struct {
+		Name                  string `json:"name"`
+		EnvironmentNetwork    string `json:"environment_network"`
+		LogicalNetworkID      int    `json:"logical_network_id"`
+		AddressPoolRequestID  int    `json:"address_pool_request_id"`
+		RequestedAddressCount int    `json:"requested_address_count"`
 	}
 
 	setPowerRequest struct {
@@ -56,6 +91,8 @@ func initDeployments(parent fiber.Router, services common.Services) {
 	router.Put("/:deployment_id", updateDeployment(services))
 	router.Delete("/:deployment_id", deleteDeployment(services))
 	router.Post("/:deployment_id/virtual-machines", createVirtualMachine(services))
+	router.Post("/:deployment_id/address-pool-requests", createAddressPoolRequestHandler(services))
+	router.Post("/:deployment_id/networks", createNetworkHandler(services))
 	router.Post("/:deployment_id/logical-groups", createLogicalGroup(services))
 	router.Post("/:deployment_id/user-groups", createUserGroup(services))
 	parent.Post("/user-groups/:group_id/members", common.RequireActor(services.Authentication), addGroupMember(services))
@@ -70,7 +107,17 @@ func initDeployments(parent fiber.Router, services common.Services) {
 	parent.Delete("/permission-grants/:grant_id", common.RequireActor(services.Authentication), deletePermissionGrant(services))
 	parent.Post("/virtual-machines/:resource_id/power", common.RequireActor(services.Authentication), setVirtualMachinePower(services))
 	parent.Get("/virtual-machines/:resource_id", common.RequireActor(services.Authentication), getVirtualMachine(services))
+	parent.Get("/address-pool-requests/:resource_id", common.RequireActor(services.Authentication), getAddressPoolRequestHandler(services))
+	parent.Delete("/address-pool-requests/:resource_id", common.RequireActor(services.Authentication), deleteAddressPoolRequestHandler(services))
+	parent.Get("/networks/:resource_id", common.RequireActor(services.Authentication), getNetworkHandler(services))
+	parent.Delete("/networks/:resource_id", common.RequireActor(services.Authentication), deleteNetworkHandler(services))
 	parent.Delete("/virtual-machines/:resource_id", common.RequireActor(services.Authentication), deleteVirtualMachine(services))
+	parent.Post("/virtual-machines/:resource_id/network-attachments", common.RequireActor(services.Authentication), createNetworkAttachmentHandler(services))
+	parent.Post("/network-attachments/:resource_id/guest-network-configuration", common.RequireActor(services.Authentication), configureGuestNetworkHandler(services))
+	parent.Get("/network-attachments/:resource_id/guest-network-configuration", common.RequireActor(services.Authentication), getGuestNetworkConfigurationHandler(services))
+	parent.Delete("/network-attachments/:resource_id/guest-network-configuration", common.RequireActor(services.Authentication), deleteGuestNetworkConfigurationHandler(services))
+	parent.Get("/network-attachments/:resource_id", common.RequireActor(services.Authentication), getNetworkAttachmentHandler(services))
+	parent.Delete("/network-attachments/:resource_id", common.RequireActor(services.Authentication), deleteNetworkAttachmentHandler(services))
 }
 
 // updateDeployment changes deployment metadata for platform administrators.
@@ -149,7 +196,204 @@ func deleteVirtualMachine(services common.Services) (handler fiber.Handler) {
 		if resourceID, err = common.ParseID(ctx, "resource_id"); err != nil {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid resource identifier."})
 		}
+		var resource *db.ManagedResource
+		if resource, err = services.Store.ManagedResources.Select(resourceID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if resource == nil || resource.Kind != "virtual_machine" {
+			return ctx.SendStatus(fiber.StatusNotFound)
+		}
+		if err = services.Domain.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if resource.ExternalID != "" {
+			if services.Proxmox == nil {
+				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; the managed VM was not removed from Organesson."})
+			}
+			if err = services.Proxmox.DeleteVM(ctx, resource.ExternalNode, resource.ExternalID, resource.OperationKey); err != nil {
+				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm VM deletion; the Organesson record was retained."})
+			}
+		}
 		if err = services.Domain.DeleteVirtualMachine(actorID, resourceID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		err = ctx.SendStatus(fiber.StatusNoContent)
+		return
+	}
+	return
+}
+
+// createAddressPoolRequestHandler allocates the configured addresses for one deployment.
+func createAddressPoolRequestHandler(services common.Services) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var actorID int
+		if actorID, _ = common.AccountID(ctx); actorID < 1 {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var deploymentID int
+		if deploymentID, err = common.ParseID(ctx, "deployment_id"); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid deployment identifier."})
+		}
+		var request createAddressPoolRequest
+		if err = ctx.Bind().Body(&request); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid address-pool request."})
+		}
+		var resource *db.ManagedResource
+		var allocation domain.AddressPoolRequest
+		if resource, allocation, err = services.Domain.ReserveAddressPoolRequest(actorID, domain.AddressPoolRequest{
+			DeploymentID: deploymentID, Name: request.Name, EnvironmentNetwork: request.EnvironmentNetwork,
+			AddressFamily: request.AddressFamily, AddressCount: request.AddressCount,
+		}); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		err = ctx.JSON(fiber.Map{"resource": resource, "allocation": allocation})
+		return
+	}
+	return
+}
+
+// getAddressPoolRequestHandler reads an allocation visible to the caller.
+func getAddressPoolRequestHandler(services common.Services) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var actorID int
+		if actorID, _ = common.AccountID(ctx); actorID < 1 {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var resourceID int
+		if resourceID, err = common.ParseID(ctx, "resource_id"); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid resource identifier."})
+		}
+		var resource *db.ManagedResource
+		var allocation domain.AddressPoolRequest
+		if resource, allocation, err = services.Domain.GetAddressPoolRequest(actorID, resourceID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		err = ctx.JSON(fiber.Map{"resource": resource, "allocation": allocation})
+		return
+	}
+	return
+}
+
+// deleteAddressPoolRequestHandler releases a deployment allocation.
+func deleteAddressPoolRequestHandler(services common.Services) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var actorID int
+		if actorID, _ = common.AccountID(ctx); actorID < 1 {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var resourceID int
+		if resourceID, err = common.ParseID(ctx, "resource_id"); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid resource identifier."})
+		}
+		if err = services.Domain.DeleteAddressPoolRequest(actorID, resourceID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		err = ctx.SendStatus(fiber.StatusNoContent)
+		return
+	}
+	return
+}
+
+// createNetworkHandler reserves an ownership resource and creates its isolated PVE SDN network.
+func createNetworkHandler(services common.Services) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var actorID int
+		if actorID, _ = common.AccountID(ctx); actorID < 1 {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		if services.Proxmox == nil || !services.Proxmox.Configured() {
+			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is not configured; no network was created."})
+		}
+		var deploymentID int
+		if deploymentID, err = common.ParseID(ctx, "deployment_id"); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid deployment identifier."})
+		}
+		var request createNetworkRequest
+		if err = ctx.Bind().Body(&request); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid network request."})
+		}
+		var networkRequest proxmox.SDNNetworkRequest = proxmox.SDNNetworkRequest{
+			Name: request.Name, Mode: request.Mode, Subnet: request.Subnet, Gateway: request.Gateway,
+			DHCPEnabled: request.DHCPEnabled, EgressPolicy: request.EgressPolicy,
+		}
+		var resource *db.ManagedResource
+		if resource, err = services.Domain.ReserveSDNNetwork(actorID, deploymentID, request.ParentNodeID, networkRequest); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		var configuration domain.ManagedNetworkConfiguration
+		if err = json.Unmarshal([]byte(resource.ConfigurationJSON), &configuration); err != nil {
+			return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Stored network configuration is invalid."})
+		}
+		var placement proxmox.SDNNetworkPlacement
+		if placement, err = services.Proxmox.CreateSDNNetwork(ctx, configuration.Request); err != nil {
+			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm isolated network creation; the ownership reservation remains for safe retry."})
+		}
+		if resource, err = services.Domain.ReadySDNNetwork(actorID, resource.ID, placement); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		err = ctx.Status(fiber.StatusCreated).JSON(fiber.Map{"resource": resource, "configuration": configuration})
+		return
+	}
+	return
+}
+
+// getNetworkHandler returns a visible network and its immutable PVE identity.
+func getNetworkHandler(services common.Services) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var actorID int
+		if actorID, _ = common.AccountID(ctx); actorID < 1 {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var resourceID int
+		if resourceID, err = common.ParseID(ctx, "resource_id"); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid resource identifier."})
+		}
+		var resource *db.ManagedResource
+		var configuration domain.ManagedNetworkConfiguration
+		if resource, configuration, err = services.Domain.GetSDNNetwork(actorID, resourceID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if services.Proxmox == nil || !services.Proxmox.Configured() {
+			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; live network state cannot be refreshed."})
+		}
+		if err = services.Proxmox.ReadSDNNetwork(ctx, configuration.Request, configuration.Placement); err != nil {
+			if errors.Is(err, proxmox.ErrSDNNetworkNotFound) {
+				return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "The managed Proxmox SDN network no longer exists."})
+			}
+			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not verify the managed Proxmox SDN network."})
+		}
+		err = ctx.JSON(fiber.Map{"resource": resource, "configuration": configuration})
+		return
+	}
+	return
+}
+
+// deleteNetworkHandler deletes the PVE VNet before releasing Organesson ownership.
+func deleteNetworkHandler(services common.Services) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var actorID int
+		if actorID, _ = common.AccountID(ctx); actorID < 1 {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var resourceID int
+		if resourceID, err = common.ParseID(ctx, "resource_id"); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid resource identifier."})
+		}
+		var resource *db.ManagedResource
+		var configuration domain.ManagedNetworkConfiguration
+		if resource, configuration, err = services.Domain.GetSDNNetwork(actorID, resourceID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if err = services.Domain.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if services.Proxmox == nil || !services.Proxmox.Configured() {
+			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; the network record was retained."})
+		}
+		if err = services.Proxmox.DeleteSDNNetwork(ctx, resource.ExternalID, configuration.Request.OperationKey); err != nil {
+			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm network deletion; the Organesson record was retained."})
+		}
+		if err = services.Domain.DeleteSDNNetworkRecord(actorID, resourceID); err != nil {
 			return common.DomainError(ctx, err)
 		}
 		err = ctx.SendStatus(fiber.StatusNoContent)
@@ -435,6 +679,22 @@ func getDeployment(services common.Services) (handler fiber.Handler) {
 		if summary, err = services.Domain.GetDeployment(accountID, deploymentID); err != nil {
 			return common.DomainError(ctx, err)
 		}
+		for _, resource := range summary.Resources {
+			if resource.Kind != "virtual_machine" || resource.ExternalID == "" {
+				continue
+			}
+			if services.Proxmox == nil {
+				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; live VM state cannot be refreshed."})
+			}
+			var placement proxmox.VMPlacement
+			if placement, err = services.Proxmox.ReadVM(ctx, resource.ExternalNode, resource.ExternalID, resource.OperationKey); err != nil {
+				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not refresh deployment VM state from Proxmox."})
+			}
+			resource.PowerState = placement.PowerState
+			if _, err = services.Domain.RecordLivePowerState(accountID, resource.ID, placement.PowerState); err != nil {
+				return common.DomainError(ctx, err)
+			}
+		}
 		err = ctx.JSON(summary)
 		return
 	}
@@ -457,8 +717,86 @@ func createVirtualMachine(services common.Services) (handler fiber.Handler) {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid deployment identifier."})
 		}
 		var resource *db.ManagedResource
-		if resource, err = services.Domain.CreateVirtualMachine(accountID, deploymentID, request.ParentNodeID, request.Name); err != nil {
-			return common.DomainError(ctx, err)
+		if request.ProvisioningMode == "proxmox" {
+			if services.Proxmox == nil || !services.Proxmox.Configured() {
+				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox provisioning was requested but the backend connection is not configured."})
+			}
+			var policyRecord *db.ProxmoxResourcePolicy
+			if policyRecord, err = services.Store.ProxmoxResourcePolicies.Select(1); err != nil {
+				return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not load the platform resource policy."})
+			}
+			if policyRecord == nil || policyRecord.ValidatedAt == nil {
+				return ctx.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Validate the Proxmox resource policy before provisioning VMs."})
+			}
+			var policy proxmox.ResourcePolicy
+			if err = json.Unmarshal([]byte(policyRecord.ConfigurationJSON), &policy); err != nil {
+				return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "The stored Proxmox resource policy is invalid."})
+			}
+			var configHash string
+			if configHash, err = proxmox.ResourcePolicyHash(policy); err != nil || configHash != policyRecord.ValidatedConfigHash {
+				return ctx.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "The Proxmox resource policy changed since it was validated."})
+			}
+			var inventory proxmox.ResourceInventory
+			if inventory, err = services.Proxmox.ResourceInventory(ctx); err != nil {
+				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not verify current Proxmox inventory."})
+			}
+			var validation proxmox.ResourcePolicyValidation = proxmox.ValidateResourcePolicy(policy, &inventory)
+			if !validation.Valid {
+				return ctx.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "The Proxmox resource policy no longer matches current inventory.", "validation": validation})
+			}
+			if request.Pool == "" && len(policy.ResourcePools) == 1 {
+				request.Pool = policy.ResourcePools[0]
+			}
+			if request.Storage == "" && len(policy.Storages) == 1 {
+				request.Storage = policy.Storages[0]
+			}
+			var spec proxmox.VMCloneRequest = proxmox.VMCloneRequest{
+				TemplateAlias: request.Template,
+				Name:          request.Name,
+				Pool:          request.Pool,
+				Storage:       request.Storage,
+				Cores:         request.Cores,
+				MemoryMiB:     request.MemoryMiB,
+				BootDiskGiB:   request.BootDiskGiB,
+			}
+			var template *db.VMTemplate
+			if resource, template, err = services.Domain.ReserveProxmoxVirtualMachine(accountID, deploymentID, request.ParentNodeID, spec); err != nil {
+				return common.DomainError(ctx, err)
+			}
+			if resource.ExternalID != "" {
+				var placement proxmox.VMPlacement
+				if placement, err = services.Proxmox.ReadVM(ctx, resource.ExternalNode, resource.ExternalID, resource.OperationKey); err != nil {
+					return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "The already-managed Proxmox VM could not be read; refusing to create a duplicate."})
+				}
+				if resource, err = services.Domain.RecordProxmoxVMPlacement(accountID, resource.ID, placement); err != nil {
+					return common.DomainError(ctx, err)
+				}
+			}
+			if resource.ExternalID == "" {
+				var placement proxmox.VMPlacement
+				if placement, err = services.Proxmox.CloneVM(ctx, proxmox.VMCloneRequest{
+					SourceVMID:    template.SourceID,
+					TemplateAlias: request.Template,
+					Name:          spec.Name,
+					Pool:          spec.Pool,
+					Storage:       spec.Storage,
+					Cores:         spec.Cores,
+					MemoryMiB:     spec.MemoryMiB,
+					BootDiskGiB:   spec.BootDiskGiB,
+					OperationKey:  resource.OperationKey,
+				}); err != nil {
+					return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox VM provisioning failed. The reservation was retained so a retry can safely recover or continue it."})
+				}
+				if resource, err = services.Domain.RecordProxmoxVMPlacement(accountID, resource.ID, placement); err != nil {
+					return common.DomainError(ctx, err)
+				}
+			}
+		} else if request.ProvisioningMode == "" || request.ProvisioningMode == "simulated" {
+			if resource, err = services.Domain.CreateVirtualMachine(accountID, deploymentID, request.ParentNodeID, request.Name); err != nil {
+				return common.DomainError(ctx, err)
+			}
+		} else {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "VM provisioning_mode must be simulated or proxmox."})
 		}
 		err = ctx.Status(fiber.StatusCreated).JSON(fiber.Map{"resource": resource})
 		return
@@ -481,8 +819,31 @@ func setVirtualMachinePower(services common.Services) (handler fiber.Handler) {
 		if resourceID, err = common.ParseID(ctx, "resource_id"); err != nil {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid resource identifier."})
 		}
+		var managed *db.ManagedResource
+		if managed, err = services.Store.ManagedResources.Select(resourceID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if managed == nil || managed.Kind != "virtual_machine" {
+			return ctx.SendStatus(fiber.StatusNotFound)
+		}
 		var resource any
-		if resource, err = services.Domain.SetVirtualMachinePower(accountID, resourceID, request.Action); err != nil {
+		if managed.ExternalID != "" {
+			if _, err = services.Domain.AuthorizeVirtualMachinePower(accountID, resourceID, request.Action); err != nil {
+				return common.DomainError(ctx, err)
+			}
+			if services.Proxmox == nil {
+				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; no power action was applied."})
+			}
+			var placement proxmox.VMPlacement
+			if placement, err = services.Proxmox.PowerVM(ctx, managed.ExternalNode, managed.ExternalID, managed.OperationKey, request.Action); err != nil {
+				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm the requested power action."})
+			}
+			if resource, err = services.Domain.RecordLivePowerState(accountID, resourceID, placement.PowerState); err != nil {
+				return common.DomainError(ctx, err)
+			}
+		} else if managed.OperationKey != "" {
+			return ctx.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Proxmox VM provisioning has not completed; no power action was applied."})
+		} else if resource, err = services.Domain.SetVirtualMachinePower(accountID, resourceID, request.Action); err != nil {
 			return common.DomainError(ctx, err)
 		}
 		err = ctx.JSON(fiber.Map{"resource": resource})
@@ -532,6 +893,18 @@ func getVirtualMachine(services common.Services) (handler fiber.Handler) {
 		var resource *db.ManagedResource
 		if resource, err = services.Domain.GetVirtualMachine(actorID, resourceID); err != nil {
 			return common.DomainError(ctx, err)
+		}
+		if resource.ExternalID != "" {
+			if services.Proxmox == nil {
+				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; live VM state cannot be refreshed."})
+			}
+			var placement proxmox.VMPlacement
+			if placement, err = services.Proxmox.ReadVM(ctx, resource.ExternalNode, resource.ExternalID, resource.OperationKey); err != nil {
+				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not refresh this VM from Proxmox."})
+			}
+			if resource, err = services.Domain.RecordLivePowerState(actorID, resourceID, placement.PowerState); err != nil {
+				return common.DomainError(ctx, err)
+			}
 		}
 		err = ctx.JSON(fiber.Map{"resource": resource})
 		return

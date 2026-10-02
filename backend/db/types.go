@@ -121,14 +121,17 @@ type (
 
 	// ManagedResource stores a resource whose owner is its unique ownership-tree node.
 	ManagedResource struct {
-		ID           int       `gosqlite:"id,primary,increment" json:"id"`
-		DeploymentID int       `gosqlite:"deployment_id,notnull,fkey:Deployment.id,ondelete:cascade" json:"deployment_id"`
-		OwnershipID  int       `gosqlite:"ownership_id,unique,notnull,fkey:OwnershipNode.id,ondelete:cascade" json:"ownership_id"`
-		Kind         string    `gosqlite:"kind,notnull" json:"kind"`
-		Name         string    `gosqlite:"name,notnull" json:"name"`
-		PowerState   string    `gosqlite:"power_state,notnull" json:"power_state"`
-		ExternalID   string    `gosqlite:"external_id" json:"external_id,omitempty"`
-		CreatedAt    time.Time `gosqlite:"created_at,notnull" json:"created_at"`
+		ID                int       `gosqlite:"id,primary,increment" json:"id"`
+		DeploymentID      int       `gosqlite:"deployment_id,notnull,fkey:Deployment.id,ondelete:cascade" json:"deployment_id"`
+		OwnershipID       int       `gosqlite:"ownership_id,unique,notnull,fkey:OwnershipNode.id,ondelete:cascade" json:"ownership_id"`
+		Kind              string    `gosqlite:"kind,notnull" json:"kind"`
+		Name              string    `gosqlite:"name,notnull" json:"name"`
+		PowerState        string    `gosqlite:"power_state,notnull" json:"power_state"`
+		ExternalID        string    `gosqlite:"external_id" json:"external_id,omitempty"`
+		ExternalNode      string    `gosqlite:"external_node" json:"external_node,omitempty"`
+		OperationKey      string    `gosqlite:"operation_key" json:"-"`
+		ConfigurationJSON string    `gosqlite:"configuration_json" json:"-"`
+		CreatedAt         time.Time `gosqlite:"created_at,notnull" json:"created_at"`
 	}
 
 	// VMTemplate is an administrator-managed source VM that can be selected for provisioning.
@@ -158,6 +161,16 @@ type (
 		VMTemplateID int       `gosqlite:"vm_template_id,notnull,fkey:VMTemplate.id,ondelete:cascade" json:"vm_template_id"`
 		Alias        string    `gosqlite:"alias,unique,notnull" json:"alias"`
 		CreatedAt    time.Time `gosqlite:"created_at,notnull" json:"created_at"`
+	}
+
+	// ProxmoxResourcePolicy is the singleton administrator-defined capacity and allocation policy.
+	ProxmoxResourcePolicy struct {
+		ID                  int        `gosqlite:"id,primary,increment"`
+		ConfigurationJSON   string     `gosqlite:"configuration_json,notnull"`
+		ValidationJSON      string     `gosqlite:"validation_json,notnull"`
+		ValidatedConfigHash string     `gosqlite:"validated_config_hash,notnull"`
+		ValidatedAt         *time.Time `gosqlite:"validated_at"`
+		UpdatedAt           time.Time  `gosqlite:"updated_at,notnull"`
 	}
 
 	// AuditEvent records security-sensitive operations and their outcomes.
