@@ -120,12 +120,31 @@ func getGuestNetworkConfigurationHandler(services common.Services) (handler fibe
 		if services.Proxmox == nil || !services.Proxmox.Configured() {
 			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; guest network state cannot be verified."})
 		}
-		if err = services.Proxmox.ReadGuestNetwork(ctx, *attachment.GuestNetwork); err != nil {
+		var verificationDeferred bool
+		if verificationDeferred, err = verifyGuestNetworkConfiguration(ctx, services, *attachment.GuestNetwork); err != nil {
 			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Guest network configuration drifted or QEMU Guest Agent is unavailable."})
 		}
-		err = ctx.JSON(fiber.Map{"resource": resource, "guest_network": attachment.GuestNetwork})
+		err = ctx.JSON(fiber.Map{"resource": resource, "guest_network": attachment.GuestNetwork, "verification_deferred": verificationDeferred})
 		return
 	}
+	return
+}
+
+// verifyGuestNetworkConfiguration defers only the QGA check when the verified VM is stopped.
+func verifyGuestNetworkConfiguration(ctx fiber.Ctx, services common.Services, request proxmox.GuestNetworkRequest) (deferred bool, err error) {
+	var placement proxmox.VMPlacement
+	if placement, err = services.Proxmox.ReadVM(ctx, request.Node, request.VMID, request.VMOperationKey); err != nil {
+		return
+	}
+	if placement.PowerState == "stopped" {
+		deferred = true
+		return
+	}
+	if placement.PowerState != "running" {
+		err = errors.New("managed guest power state is not available for QEMU Guest Agent verification")
+		return
+	}
+	err = services.Proxmox.ReadGuestNetwork(ctx, request)
 	return
 }
 
@@ -179,7 +198,19 @@ func ensureGuestVMRunning(ctx fiber.Ctx, services common.Services, resourceID in
 		err = domain.ErrNotFound
 		return
 	}
-	if vm.PowerState == "running" {
+	var livePlacement proxmox.VMPlacement
+	if livePlacement, err = services.Proxmox.ReadVM(ctx, vm.ExternalNode, vm.ExternalID, vm.OperationKey); err != nil {
+		return
+	}
+	if livePlacement.PowerState != "running" && livePlacement.PowerState != "stopped" {
+		err = errors.New("managed guest is not in a startable power state")
+		return
+	}
+	vm.PowerState = livePlacement.PowerState
+	if err = services.Store.ManagedResources.Update(vm); err != nil {
+		return
+	}
+	if livePlacement.PowerState == "running" {
 		return
 	}
 	var placement proxmox.VMPlacement

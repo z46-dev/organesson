@@ -428,6 +428,7 @@ type providerLifecycleVMDriver struct {
 	cloneCount  int
 	deleteCount int
 	deletedVMID string
+	powerState  string
 }
 
 type acceptanceSDNNetworkDriver struct {
@@ -489,12 +490,13 @@ func (driver *acceptanceSDNNetworkDriver) Delete(_ context.Context, _ string, _ 
 
 func (driver *providerLifecycleVMDriver) Clone(_ context.Context, request proxmox.VMCloneRequest) (placement proxmox.VMPlacement, err error) {
 	driver.cloneCount++
+	driver.powerState = "stopped"
 	placement = proxmox.VMPlacement{VMID: "901", Node: "pve1", Name: request.Name, PowerState: "stopped"}
 	return
 }
 
 func (driver *providerLifecycleVMDriver) Read(_ context.Context, node string, vmid string, _ string) (placement proxmox.VMPlacement, err error) {
-	placement = proxmox.VMPlacement{VMID: vmid, Node: node, Name: "provider-fedora", PowerState: "stopped"}
+	placement = proxmox.VMPlacement{VMID: vmid, Node: node, Name: "provider-fedora", PowerState: driver.powerState}
 	return
 }
 
@@ -503,6 +505,7 @@ func (driver *providerLifecycleVMDriver) Power(_ context.Context, node string, v
 	if action == "start" || action == "resume" || action == "restart" {
 		state = "running"
 	}
+	driver.powerState = state
 	placement = proxmox.VMPlacement{VMID: vmid, Node: node, Name: "provider-fedora", PowerState: state}
 	return
 }
