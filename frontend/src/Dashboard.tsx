@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
-import { Boxes, ChevronDown, ChevronRight, CircleUserRound, KeyRound, RefreshCw, Server, Shield, Users } from "lucide-react";
+import { Boxes, ChevronDown, ChevronRight, CircleUserRound, FolderTree, KeyRound, RefreshCw, Server, Shield, Users } from "lucide-react";
 import type { ApiRequest } from "./api";
-import type { Deployment, DeploymentDetail, Resource } from "./types";
+import type { Deployment, DeploymentAccess, DeploymentDetail, Resource } from "./types";
 import { ResourcePowerControl } from "./ResourcePowerControl";
+import { DeploymentAccessPanel } from "./DeploymentAccessPanel";
+import { VMSnapshotPanel } from "./VMSnapshotPanel";
+
+type WorkspaceSection = "resources" | "users" | "groups" | "permissions";
 
 type Props = {
     request: ApiRequest;
@@ -14,7 +18,9 @@ export function Dashboard({ request, onError }: Props) {
     const [deployments, setDeployments] = useState<Deployment[]>([]);
     const [selectedDeploymentID, setSelectedDeploymentID] = useState<number | null>(null);
     const [selectedDeployment, setSelectedDeployment] = useState<DeploymentDetail | null>(null);
+    const [deploymentAccess, setDeploymentAccess] = useState<DeploymentAccess | null>(null);
     const [selectedResourceID, setSelectedResourceID] = useState<number | null>(null);
+    const [selectedSection, setSelectedSection] = useState<WorkspaceSection>("resources");
     const [collapsedDeployments, setCollapsedDeployments] = useState<Record<number, boolean>>({});
     const [loadingDeployments, setLoadingDeployments] = useState(true);
     const [loadingDetails, setLoadingDetails] = useState(false);
@@ -42,10 +48,14 @@ export function Dashboard({ request, onError }: Props) {
     useEffect(() => {
         if (selectedDeploymentID === null) {
             setSelectedDeployment(null);
+            setDeploymentAccess(null);
             return;
         }
 
         let active = true;
+        setSelectedDeployment(null);
+        setDeploymentAccess(null);
+        setSelectedResourceID(null);
         setLoadingDetails(true);
         request<DeploymentDetail>(`/deployments/${selectedDeploymentID}`)
             .then((result) => active && setSelectedDeployment(result))
@@ -56,6 +66,21 @@ export function Dashboard({ request, onError }: Props) {
         };
     }, [request, onError, selectedDeploymentID]);
 
+    useEffect(() => {
+        if (selectedDeploymentID === null || selectedDeployment?.deployment.id !== selectedDeploymentID || (!selectedDeployment.can_manage_groups && !selectedDeployment.can_manage_permissions)) {
+            setDeploymentAccess(null);
+            return;
+        }
+        let active = true;
+        setDeploymentAccess(null);
+        request<DeploymentAccess>(`/deployments/${selectedDeploymentID}/access`)
+            .then((result) => active && setDeploymentAccess(result))
+            .catch((requestError: Error) => active && onError(requestError.message));
+        return () => {
+            active = false;
+        };
+    }, [request, onError, selectedDeploymentID, selectedDeployment?.can_manage_groups, selectedDeployment?.can_manage_permissions]);
+
     async function refreshSelectedDeployment() {
         if (selectedDeploymentID === null) {
             await loadDeployments();
@@ -63,7 +88,11 @@ export function Dashboard({ request, onError }: Props) {
         }
         setLoadingDetails(true);
         try {
-            setSelectedDeployment(await request<DeploymentDetail>(`/deployments/${selectedDeploymentID}`));
+            const updated = await request<DeploymentDetail>(`/deployments/${selectedDeploymentID}`);
+            setSelectedDeployment(updated);
+            if (updated.can_manage_groups || updated.can_manage_permissions) {
+                setDeploymentAccess(await request<DeploymentAccess>(`/deployments/${selectedDeploymentID}/access`));
+            }
         } catch (requestError) {
             onError((requestError as Error).message);
         } finally {
@@ -71,10 +100,10 @@ export function Dashboard({ request, onError }: Props) {
         }
     }
 
-    async function changePower(resource: Resource) {
+    async function changePower(resource: Resource, action: "start" | "stop" | "restart") {
         try {
             await request(`/virtual-machines/${resource.id}/power`, "POST", {
-                action: resource.power_state === "running" ? "stop" : "start"
+                action
             });
             await refreshSelectedDeployment();
         } catch (requestError) {
@@ -85,6 +114,24 @@ export function Dashboard({ request, onError }: Props) {
     const selectedResource = selectedDeployment?.resources.find((resource) => resource.id === selectedResourceID);
     const runningCount = selectedDeployment?.resources.filter((resource) => resource.power_state === "running").length ?? 0;
     const stoppedCount = selectedDeployment?.resources.filter((resource) => resource.power_state === "stopped").length ?? 0;
+
+    function selectSection(section: WorkspaceSection) {
+        setSelectedResourceID(null);
+        setSelectedSection(section);
+    }
+
+    function renderOwnershipNodes(parentNodeID: number): React.ReactNode {
+        return selectedDeployment?.ownership_nodes.filter((node) => node.parent_id === parentNodeID).map((node) => {
+            if (node.kind === 2) {
+                const resource = selectedDeployment.resources.find((item) => item.ownership_id === node.id);
+                if (!resource) {
+                    return null;
+                }
+                return <li key={node.id}><button className={`tree-resource${resource.id === selectedResourceID ? " is-current" : ""}`} type="button" onClick={() => { selectSection("resources"); setSelectedResourceID(resource.id); }}><span className={`tree-resource-state${resource.power_state === "running" ? " is-running" : ""}`} /><span>{resource.name}</span></button></li>;
+            }
+            return <li className="tree-owner-group" key={node.id}><div><FolderTree size={13} /><span>{node.name}</span></div><ul className="tree-resources">{renderOwnershipNodes(node.id)}</ul></li>;
+        });
+    }
 
     return (
         <section className="dashboard-page" aria-label="Deployment workspace">
@@ -112,6 +159,7 @@ export function Dashboard({ request, onError }: Props) {
                                                 setCollapsedDeployments((current) => ({ ...current, [deployment.id]: false }));
                                             }
                                             setSelectedResourceID(null);
+                                            setSelectedSection("resources");
                                         }}>
                                             {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                                             <Boxes size={16} />
@@ -120,21 +168,12 @@ export function Dashboard({ request, onError }: Props) {
                                         {isExpanded && (
                                             <ul className="tree-branches">
                                                 <li>
-                                                    <div className="tree-category is-active"><Server size={14} /><span>Resources</span><small>{selectedDeployment?.resources.length ?? "—"}</small></div>
-                                                    {resources.length > 0 && <ul className="tree-resources">
-                                                        {resources.map((resource) => (
-                                                            <li key={resource.id}>
-                                                                <button className={`tree-resource${resource.id === selectedResourceID ? " is-current" : ""}`} type="button" onClick={() => setSelectedResourceID(resource.id)}>
-                                                                    <span className={`tree-resource-state${resource.power_state === "running" ? " is-running" : ""}`} />
-                                                                    <span>{resource.name}</span>
-                                                                </button>
-                                                            </li>
-                                                        ))}
-                                                    </ul>}
+                                                    <button className={`tree-category-button${selectedSection === "resources" ? " is-active" : ""}`} type="button" onClick={() => selectSection("resources")}><Server size={14} /><span>Resources</span><small>{selectedDeployment?.resources.length ?? "—"}</small></button>
+                                                    {resources.length > 0 && selectedDeployment?.deployment.root_node_id !== null && selectedDeployment?.deployment.root_node_id !== undefined && <ul className="tree-resources">{renderOwnershipNodes(selectedDeployment.deployment.root_node_id)}</ul>}
                                                 </li>
-                                                <li><div className="tree-category is-unavailable"><CircleUserRound size={14} /><span>Users</span><small>Later</small></div></li>
-                                                <li><div className="tree-category is-unavailable"><Users size={14} /><span>Groups</span><small>Later</small></div></li>
-                                                <li><div className="tree-category is-unavailable"><KeyRound size={14} /><span>Permissions</span><small>Later</small></div></li>
+                                                {selectedDeployment?.can_manage_groups && <li><button className={`tree-category-button${selectedSection === "users" ? " is-active" : ""}`} type="button" onClick={() => selectSection("users")}><CircleUserRound size={14} /><span>Users</span></button></li>}
+                                                {selectedDeployment?.can_manage_groups && <li><button className={`tree-category-button${selectedSection === "groups" ? " is-active" : ""}`} type="button" onClick={() => selectSection("groups")}><Users size={14} /><span>Groups</span><small>{deploymentAccess?.groups.length ?? "—"}</small></button></li>}
+                                                {selectedDeployment?.can_manage_permissions && <li><button className={`tree-category-button${selectedSection === "permissions" ? " is-active" : ""}`} type="button" onClick={() => selectSection("permissions")}><KeyRound size={14} /><span>Permissions</span><small>{deploymentAccess?.permission_grants.length ?? "—"}</small></button></li>}
                                             </ul>
                                         )}
                                     </li>
@@ -166,13 +205,13 @@ export function Dashboard({ request, onError }: Props) {
                             </div>
 
                             <div className="workspace-tabs" aria-label="Deployment sections">
-                                <span className="workspace-tab is-current"><Server size={14} /> Resources</span>
-                                <span className="workspace-tab is-unavailable"><CircleUserRound size={14} /> Users</span>
-                                <span className="workspace-tab is-unavailable"><Users size={14} /> Groups</span>
-                                <span className="workspace-tab is-unavailable"><KeyRound size={14} /> Permissions</span>
+                                <button className={`workspace-tab${selectedSection === "resources" ? " is-current" : ""}`} type="button" onClick={() => selectSection("resources")}><Server size={14} /> Resources</button>
+                                {selectedDeployment.can_manage_groups ? <button className={`workspace-tab${selectedSection === "users" ? " is-current" : ""}`} type="button" onClick={() => selectSection("users")}><CircleUserRound size={14} /> Users</button> : null}
+                                {selectedDeployment.can_manage_groups ? <button className={`workspace-tab${selectedSection === "groups" ? " is-current" : ""}`} type="button" onClick={() => selectSection("groups")}><Users size={14} /> Groups</button> : null}
+                                {selectedDeployment.can_manage_permissions ? <button className={`workspace-tab${selectedSection === "permissions" ? " is-current" : ""}`} type="button" onClick={() => selectSection("permissions")}><KeyRound size={14} /> Permissions</button> : null}
                             </div>
 
-                            {selectedResource ? (
+                            {selectedSection !== "resources" && deploymentAccess ? <DeploymentAccessPanel deploymentID={selectedDeploymentID} section={selectedSection} access={deploymentAccess} request={request} onChanged={refreshSelectedDeployment} onError={onError} /> : selectedSection !== "resources" ? <div className="workspace-empty panel" role="status"><p>Loading deployment access…</p></div> : selectedResource ? (
                                 <section className="resource-detail panel" aria-labelledby="resource-detail-heading">
                                     <div className="resource-detail-heading">
                                         <div className="resource-detail-icon"><Server size={19} /></div>
@@ -185,6 +224,8 @@ export function Dashboard({ request, onError }: Props) {
                                         <div><dt>Power state</dt><dd>{selectedResource.power_state}</dd></div>
                                     </dl>
                                     <ResourcePowerControl resource={selectedResource} onPower={changePower} />
+                                    {selectedResource.can_snapshot_control && <VMSnapshotPanel resourceID={selectedResource.id} request={request} onError={onError} />}
+                                    {selectedResource.can_console_control && <div className="console-launch-row"><span>Console</span><a className="primary-action" href={`/console/${selectedResource.id}`}>Open console</a><a className="quiet-button" href={`/console/${selectedResource.id}`} target="_blank" rel="noreferrer">Pop out</a></div>}
                                 </section>
                             ) : (
                                 <section className="resource-overview panel" aria-labelledby="resource-list-heading">

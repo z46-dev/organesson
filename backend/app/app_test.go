@@ -250,6 +250,46 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 	if deploymentResult.Deployment.ID < 1 || deploymentResult.Deployment.RootNodeID < 1 {
 		t.Fatalf("deployment response is missing its IDs: %#v", deploymentResult.Deployment)
 	}
+	response = performRequest(t, application, jar, http.MethodGet, "/api/v1/deployments/"+strconv.Itoa(deploymentResult.Deployment.ID), "", "")
+	var emptyDetail struct {
+		Resources      []any `json:"resources"`
+		OwnershipNodes []any `json:"ownership_nodes"`
+	}
+	if response.StatusCode != fiber.StatusOK || json.NewDecoder(response.Body).Decode(&emptyDetail) != nil {
+		response.Body.Close()
+		t.Fatalf("read empty deployment detail: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if emptyDetail.Resources == nil || emptyDetail.OwnershipNodes == nil {
+		t.Fatalf("empty deployment detail collections should be arrays, not null: %#v", emptyDetail)
+	}
+	response = performRequest(t, application, jar, http.MethodGet, "/api/v1/deployments/"+strconv.Itoa(deploymentResult.Deployment.ID)+"/access", "", "")
+	var accessResult struct {
+		CanManageConfiguration bool  `json:"can_manage_configuration"`
+		CanManageGroups        bool  `json:"can_manage_groups"`
+		CanManagePermissions   bool  `json:"can_manage_permissions"`
+		Accounts               []any `json:"accounts"`
+		Groups                 []any `json:"groups"`
+		OwnershipNodes         []any `json:"ownership_nodes"`
+		PermissionGrants       []any `json:"permission_grants"`
+	}
+	if response.StatusCode != fiber.StatusOK {
+		var body []byte
+		body, _ = io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("expected admin access workspace 200, got %d: %s", response.StatusCode, body)
+	}
+	if err = json.NewDecoder(response.Body).Decode(&accessResult); err != nil {
+		response.Body.Close()
+		t.Fatalf("decode access workspace: %v", err)
+	}
+	response.Body.Close()
+	if !accessResult.CanManageConfiguration || !accessResult.CanManageGroups || !accessResult.CanManagePermissions {
+		t.Fatalf("platform admin should receive all deployment access capabilities: %#v", accessResult)
+	}
+	if accessResult.Accounts == nil || accessResult.Groups == nil || accessResult.OwnershipNodes == nil || accessResult.PermissionGrants == nil {
+		t.Fatalf("empty deployment access collections should be arrays, not null: %#v", accessResult)
+	}
 
 	var createVMPath string = "/api/v1/deployments/" + strconv.Itoa(deploymentResult.Deployment.ID) + "/virtual-machines"
 	var createVMBody string = `{"parent_node_id":` + strconv.Itoa(deploymentResult.Deployment.RootNodeID) + `,"name":"test-vm"}`
@@ -276,6 +316,11 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected authorized VM power action 200, got %d", response.StatusCode)
+	}
+	response = performRequest(t, application, jar, http.MethodPost, powerPath, `{"action":"restart"}`, csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected authorized VM restart 200, got %d", response.StatusCode)
 	}
 
 	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/deployments", `{"name":"blocked","description":"csrf missing"}`, "")

@@ -605,6 +605,36 @@ h2 {
     font-size: 11px;
 }
 
+.tree-category-button {
+    display: flex;
+    width: 100%;
+    min-height: 31px;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 6px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: #55645a;
+    text-align: left;
+    font-size: 11px;
+}
+
+.tree-category-button span {
+    flex: 1;
+}
+
+.tree-category-button small {
+    color: #89958d;
+    font-size: 10px;
+}
+
+.tree-category-button:hover,
+.tree-category-button.is-active {
+    background: #f3f7f3;
+    color: #1f5a44;
+}
+
 .tree-category span {
     flex: 1;
 }
@@ -632,6 +662,16 @@ h2 {
     margin: 1px 0 5px 12px;
     padding-left: 12px;
     border-left: 1px solid #edf0ed;
+}
+
+.tree-owner-group > div {
+    display: flex;
+    min-height: 29px;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 6px;
+    color: #55645a;
+    font-size: 11px;
 }
 
 .tree-resource {
@@ -741,9 +781,15 @@ h2 {
     align-items: center;
     gap: 7px;
     padding: 0 12px;
+    border: 0;
     border-bottom: 2px solid transparent;
+    background: transparent;
     color: #627067;
     font-size: 12px;
+}
+
+.workspace-tab:hover {
+    color: #1f5a44;
 }
 
 .workspace-tab.is-current {
@@ -759,6 +805,107 @@ h2 {
 .resource-overview,
 .resource-detail {
     padding: 21px;
+}
+
+.access-panel {
+    min-height: 0;
+    overflow: auto;
+    padding: 21px;
+}
+
+.access-inline-form,
+.access-grant-form {
+    display: flex;
+    align-items: end;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.access-grant-form {
+    flex-wrap: wrap;
+}
+
+.access-inline-form label,
+.access-grant-form label,
+.access-members-label {
+    display: grid;
+    min-width: 160px;
+    flex: 1;
+    gap: 6px;
+    color: #536158;
+    font-size: 11px;
+    font-weight: 620;
+}
+
+.access-inline-form input,
+.access-grant-form select,
+.access-members-label select {
+    min-height: 36px;
+    padding: 7px 9px;
+    border: 1px solid #dce3dc;
+    border-radius: 6px;
+    background: #fff;
+    color: #26332b;
+    font: inherit;
+    font-size: 12px;
+}
+
+.access-members-label select {
+    min-height: 96px;
+}
+
+.access-list,
+.access-groups {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.access-list li,
+.access-groups > li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 12px 4px;
+    border-top: 1px solid #edf0ed;
+}
+
+.access-list li > div,
+.access-groups form {
+    display: grid;
+    width: 100%;
+    gap: 8px;
+}
+
+.access-group-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.access-list strong,
+.access-group-heading strong {
+    color: #26332b;
+    font-size: 13px;
+}
+
+.access-list span,
+.access-group-heading span {
+    color: #718078;
+    font-size: 11px;
+}
+
+.access-group-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.access-empty {
+    margin: 20px 0 4px;
+    color: #718078;
+    font-size: 13px;
 }
 
 .resource-overview-heading {
@@ -963,6 +1110,145 @@ h2 {
     gap: 16px;
     padding-top: 16px;
     border-top: 1px solid #edf0ed;
+}
+
+.vm-snapshot-panel {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid #edf0ed;
+}
+
+.resource-tools-heading,
+.snapshot-list li,
+.console-toolbar,
+.console-toolbar-actions,
+.snapshot-actions,
+.console-launch-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.resource-tools-heading h3,
+.console-toolbar h1 {
+    margin: 0;
+    font-size: 16px;
+}
+
+.snapshot-create-form {
+    display: flex;
+    align-items: end;
+    gap: 10px;
+    margin: 14px 0;
+}
+
+.snapshot-create-form label {
+    flex: 1;
+}
+
+.snapshot-list {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.snapshot-list li {
+    padding: 10px 0;
+    border-top: 1px solid #edf0ed;
+}
+
+.snapshot-list li > div:first-child {
+    display: grid;
+    gap: 4px;
+}
+
+.snapshot-list small,
+.snapshot-empty {
+    color: #718078;
+    font-size: 11px;
+}
+
+.console-launch-row {
+    justify-content: flex-start;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid #edf0ed;
+    color: #52645a;
+    font-size: 13px;
+}
+
+.console-page {
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100vh - 62px);
+    gap: 14px;
+}
+
+.console-toolbar {
+    flex: 0 0 auto;
+}
+
+.console-toolbar-actions {
+    justify-content: flex-end;
+}
+
+.console-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: #68776e;
+    font-size: 12px;
+}
+
+.console-status i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #d6a64b;
+}
+
+.console-screen-wrap,
+.console-placeholder {
+    position: relative;
+    display: grid;
+    flex: 1 1 auto;
+    min-height: 320px;
+    overflow: hidden;
+    place-items: center;
+    border: 1px solid #303a35;
+    border-radius: 8px;
+    background: #101412;
+}
+
+.console-screen {
+    width: 100%;
+    height: 100%;
+}
+
+.console-screen canvas {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: contain;
+}
+
+.console-placeholder {
+    color: #d2d9d4;
+    font-size: 13px;
+}
+
+.console-hint {
+    position: absolute;
+    right: 12px;
+    bottom: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: #b8c1bb;
+    font-size: 10px;
+    pointer-events: none;
 }
 
 .resource-controls strong {

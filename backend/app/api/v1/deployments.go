@@ -88,6 +88,7 @@ func initDeployments(parent fiber.Router, services common.Services) {
 	router.Get("/", listDeployments(services))
 	router.Post("/", createDeployment(services))
 	router.Get("/:deployment_id", getDeployment(services))
+	router.Get("/:deployment_id/access", getDeploymentAccess(services))
 	router.Put("/:deployment_id", updateDeployment(services))
 	router.Delete("/:deployment_id", deleteDeployment(services))
 	router.Post("/:deployment_id/virtual-machines", createVirtualMachine(services))
@@ -106,6 +107,11 @@ func initDeployments(parent fiber.Router, services common.Services) {
 	parent.Get("/permission-grants/:grant_id", common.RequireActor(services.Authentication), getPermissionGrant(services))
 	parent.Delete("/permission-grants/:grant_id", common.RequireActor(services.Authentication), deletePermissionGrant(services))
 	parent.Post("/virtual-machines/:resource_id/power", common.RequireActor(services.Authentication), setVirtualMachinePower(services))
+	parent.Get("/virtual-machines/:resource_id/snapshots", common.RequireActor(services.Authentication), listVMSnapshots(services))
+	parent.Post("/virtual-machines/:resource_id/snapshots", common.RequireActor(services.Authentication), createVMSnapshot(services))
+	parent.Get("/virtual-machines/:resource_id/console", common.RequireActor(services.Authentication), vmConsole(services))
+	parent.Post("/vm-snapshots/:snapshot_id/restore", common.RequireActor(services.Authentication), restoreVMSnapshot(services))
+	parent.Delete("/vm-snapshots/:snapshot_id", common.RequireActor(services.Authentication), deleteVMSnapshot(services))
 	parent.Post("/virtual-machines/:resource_id/guest-setup", common.RequireActor(services.Authentication), executeGuestArtifactHandler(services))
 	parent.Get("/virtual-machines/:resource_id", common.RequireActor(services.Authentication), getVirtualMachine(services))
 	parent.Get("/address-pool-requests/:resource_id", common.RequireActor(services.Authentication), getAddressPoolRequestHandler(services))
@@ -119,6 +125,27 @@ func initDeployments(parent fiber.Router, services common.Services) {
 	parent.Delete("/network-attachments/:resource_id/guest-network-configuration", common.RequireActor(services.Authentication), deleteGuestNetworkConfigurationHandler(services))
 	parent.Get("/network-attachments/:resource_id", common.RequireActor(services.Authentication), getNetworkAttachmentHandler(services))
 	parent.Delete("/network-attachments/:resource_id", common.RequireActor(services.Authentication), deleteNetworkAttachmentHandler(services))
+}
+
+// getDeploymentAccess returns the caller's authorized group and permission workspace data.
+func getDeploymentAccess(services common.Services) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var actorID int
+		if actorID, _ = common.AccountID(ctx); actorID < 1 {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var deploymentID int
+		if deploymentID, err = common.ParseID(ctx, "deployment_id"); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid deployment identifier."})
+		}
+		var access *domain.DeploymentAccessSummary
+		if access, err = services.Domain.GetDeploymentAccess(actorID, deploymentID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		err = ctx.JSON(access)
+		return
+	}
+	return
 }
 
 // updateDeployment changes deployment metadata for platform administrators.
@@ -907,7 +934,14 @@ func getVirtualMachine(services common.Services) (handler fiber.Handler) {
 				return common.DomainError(ctx, err)
 			}
 		}
-		err = ctx.JSON(fiber.Map{"resource": resource})
+		var canConsoleControl bool
+		if canConsoleControl, err = services.Domain.Can(actorID, db.PermissionVMConsole, resource.OwnershipID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		err = ctx.JSON(fiber.Map{"resource": struct {
+			*db.ManagedResource
+			CanConsoleControl bool `json:"can_console_control"`
+		}{resource, canConsoleControl}})
 		return
 	}
 	return

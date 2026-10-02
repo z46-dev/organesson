@@ -83,11 +83,19 @@ type (
 		Execute(context.Context, GuestArtifactRequest, []GuestArtifactFile) (GuestArtifactResult, error)
 	}
 
+	// VMSnapshotDriver restricts snapshot operations to QEMU guests verified as Organesson-managed.
+	VMSnapshotDriver interface {
+		Create(context.Context, string, string, string, string, string) error
+		Restore(context.Context, string, string, string, string, string) error
+		Delete(context.Context, string, string, string, string, string) error
+	}
+
 	// Service configures the Proxmox API driver and performs read-only checks.
 	Service struct {
 		settings                config.ProxmoxConfiguration
 		inspector               Inspector
 		vmDriver                VMDriver
+		snapshotDriver          VMSnapshotDriver
 		inventoryReader         ResourceInventoryReader
 		sdnNetworkDriver        SDNNetworkDriver
 		networkAttachmentDriver NetworkAttachmentDriver
@@ -103,11 +111,18 @@ func New(settings config.ProxmoxConfiguration) (service *Service) {
 	service = &Service{settings: settings}
 	service.inspector = &apiInspector{settings: settings}
 	service.vmDriver = &apiVMDriver{settings: settings}
+	service.snapshotDriver = &apiVMSnapshotDriver{settings: settings}
 	service.inventoryReader = &apiResourceInventory{settings: settings}
 	service.sdnNetworkDriver = &apiSDNNetworkDriver{settings: settings}
 	service.networkAttachmentDriver = &apiNetworkAttachmentDriver{settings: settings}
 	service.guestNetworkDriver = &apiGuestNetworkDriver{settings: settings}
 	service.guestArtifactDriver = &apiGuestArtifactDriver{settings: settings}
+	return
+}
+
+// NewWithVMSnapshotDriver injects a snapshot driver for domain and API tests.
+func NewWithVMSnapshotDriver(driver VMSnapshotDriver) (service *Service) {
+	service = &Service{snapshotDriver: driver, alwaysConfigured: true}
 	return
 }
 

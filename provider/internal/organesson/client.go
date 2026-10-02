@@ -3,12 +3,15 @@ package organesson
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -95,7 +98,11 @@ func (client *apiClient) requestBytes(ctx context.Context, method string, path s
 }
 
 // configuredClient validates endpoint and creates the bounded HTTP client used by provider resources.
-func configuredClient(endpoint string, token string) (client *apiClient, err error) {
+func configuredClient(endpoint string, token string, caCertFiles ...string) (client *apiClient, err error) {
+	var caCertFile string
+	if len(caCertFiles) > 0 {
+		caCertFile = caCertFiles[0]
+	}
 	var parsed *url.URL
 	if parsed, err = url.ParseRequestURI(strings.TrimSpace(endpoint)); err != nil {
 		return
@@ -108,10 +115,35 @@ func configuredClient(endpoint string, token string) (client *apiClient, err err
 		err = errors.New("provider token is required")
 		return
 	}
+	var transport *http.Transport
+	if strings.TrimSpace(caCertFile) != "" {
+		var certificatePEM []byte
+		if certificatePEM, err = os.ReadFile(caCertFile); err != nil {
+			err = fmt.Errorf("read Organesson CA certificate file: %w", err)
+			return
+		}
+		var roots *x509.CertPool
+		if roots, err = x509.SystemCertPool(); err != nil {
+			err = fmt.Errorf("load system CA certificates: %w", err)
+			return
+		}
+		if roots == nil {
+			roots = x509.NewCertPool()
+		}
+		if !roots.AppendCertsFromPEM(certificatePEM) {
+			err = errors.New("Organesson CA certificate file contains no valid PEM certificates")
+			return
+		}
+		transport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}
+	}
+	var httpClient *http.Client = &http.Client{Timeout: 12 * time.Minute}
+	if transport != nil {
+		httpClient.Transport = transport
+	}
 	client = &apiClient{
 		endpoint: strings.TrimRight(parsed.String(), "/"),
 		token:    token,
-		client:   &http.Client{Timeout: 12 * time.Minute},
+		client:   httpClient,
 	}
 	return
 }

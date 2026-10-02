@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,14 +31,47 @@ type (
 
 	// DeploymentSummary contains only resources the caller is allowed to view.
 	DeploymentSummary struct {
-		Deployment *db.Deployment     `json:"deployment"`
-		Resources  []*ResourceSummary `json:"resources"`
+		Deployment             *db.Deployment      `json:"deployment"`
+		Resources              []*ResourceSummary  `json:"resources"`
+		OwnershipNodes         []*db.OwnershipNode `json:"ownership_nodes"`
+		CanManageConfiguration bool                `json:"can_manage_configuration"`
+		CanManageGroups        bool                `json:"can_manage_groups"`
+		CanManagePermissions   bool                `json:"can_manage_permissions"`
 	}
 
 	// ResourceSummary adds actor-specific capabilities to one visible resource.
 	ResourceSummary struct {
 		*db.ManagedResource
-		CanPowerControl bool `json:"can_power_control"`
+		CanPowerControl    bool `json:"can_power_control"`
+		CanSnapshotControl bool `json:"can_snapshot_control"`
+		CanConsoleControl  bool `json:"can_console_control"`
+	}
+
+	DeploymentAccessSummary struct {
+		Accounts               []DeploymentAccessAccount `json:"accounts"`
+		Groups                 []DeploymentAccessGroup   `json:"groups"`
+		OwnershipNodes         []*db.OwnershipNode       `json:"ownership_nodes"`
+		PermissionGrants       []DeploymentAccessGrant   `json:"permission_grants"`
+		CanManageConfiguration bool                      `json:"can_manage_configuration"`
+		CanManageGroups        bool                      `json:"can_manage_groups"`
+		CanManagePermissions   bool                      `json:"can_manage_permissions"`
+	}
+
+	DeploymentAccessAccount struct {
+		ID            int    `json:"id"`
+		QualifiedName string `json:"qualified_name"`
+		DisplayName   string `json:"display_name"`
+	}
+
+	DeploymentAccessGroup struct {
+		*db.UserGroup
+		Members []DeploymentAccessAccount `json:"members"`
+	}
+
+	DeploymentAccessGrant struct {
+		*db.PermissionGrant
+		SubjectName string `json:"subject_name"`
+		NodeName    string `json:"node_name"`
 	}
 )
 
@@ -334,6 +368,11 @@ func (service *Service) CreatePermissionGrantScoped(actorID int, kind db.GrantSu
 	if err = service.Require(actorID, db.PermissionDeploymentManagePermissions, targetNodeID); err != nil {
 		return
 	}
+	if isDeploymentAdministrationPermission(permission) {
+		if err = service.Require(actorID, db.PermissionDeploymentManage, targetNodeID); err != nil {
+			return
+		}
+	}
 	if err = service.validateGrantSubject(kind, subjectID, target.DeploymentID); err != nil {
 		return
 	}
@@ -377,10 +416,21 @@ func (service *Service) DeletePermissionGrant(actorID int, grantID int) (err err
 	if err = service.Require(actorID, db.PermissionDeploymentManagePermissions, grant.TargetNodeID); err != nil {
 		return
 	}
+	if isDeploymentAdministrationPermission(grant.Permission) {
+		if err = service.Require(actorID, db.PermissionDeploymentManage, grant.TargetNodeID); err != nil {
+			return
+		}
+	}
 	if err = service.store.PermissionGrants.Delete(grantID); err != nil {
 		return
 	}
 	err = service.writeAudit(actorID, "permission.revoke", fmt.Sprintf("ownership:%d", grant.TargetNodeID), "succeeded", map[string]any{"permission": grant.Permission, "subject_kind": grant.SubjectKind, "subject_id": grant.SubjectID})
+	return
+}
+
+// isDeploymentAdministrationPermission protects the Deployment Admin capability from managers.
+func isDeploymentAdministrationPermission(permission string) (protected bool) {
+	protected = permission == db.PermissionDeploymentManage
 	return
 }
 
@@ -552,8 +602,20 @@ func (service *Service) GetDeployment(actorID int, deploymentID int) (summary *D
 		}
 	}
 
-	summary = &DeploymentSummary{Deployment: deployment}
+	summary = &DeploymentSummary{
+		Deployment: deployment, Resources: []*ResourceSummary{}, OwnershipNodes: []*db.OwnershipNode{},
+	}
+	if summary.CanManageGroups, err = service.Can(actorID, db.PermissionDeploymentManageGroups, *deployment.RootNodeID); err != nil {
+		return
+	}
+	if summary.CanManageConfiguration, err = service.Can(actorID, db.PermissionDeploymentManage, *deployment.RootNodeID); err != nil {
+		return
+	}
+	if summary.CanManagePermissions, err = service.Can(actorID, db.PermissionDeploymentManagePermissions, *deployment.RootNodeID); err != nil {
+		return
+	}
 	var resources []*db.ManagedResource
+	var visibleOwnershipIDs map[int]struct{} = make(map[int]struct{})
 	if resources, err = service.store.ManagedResources.SelectAll(); err != nil {
 		return
 	}
@@ -572,11 +634,206 @@ func (service *Service) GetDeployment(actorID int, deploymentID int) (summary *D
 			if canPowerControl, err = service.Can(actorID, db.PermissionResourcePower, resource.OwnershipID); err != nil {
 				return
 			}
+			var canSnapshotControl bool
+			if canSnapshotControl, err = service.Can(actorID, db.PermissionVMSnapshot, resource.OwnershipID); err != nil {
+				return
+			}
+			var canConsoleControl bool
+			if canConsoleControl, err = service.Can(actorID, db.PermissionVMConsole, resource.OwnershipID); err != nil {
+				return
+			}
 			summary.Resources = append(summary.Resources, &ResourceSummary{
-				ManagedResource: resource,
-				CanPowerControl: canPowerControl,
+				ManagedResource:    resource,
+				CanPowerControl:    canPowerControl,
+				CanSnapshotControl: canSnapshotControl,
+				CanConsoleControl:  canConsoleControl,
+			})
+			visibleOwnershipIDs[resource.OwnershipID] = struct{}{}
+		}
+	}
+	var ownershipNodes []*db.OwnershipNode
+	if ownershipNodes, err = service.store.OwnershipNodes.SelectAll(); err != nil {
+		return
+	}
+	var nodeByID map[int]*db.OwnershipNode = make(map[int]*db.OwnershipNode)
+	for _, node := range ownershipNodes {
+		if node.DeploymentID == deploymentID {
+			nodeByID[node.ID] = node
+		}
+	}
+	if deploymentAllowed {
+		for _, node := range nodeByID {
+			summary.OwnershipNodes = append(summary.OwnershipNodes, node)
+		}
+	} else {
+		for ownershipID := range visibleOwnershipIDs {
+			var visited map[int]struct{} = make(map[int]struct{})
+			for node := nodeByID[ownershipID]; node != nil; {
+				if _, exists := visited[node.ID]; exists {
+					break
+				}
+				visited[node.ID] = struct{}{}
+				visibleOwnershipIDs[node.ID] = struct{}{}
+				if node.ParentID == nil {
+					break
+				}
+				node = nodeByID[*node.ParentID]
+			}
+		}
+		for ownershipID := range visibleOwnershipIDs {
+			if node := nodeByID[ownershipID]; node != nil {
+				summary.OwnershipNodes = append(summary.OwnershipNodes, node)
+			}
+		}
+	}
+	sort.Slice(summary.OwnershipNodes, func(left int, right int) bool {
+		return summary.OwnershipNodes[left].ID < summary.OwnershipNodes[right].ID
+	})
+	return
+}
+
+// GetDeploymentAccess returns the access data this actor is allowed to administer.
+func (service *Service) GetDeploymentAccess(actorID int, deploymentID int) (access *DeploymentAccessSummary, err error) {
+	var deployment *db.Deployment
+	if deployment, err = service.store.Deployments.Select(deploymentID); err != nil {
+		return
+	}
+	if deployment == nil || deployment.RootNodeID == nil {
+		err = ErrNotFound
+		return
+	}
+	access = &DeploymentAccessSummary{
+		Accounts: []DeploymentAccessAccount{}, Groups: []DeploymentAccessGroup{},
+		OwnershipNodes: []*db.OwnershipNode{}, PermissionGrants: []DeploymentAccessGrant{},
+	}
+	if access.CanManageGroups, err = service.Can(actorID, db.PermissionDeploymentManageGroups, *deployment.RootNodeID); err != nil {
+		return
+	}
+	if access.CanManageConfiguration, err = service.Can(actorID, db.PermissionDeploymentManage, *deployment.RootNodeID); err != nil {
+		return
+	}
+	if access.CanManagePermissions, err = service.Can(actorID, db.PermissionDeploymentManagePermissions, *deployment.RootNodeID); err != nil {
+		return
+	}
+	if !access.CanManageGroups && !access.CanManagePermissions {
+		err = ErrForbidden
+		return
+	}
+
+	var identities []*db.AccountIdentity
+	var accounts []*db.Account
+	var groups []*db.UserGroup
+	var memberships []*db.GroupMembership
+	var identityByAccount map[int]string = make(map[int]string)
+	if identities, err = service.store.AccountIdentities.SelectAll(); err != nil {
+		return
+	}
+	for _, identity := range identities {
+		if _, exists := identityByAccount[identity.AccountID]; !exists {
+			identityByAccount[identity.AccountID] = identity.QualifiedName
+		}
+	}
+	if accounts, err = service.store.Accounts.SelectAll(); err != nil {
+		return
+	}
+	if access.CanManageGroups || access.CanManagePermissions {
+		if groups, err = service.store.UserGroups.SelectAll(); err != nil {
+			return
+		}
+		for _, account := range accounts {
+			if account.Disabled || account.ActivatedAt == nil {
+				continue
+			}
+			if identityName := identityByAccount[account.ID]; identityName != "" {
+				access.Accounts = append(access.Accounts, DeploymentAccessAccount{
+					ID: account.ID, QualifiedName: identityName, DisplayName: account.DisplayName,
+				})
+			}
+		}
+		sort.Slice(access.Accounts, func(left int, right int) bool {
+			return access.Accounts[left].QualifiedName < access.Accounts[right].QualifiedName
+		})
+		if access.CanManageGroups {
+			if memberships, err = service.store.GroupMemberships.SelectAll(); err != nil {
+				return
+			}
+		}
+		for _, group := range groups {
+			if group.DeploymentID != deploymentID {
+				continue
+			}
+			var accessGroup DeploymentAccessGroup = DeploymentAccessGroup{UserGroup: group, Members: []DeploymentAccessAccount{}}
+			if access.CanManageGroups {
+				for _, membership := range memberships {
+					if membership.GroupID != group.ID {
+						continue
+					}
+					for _, account := range access.Accounts {
+						if account.ID == membership.AccountID {
+							accessGroup.Members = append(accessGroup.Members, account)
+							break
+						}
+					}
+				}
+			}
+			access.Groups = append(access.Groups, accessGroup)
+		}
+		sort.Slice(access.Groups, func(left int, right int) bool {
+			return access.Groups[left].Name < access.Groups[right].Name
+		})
+	}
+
+	if access.CanManagePermissions {
+		var nodes []*db.OwnershipNode
+		var grants []*db.PermissionGrant
+		if groups == nil {
+			if groups, err = service.store.UserGroups.SelectAll(); err != nil {
+				return
+			}
+		}
+		if nodes, err = service.store.OwnershipNodes.SelectAll(); err != nil {
+			return
+		}
+		if grants, err = service.store.PermissionGrants.SelectAll(); err != nil {
+			return
+		}
+		var nodeByID map[int]*db.OwnershipNode = make(map[int]*db.OwnershipNode)
+		var groupByID map[int]*db.UserGroup = make(map[int]*db.UserGroup)
+		for _, node := range nodes {
+			if node.DeploymentID == deploymentID {
+				access.OwnershipNodes = append(access.OwnershipNodes, node)
+				nodeByID[node.ID] = node
+			}
+		}
+		for _, group := range groups {
+			if group.DeploymentID == deploymentID {
+				groupByID[group.ID] = group
+			}
+		}
+		for _, grant := range grants {
+			node := nodeByID[grant.TargetNodeID]
+			if node == nil {
+				continue
+			}
+			var subjectName string
+			switch grant.SubjectKind {
+			case db.GrantSubjectKindAccount:
+				subjectName = identityByAccount[grant.SubjectID]
+			case db.GrantSubjectKindGroup:
+				if group := groupByID[grant.SubjectID]; group != nil {
+					subjectName = group.Name
+				}
+			}
+			access.PermissionGrants = append(access.PermissionGrants, DeploymentAccessGrant{
+				PermissionGrant: grant, SubjectName: subjectName, NodeName: node.Name,
 			})
 		}
+		sort.Slice(access.OwnershipNodes, func(left int, right int) bool {
+			return access.OwnershipNodes[left].ID < access.OwnershipNodes[right].ID
+		})
+		sort.Slice(access.PermissionGrants, func(left int, right int) bool {
+			return access.PermissionGrants[left].ID < access.PermissionGrants[right].ID
+		})
 	}
 	return
 }

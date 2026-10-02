@@ -12,13 +12,14 @@ const stoppedVM = {
 };
 
 describe("resource power controls", () => {
-    test("offers start and stop only when the API grants power control", () => {
+    test("offers explicit start, graceful shutdown, and confirmed restart only when authorized", () => {
         const authorizedMarkup = renderToStaticMarkup(createElement(ResourcePowerControl, { resource: stoppedVM, onPower: () => undefined }));
         const runningMarkup = renderToStaticMarkup(createElement(ResourcePowerControl, { resource: { ...stoppedVM, power_state: "running" }, onPower: () => undefined }));
         const readOnlyMarkup = renderToStaticMarkup(createElement(ResourcePowerControl, { resource: { ...stoppedVM, can_power_control: false }, onPower: () => undefined }));
 
         expect(authorizedMarkup).toContain(">Start</button>");
-        expect(runningMarkup).toContain(">Stop</button>");
+        expect(runningMarkup).toContain("data-action=\"stop\">Graceful shutdown</button>");
+        expect(runningMarkup).toContain("data-action=\"restart\">Restart</button>");
         expect(readOnlyMarkup).toBe("");
     });
 

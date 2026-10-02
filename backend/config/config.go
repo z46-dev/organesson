@@ -10,11 +10,12 @@ import (
 type (
 	// ProxmoxConfiguration contains the Proxmox API settings used for inspection and VM lifecycle operations.
 	ProxmoxConfiguration struct {
-		APIURL             string `toml:"api_url" default:""`
-		APITokenID         string `toml:"api_token_id" default:""`
-		APITokenSecret     string `toml:"api_token_secret" default:""`
-		RootCABundlePath   string `toml:"root_ca_bundle_path" default:""`
-		InsecureSkipVerify bool   `toml:"insecure_skip_verify" default:"false"`
+		APIURL                  string `toml:"api_url" default:""`
+		ConsoleNodeHostTemplate string `toml:"console_node_host_template" default:""` // Hostname template for direct node console connections; {node} is replaced with the PVE node name.
+		APITokenID              string `toml:"api_token_id" default:""`
+		APITokenSecret          string `toml:"api_token_secret" default:""`
+		RootCABundlePath        string `toml:"root_ca_bundle_path" default:""`
+		InsecureSkipVerify      bool   `toml:"insecure_skip_verify" default:"false"`
 	}
 
 	Configuration struct {

@@ -92,6 +92,42 @@ func (service *Service) DeleteVM(ctx context.Context, node string, vmid string, 
 	return
 }
 
+// CreateVMSnapshot creates an Organesson-managed snapshot after VM ownership validation.
+func (service *Service) CreateVMSnapshot(ctx context.Context, node string, vmid string, operationKey string, name string, key string) (err error) {
+	if service == nil || service.snapshotDriver == nil || !service.Configured() {
+		err = ErrNotConfigured
+		return
+	}
+	service.lifecycleLock.Lock()
+	defer service.lifecycleLock.Unlock()
+	err = service.snapshotDriver.Create(ctx, node, vmid, operationKey, name, key)
+	return
+}
+
+// RestoreVMSnapshot rolls a verified managed VM back to an Organesson-managed snapshot.
+func (service *Service) RestoreVMSnapshot(ctx context.Context, node string, vmid string, operationKey string, name string, key string) (err error) {
+	if service == nil || service.snapshotDriver == nil || !service.Configured() {
+		err = ErrNotConfigured
+		return
+	}
+	service.lifecycleLock.Lock()
+	defer service.lifecycleLock.Unlock()
+	err = service.snapshotDriver.Restore(ctx, node, vmid, operationKey, name, key)
+	return
+}
+
+// DeleteVMSnapshot removes a verified Organesson-managed snapshot.
+func (service *Service) DeleteVMSnapshot(ctx context.Context, node string, vmid string, operationKey string, name string, key string) (err error) {
+	if service == nil || service.snapshotDriver == nil || !service.Configured() {
+		err = ErrNotConfigured
+		return
+	}
+	service.lifecycleLock.Lock()
+	defer service.lifecycleLock.Unlock()
+	err = service.snapshotDriver.Delete(ctx, node, vmid, operationKey, name, key)
+	return
+}
+
 // Clone locates a source, clones it into the selected pool/storage, and applies a safe NIC-free baseline.
 func (driver *apiVMDriver) Clone(ctx context.Context, request VMCloneRequest) (placement VMPlacement, err error) {
 	var sourceID int

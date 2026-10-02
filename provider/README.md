@@ -17,6 +17,7 @@ Copy `examples/artifact_smoke/tofu.rc.example` to `examples/artifact_smoke/tofu.
 export TF_CLI_CONFIG_FILE="$PWD/examples/artifact_smoke/tofu.rc"
 export ORGANESSON_ENDPOINT="https://organesson.example"
 export ORGANESSON_TOKEN="<token-from-your-organesson-account>"
+export ORGANESSON_CA_CERT="/path/to/organesson-ca.pem" # optional for private/self-signed HTTPS
 cd examples/artifact_smoke
 tofu plan
 tofu apply

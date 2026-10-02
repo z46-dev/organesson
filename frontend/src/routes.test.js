@@ -15,4 +15,9 @@ describe("application route access", () => {
         expect(resolveRoute("/admin/", true)).toBe("admin");
         expect(resolveRoute("/deployments", true)).toBe("not-found");
     });
+
+    test("resolves VM console routes for regular authenticated users", () => {
+        expect(resolveRoute("/console/42", false)).toBe("console");
+        expect(resolveRoute("/console/42/", false)).toBe("console");
+    });
 });

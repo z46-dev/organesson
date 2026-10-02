@@ -3,6 +3,7 @@ import { CircleAlert, LogOut, ShieldCheck, UserRound } from "lucide-react";
 import { AdminPage } from "./AdminPage";
 import { apiRequest } from "./api";
 import { Dashboard } from "./Dashboard";
+import { VMConsolePage } from "./VMConsolePage";
 import { resolveRoute } from "./routes.js";
 import type { AuthStatus } from "./types";
 import "./index.css";
@@ -139,6 +140,7 @@ export function App() {
                 {!status ? <section className="auth-card"><p className="eyebrow">Connecting</p><h1>Loading Organesson…</h1></section> : account ? (
                     route === "dashboard" ? <Dashboard request={apiRequest} onError={setError} />
                         : route === "admin" ? <AdminPage request={apiRequest} onError={setError} onNotice={setNotice} />
+                            : route === "console" ? <VMConsolePage resourceID={Number(pathname.split("/").filter(Boolean)[1])} request={apiRequest} onError={setError} />
                             : route === "forbidden" ? <section className="panel route-message"><p className="eyebrow">Platform administration</p><h1>Access restricted.</h1><p>Your account is not a platform administrator. Deployment roles do not grant platform-wide administration.</p><a className="primary-action" href="/" onClick={(event) => handleNavigation(event, "/")}>Return to dashboard</a></section>
                                 : <section className="panel route-message"><p className="eyebrow">Not found</p><h1>That page doesn’t exist.</h1><a className="primary-action" href="/" onClick={(event) => handleNavigation(event, "/")}>Return to dashboard</a></section>
                 ) : (

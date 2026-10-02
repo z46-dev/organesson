@@ -37,3 +37,10 @@ resource "organesson_permission_grant" "charlie_power" {
   subject_id = organesson_user_group.charlie.id
   target_id  = tostring(organesson_virtual_machine.fedora.ownership_node_id)
 }
+
+#resource "organesson_permission_grant" "charlie_console" {
+#  permission = "vm.console_control"
+#  scope      = "self"
+#  subject_id = organesson_user_group.charlie.id
+#  target_id  = tostring(organesson_virtual_machine.fedora.ownership_node_id)
+#}

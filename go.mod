@@ -4,9 +4,12 @@ go 1.26.8
 
 require (
 	github.com/alexflint/go-arg v1.6.1
+	github.com/fasthttp/websocket v1.5.12
 	github.com/gofiber/fiber/v3 v3.5.0
+	github.com/gorilla/websocket v1.4.2
 	github.com/hashicorp/terraform-plugin-sdk/v2 v2.38.1
 	github.com/luthermonson/go-proxmox v0.8.2
+	github.com/valyala/fasthttp v1.73.0
 	github.com/z46-dev/goconf v0.0.0-20260527232714-5c4e1d4a89e7
 	github.com/z46-dev/golog v0.0.0-20260324172018-d1a87bbdeb64
 	github.com/z46-dev/gosqlite v0.0.0-20260719175548-e15201acdb53
@@ -34,7 +37,6 @@ require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/hashicorp/go-cty v1.5.0 // indirect
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/go-plugin v1.7.0 // indirect
@@ -62,9 +64,9 @@ require (
 	github.com/oklog/run v1.1.0 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/savsgio/gotils v0.0.0-20240704082632-aef3928b8a38 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.73.0 // indirect
 	github.com/vmihailenco/msgpack v4.0.4+incompatible // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect

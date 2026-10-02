@@ -22,9 +22,10 @@ type (
 
 	// CapacityLimits uses zero to mean that Organesson does not impose that global limit.
 	CapacityLimits struct {
-		VirtualCPUs int   `json:"virtual_cpus"`
-		MemoryMiB   int64 `json:"memory_mib"`
-		StorageGiB  int64 `json:"storage_gib"`
+		VirtualCPUs        int   `json:"virtual_cpus"`
+		MemoryMiB          int64 `json:"memory_mib"`
+		StorageGiB         int64 `json:"storage_gib"`
+		SnapshotStorageGiB int64 `json:"snapshot_storage_gib"`
 	}
 
 	// PolicyNetwork maps an Organesson label to a bridge or Proxmox SDN VNet.
@@ -68,7 +69,7 @@ func ValidateResourcePolicy(policy ResourcePolicy, inventory *ResourceInventory)
 		result.Valid = false
 		result.Issues = append(result.Issues, message)
 	}
-	if policy.Limits.VirtualCPUs < 0 || policy.Limits.MemoryMiB < 0 || policy.Limits.StorageGiB < 0 {
+	if policy.Limits.VirtualCPUs < 0 || policy.Limits.MemoryMiB < 0 || policy.Limits.StorageGiB < 0 || policy.Limits.SnapshotStorageGiB < 0 {
 		addIssue("Capacity limits must be zero (unlimited) or a positive value.")
 	}
 	if len(policy.ResourcePools) == 0 {

@@ -7,5 +7,8 @@ export function resolveRoute(pathname, isPlatformAdministrator) {
     if (normalizedPath === "/admin") {
         return isPlatformAdministrator ? "admin" : "forbidden";
     }
+    if (/^\/console\/\d+$/.test(normalizedPath)) {
+        return "console";
+    }
     return "not-found";
 }

@@ -17,6 +17,12 @@ func Provider() (provider *schema.Provider) {
 				DefaultFunc: schema.EnvDefaultFunc("ORGANESSON_ENDPOINT", "http://127.0.0.1:6800"),
 				Description: "Organesson API origin. Set ORGANESSON_ENDPOINT to override.",
 			},
+			"ca_cert_file": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				DefaultFunc: schema.EnvDefaultFunc("ORGANESSON_CA_CERT", ""),
+				Description: "Optional PEM CA certificate file for a private Organesson API certificate. Set ORGANESSON_CA_CERT to override.",
+			},
 			"token": {
 				Type:        schema.TypeString,
 				Optional:    true,
@@ -49,7 +55,7 @@ func Provider() (provider *schema.Provider) {
 func configureProvider(ctx context.Context, data *schema.ResourceData) (meta interface{}, diagnostics diag.Diagnostics) {
 	var client *apiClient
 	var err error
-	if client, err = configuredClient(data.Get("endpoint").(string), data.Get("token").(string)); err != nil {
+	if client, err = configuredClient(data.Get("endpoint").(string), data.Get("token").(string), data.Get("ca_cert_file").(string)); err != nil {
 		diagnostics = diag.FromErr(err)
 		return
 	}

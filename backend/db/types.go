@@ -134,6 +134,18 @@ type (
 		CreatedAt         time.Time `gosqlite:"created_at,notnull" json:"created_at"`
 	}
 
+	// ManagedVMSnapshot records an Organesson-owned snapshot and its reserved capacity.
+	ManagedVMSnapshot struct {
+		ID          int       `gosqlite:"id,primary,increment" json:"id"`
+		ResourceID  int       `gosqlite:"resource_id,notnull,fkey:ManagedResource.id,ondelete:cascade" json:"resource_id"`
+		SnapshotKey string    `gosqlite:"snapshot_key,unique,notnull" json:"-"`
+		Name        string    `gosqlite:"name,notnull" json:"name"`
+		Description string    `gosqlite:"description,notnull" json:"description"`
+		ReservedGiB int       `gosqlite:"reserved_gib,notnull" json:"reserved_gib"`
+		State       string    `gosqlite:"state,notnull" json:"state"`
+		CreatedAt   time.Time `gosqlite:"created_at,notnull" json:"created_at"`
+	}
+
 	// VMTemplate is an administrator-managed source VM that can be selected for provisioning.
 	VMTemplate struct {
 		ID                         int        `gosqlite:"id,primary,increment" json:"id"`

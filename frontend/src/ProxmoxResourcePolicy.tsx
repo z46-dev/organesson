@@ -19,7 +19,7 @@ type PolicyNetwork = {
 };
 
 type Policy = {
-    limits: { virtual_cpus: number; memory_mib: number; storage_gib: number };
+    limits: { virtual_cpus: number; memory_mib: number; storage_gib: number; snapshot_storage_gib: number };
     resource_pools: string[];
     storages: string[];
     networks: PolicyNetwork[];
@@ -29,7 +29,7 @@ type Policy = {
 type Inventory = { pools: string[]; storages: string[]; bridges: string[]; vnets: string[] };
 type Props = { request: ApiRequest; section: "capacity" | "resources" | "networks"; onError: (message: string) => void; onNotice: (message: string) => void };
 
-const emptyPolicy: Policy = { limits: { virtual_cpus: 0, memory_mib: 0, storage_gib: 0 }, resource_pools: [], storages: [], networks: [], allow_isolated_sdn_networks: false };
+const emptyPolicy: Policy = { limits: { virtual_cpus: 0, memory_mib: 0, storage_gib: 0, snapshot_storage_gib: 0 }, resource_pools: [], storages: [], networks: [], allow_isolated_sdn_networks: false };
 
 // Edits platform-wide resource limits and PVE allowlists, with validation performed before saving.
 export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: Props) {
@@ -106,6 +106,8 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
                 <label>Virtual CPU count<input type="number" min="0" value={policy.limits.virtual_cpus} onChange={(event) => changeLimit("virtual_cpus", event.target.value)} /></label>
                 <label>Memory limit (MiB)<input type="number" min="0" value={policy.limits.memory_mib} onChange={(event) => changeLimit("memory_mib", event.target.value)} /></label>
                 <label>Storage limit (GiB)<input type="number" min="0" value={policy.limits.storage_gib} onChange={(event) => changeLimit("storage_gib", event.target.value)} /></label>
+                <label>Snapshot reservation limit (GiB)<input type="number" min="0" value={policy.limits.snapshot_storage_gib} onChange={(event) => changeLimit("snapshot_storage_gib", event.target.value)} /></label>
+                <p className="policy-help">Each managed snapshot reserves the VM’s full declared boot-disk size. Zero means unlimited.</p>
             </div>}
             {section === "resources" && <div className="policy-fields">
                 <p className="policy-help">At least one pool and storage are required. Names must be visible in Proxmox inventory; this read-only check does not verify future resource-creation permissions.</p>
