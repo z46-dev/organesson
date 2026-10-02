@@ -54,18 +54,11 @@ The concept of "looping/functions" is important. A class activity or competition
 
 ## Artifact delivery and first-time setup
 
-An artifact is a file made available to a deployment resource during provisioning, such as an unattended-install configuration, a setup script, a configuration file, a package, or a certificate. Artifact content is uploaded to Organesson with its expected identity and integrity information. A deployment can explicitly request that an artifact run inside one of its own guests during a supported setup phase, but an artifact must never execute on the Organesson or PVE host, select arbitrary PVE operations, or affect another deployment's resources.
+An artifact is a file made available to a deployment resource during provisioning, such as an unattended-install configuration, a setup script, a configuration file, a package, or a certificate. A deployment can explicitly request that an artifact run inside one of its own guests during a supported setup phase, but artifact code must never execute on the Organesson or PVE host, select arbitrary PVE operations, or affect another deployment's resources.
 
-Organesson must support an offline artifact-delivery path for guests that do not have an Internet-enabled interface. For a VM, Organesson generates a temporary, deployment- and resource-specific read-only ISO from the artifacts required for that provisioning operation. The ISO is attached to the VM as virtual media. The PVE host must hold the ISO only while it is attached, because QEMU must be able to read it; it is not a permanent PVE template or general-purpose artifact store.
+The first supported clone-based Linux setup path packages the source directory deterministically in the OpenTofu provider and sends the compressed package over the authenticated Organesson API only during apply. Organesson validates the digest and archive paths again, then transfers files to a unique temporary workspace under `/run` using bounded QEMU Guest Agent file writes. It invokes the entrypoint through the guest's verified root execution path and removes the temporary workspace after success or failure. This path requires no guest internet access, HTTP artifact server, persistent artifact store, or temporary Proxmox ISO; only the digest and execution result are retained in OpenTofu state and the VM's operation metadata.
 
-The temporary ISO supports two capabilities:
-
-1. A guest can execute a setup script directly from the mounted read-only media. This is suitable for a setup script too large for guest-agent execution and leaves no copy of the script on the guest after the media is detached.
-2. A guest can copy selected artifacts from the media to its writable filesystem when persistence is intentional, for example to install a managed file under `/opt`.
-
-First-time setup has two paths. A clone from a validated template starts with QEMU guest agent available, so Organesson can perform the required initial configuration through the guest agent and attach temporary media when a larger artifact is needed. An operating-system installation from an ISO starts without a guest agent; Organesson attaches a separate generated configuration ISO for the unattended installer and first-boot setup. That setup installs and starts the guest agent before the VM is considered ready for normal lifecycle operations.
-
-Once the requested artifact work is confirmed, Organesson detaches the temporary media, deletes the temporary ISO from its dedicated PVE storage, and records creation, attachment, guest confirmation, detachment, and deletion in the deployment audit trail. Failure handling must not delete media before the resource has either completed setup or been marked failed for investigation.
+This mechanism is for prepared Linux clones that already have a working QEMU Guest Agent. A VM installed from an OS ISO starts without one; a generated configuration ISO or another pre-agent bootstrap channel remains necessary to complete unattended installation and enable the guest agent. Delivering selected files to persistent guest paths is an explicit script action, not an implicit artifact side effect.
 
 ## Logical resource groups
 

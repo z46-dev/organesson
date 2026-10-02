@@ -1,7 +1,12 @@
 package app
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -66,6 +71,37 @@ func TestHTTPBoundaryReportsSetupAndRejectsUnauthenticatedMutations(t *testing.T
 	response.Body.Close()
 	if response.StatusCode != fiber.StatusForbidden {
 		t.Fatalf("expected mutation without CSRF token to return 403, got %d", response.StatusCode)
+	}
+}
+
+func TestRequestBodyLimitOnlyAllowsBoundedArtifactUploadSizeOnSetupRoute(t *testing.T) {
+	var application *fiber.App = fiber.New(fiber.Config{BodyLimit: proxmox.MaxGuestArtifactArchiveBytes})
+	application.Use(limitRequestBodies)
+	application.Post("/api/v1/deployments", func(ctx fiber.Ctx) (err error) { return ctx.SendStatus(fiber.StatusNoContent) })
+	application.Post("/api/v1/virtual-machines/1/guest-setup", func(ctx fiber.Ctx) (err error) { return ctx.SendStatus(fiber.StatusNoContent) })
+	var payload []byte = bytes.Repeat([]byte("x"), (1<<20)+1)
+	var request *http.Request
+	var response *http.Response
+	var err error
+	if request, err = http.NewRequest(http.MethodPost, "http://organesson.test/api/v1/deployments", bytes.NewReader(payload)); err != nil {
+		t.Fatal(err)
+	}
+	if response, err = application.Test(request); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusRequestEntityTooLarge {
+		t.Fatalf("ordinary JSON endpoint accepted a payload above 1 MiB: status %d", response.StatusCode)
+	}
+	if request, err = http.NewRequest(http.MethodPost, "http://organesson.test/api/v1/virtual-machines/1/guest-setup", bytes.NewReader(payload)); err != nil {
+		t.Fatal(err)
+	}
+	if response, err = application.Test(request); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("artifact endpoint rejected a bounded upload above the normal request cap: status %d", response.StatusCode)
 	}
 }
 
@@ -280,7 +316,8 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 		t.Fatalf("create bootstrap token: %v", err)
 	}
 	var fakeDriver *fakeProxmoxVMDriver = &fakeProxmoxVMDriver{state: "stopped"}
-	var proxmoxService *proxmox.Service = proxmox.NewWithDrivers(fakeDriver, fakeProxmoxInventory{}, testProxmoxInspector{})
+	var fakeArtifactDriver *fakeGuestArtifactDriver = &fakeGuestArtifactDriver{}
+	var proxmoxService *proxmox.Service = proxmox.NewWithArtifactExecutionDrivers(fakeDriver, fakeProxmoxInventory{}, testProxmoxInspector{}, fakeArtifactDriver)
 	var application *fiber.App = New(api.Services{
 		Authentication: authentication,
 		Domain:         domain.New(store),
@@ -475,6 +512,103 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 	if len(detail.Resources) != 1 || detail.Resources[0].PowerState != "running" {
 		t.Fatalf("deployment refresh did not reflect Proxmox running state: %#v", detail.Resources)
 	}
+	var artifactArchive []byte
+	var artifactDigest string
+	if artifactArchive, artifactDigest, err = testGuestArtifactPackage(t); err != nil {
+		t.Fatalf("build artifact package: %v", err)
+	}
+	var guestSetupPath string = "/api/v1/virtual-machines/" + strconv.Itoa(vmResult.Resource.ID) + "/guest-setup"
+	response = performBinaryRequest(t, application, jar, guestSetupPath, artifactArchive, csrfToken, map[string]string{
+		"Content-Type":                     "application/vnd.organesson.artifact+gzip",
+		"X-Organesson-Artifact-SHA256":     artifactDigest,
+		"X-Organesson-Artifact-Entrypoint": "entrypoint.sh",
+	})
+	var executionResult struct {
+		Execution proxmox.GuestArtifactResult `json:"execution"`
+	}
+	if response.StatusCode != fiber.StatusOK || json.NewDecoder(response.Body).Decode(&executionResult) != nil {
+		response.Body.Close()
+		t.Fatalf("platform administrator artifact execution failed: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if fakeArtifactDriver.callCount != 1 || executionResult.Execution.SHA256 != artifactDigest || executionResult.Execution.Status != "succeeded" || executionResult.Execution.ExitCode != 0 {
+		t.Fatalf("artifact execution result or Proxmox call was not recorded: result=%#v calls=%d", executionResult.Execution, fakeArtifactDriver.callCount)
+	}
+	response = performBinaryRequest(t, application, jar, guestSetupPath, artifactArchive, csrfToken, map[string]string{
+		"Content-Type":                     "application/vnd.organesson.artifact+gzip",
+		"X-Organesson-Artifact-SHA256":     artifactDigest,
+		"X-Organesson-Artifact-Entrypoint": "entrypoint.sh",
+	})
+	if response.StatusCode != fiber.StatusOK || json.NewDecoder(response.Body).Decode(&executionResult) != nil {
+		response.Body.Close()
+		t.Fatalf("idempotent artifact retry failed: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if !executionResult.Execution.Reused || fakeArtifactDriver.callCount != 1 {
+		t.Fatalf("successful artifact retry reran guest code: reused=%t executions=%d", executionResult.Execution.Reused, fakeArtifactDriver.callCount)
+	}
+	response = performRequest(t, application, jar, http.MethodPost, createPath, createBody, csrfToken)
+	var idempotentVMResult struct {
+		Resource struct {
+			ID         int    `json:"id"`
+			ExternalID string `json:"external_id"`
+		} `json:"resource"`
+	}
+	if response.StatusCode != fiber.StatusCreated || json.NewDecoder(response.Body).Decode(&idempotentVMResult) != nil {
+		response.Body.Close()
+		t.Fatalf("VM apply after guest execution failed: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if idempotentVMResult.Resource.ID != vmResult.Resource.ID || idempotentVMResult.Resource.ExternalID != vmResult.Resource.ExternalID || fakeDriver.cloneCount != 2 {
+		t.Fatalf("guest execution metadata changed or duplicated the VM resource: %#v clones=%d", idempotentVMResult.Resource, fakeDriver.cloneCount)
+	}
+	var retryArchive []byte
+	var retryDigest string
+	if retryArchive, retryDigest, err = testGuestArtifactPackageWithContents(t, []byte("#!/usr/bin/env bash\nexit 3\n")); err != nil {
+		t.Fatalf("build retry artifact: %v", err)
+	}
+	fakeArtifactDriver.failNext = true
+	var artifactHeaders map[string]string = map[string]string{
+		"Content-Type":                     "application/vnd.organesson.artifact+gzip",
+		"X-Organesson-Artifact-SHA256":     retryDigest,
+		"X-Organesson-Artifact-Entrypoint": "entrypoint.sh",
+	}
+	response = performBinaryRequest(t, application, jar, guestSetupPath, retryArchive, csrfToken, artifactHeaders)
+	if response.StatusCode != fiber.StatusBadGateway || json.NewDecoder(response.Body).Decode(&executionResult) != nil {
+		response.Body.Close()
+		t.Fatalf("failed guest execution should be reported for retry: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if executionResult.Execution.Status != "failed" || executionResult.Execution.ExitCode != 3 || executionResult.Execution.SHA256 != retryDigest {
+		t.Fatalf("failed guest execution did not preserve its exit code: %#v", executionResult.Execution)
+	}
+	response = performBinaryRequest(t, application, jar, guestSetupPath, retryArchive, csrfToken, artifactHeaders)
+	if response.StatusCode != fiber.StatusOK || json.NewDecoder(response.Body).Decode(&executionResult) != nil {
+		response.Body.Close()
+		t.Fatalf("failed artifact was not retried: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if fakeArtifactDriver.callCount != 3 || executionResult.Execution.SHA256 != retryDigest {
+		t.Fatalf("failed guest execution retry was not recorded: result=%#v calls=%d", executionResult.Execution, fakeArtifactDriver.callCount)
+	}
+	response = performBinaryRequestWithAuthorization(t, application, nil, guestSetupPath, artifactArchive, "", "Bearer "+charlieCredential.Secret, map[string]string{
+		"Content-Type":                     "application/vnd.organesson.artifact+gzip",
+		"X-Organesson-Artifact-SHA256":     artifactDigest,
+		"X-Organesson-Artifact-Entrypoint": "entrypoint.sh",
+	})
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusForbidden || fakeArtifactDriver.callCount != 3 {
+		t.Fatalf("resource viewer without deployment management must not execute guest code: status=%d executions=%d", response.StatusCode, fakeArtifactDriver.callCount)
+	}
+	response = performBinaryRequestWithAuthorization(t, application, nil, guestSetupPath, artifactArchive, "", "Bearer "+daveCredential.Secret, map[string]string{
+		"Content-Type":                     "application/vnd.organesson.artifact+gzip",
+		"X-Organesson-Artifact-SHA256":     artifactDigest,
+		"X-Organesson-Artifact-Entrypoint": "entrypoint.sh",
+	})
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusForbidden || fakeArtifactDriver.callCount != 3 {
+		t.Fatalf("unrelated user must not execute guest code: status=%d executions=%d", response.StatusCode, fakeArtifactDriver.callCount)
+	}
 	response = performBearerRequest(t, application, http.MethodPost, powerPath, `{"action":"stop"}`, daveCredential.Secret)
 	response.Body.Close()
 	if response.StatusCode != fiber.StatusForbidden || fakeDriver.state != "running" {
@@ -516,6 +650,25 @@ type fakeProxmoxVMDriver struct {
 	failNextClone   bool
 	placementsByKey map[string]proxmox.VMPlacement
 	deletedVMIDs    []string
+}
+
+type fakeGuestArtifactDriver struct {
+	callCount int
+	files     []proxmox.GuestArtifactFile
+	failNext  bool
+}
+
+func (driver *fakeGuestArtifactDriver) Execute(_ context.Context, request proxmox.GuestArtifactRequest, files []proxmox.GuestArtifactFile) (result proxmox.GuestArtifactResult, err error) {
+	driver.callCount++
+	driver.files = files
+	if driver.failNext {
+		driver.failNext = false
+		result = proxmox.GuestArtifactResult{SHA256: request.SHA256, Status: "failed", ExitCode: 3}
+		err = &proxmox.GuestArtifactExitError{ExitCode: 3}
+		return
+	}
+	result = proxmox.GuestArtifactResult{SHA256: request.SHA256, Status: "succeeded", ExitCode: 0}
+	return
 }
 
 func (driver *fakeProxmoxVMDriver) Clone(_ context.Context, request proxmox.VMCloneRequest) (placement proxmox.VMPlacement, err error) {
@@ -605,6 +758,71 @@ func performRequest(t *testing.T, application *fiber.App, jar *cookiejar.Jar, me
 
 func performBearerRequest(t *testing.T, application *fiber.App, method string, path string, body string, token string) (response *http.Response) {
 	return performRequestWithAuthorization(t, application, nil, method, path, body, "", "Bearer "+token)
+}
+
+func performBinaryRequest(t *testing.T, application *fiber.App, jar *cookiejar.Jar, path string, body []byte, csrfToken string, headers map[string]string) (response *http.Response) {
+	return performBinaryRequestWithAuthorization(t, application, jar, path, body, csrfToken, "", headers)
+}
+
+func performBinaryRequestWithAuthorization(t *testing.T, application *fiber.App, jar *cookiejar.Jar, path string, body []byte, csrfToken string, authorization string, headers map[string]string) (response *http.Response) {
+	t.Helper()
+	var requestURL *url.URL
+	var err error
+	if requestURL, err = url.Parse("http://organesson.test" + path); err != nil {
+		t.Fatalf("parse request URL: %v", err)
+	}
+	var request *http.Request
+	if request, err = http.NewRequest(http.MethodPost, requestURL.String(), bytes.NewReader(body)); err != nil {
+		t.Fatalf("create binary request: %v", err)
+	}
+	if jar != nil {
+		for _, cookie := range jar.Cookies(requestURL) {
+			request.AddCookie(cookie)
+		}
+	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	if csrfToken != "" {
+		request.Header.Set("X-Csrf-Token", csrfToken)
+	}
+	if authorization != "" {
+		request.Header.Set("Authorization", authorization)
+	}
+	if response, err = application.Test(request); err != nil {
+		t.Fatalf("perform binary POST %s: %v", path, err)
+	}
+	if jar != nil {
+		jar.SetCookies(requestURL, response.Cookies())
+	}
+	return
+}
+
+func testGuestArtifactPackage(t *testing.T) (archive []byte, digest string, err error) {
+	return testGuestArtifactPackageWithContents(t, []byte("#!/usr/bin/env bash\nexit 0\n"))
+}
+
+func testGuestArtifactPackageWithContents(t *testing.T, contents []byte) (archive []byte, digest string, err error) {
+	t.Helper()
+	var buffer bytes.Buffer
+	var compressed *gzip.Writer = gzip.NewWriter(&buffer)
+	var writer *tar.Writer = tar.NewWriter(compressed)
+	if err = writer.WriteHeader(&tar.Header{Name: "entrypoint.sh", Mode: 0755, Size: int64(len(contents)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}); err != nil {
+		return
+	}
+	if _, err = writer.Write(contents); err != nil {
+		return
+	}
+	if err = writer.Close(); err != nil {
+		return
+	}
+	if err = compressed.Close(); err != nil {
+		return
+	}
+	archive = buffer.Bytes()
+	var hash [sha256.Size]byte = sha256.Sum256(archive)
+	digest = hex.EncodeToString(hash[:])
+	return
 }
 
 func performRequestWithAuthorization(t *testing.T, application *fiber.App, jar *cookiejar.Jar, method string, path string, body string, csrfToken string, authorization string) (response *http.Response) {

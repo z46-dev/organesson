@@ -1,11 +1,16 @@
 package organesson
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +25,54 @@ import (
 	"github.com/z46-dev/organesson/backend/domain"
 	"github.com/z46-dev/organesson/backend/proxmox"
 )
+
+func TestGuestSetupProviderUploadsOnlyVerifiedArtifactDuringApply(t *testing.T) {
+	var sourceDirectory string = t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceDirectory, "entrypoint.sh"), []byte("#!/bin/bash\necho ok\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	var artifact artifactPackage
+	var err error
+	if artifact, err = packageArtifact(sourceDirectory, "entrypoint.sh"); err != nil {
+		t.Fatal(err)
+	}
+	var requestCount atomic.Int32
+	var server *httptest.Server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requestCount.Add(1)
+		var body []byte
+		var readErr error
+		if body, readErr = io.ReadAll(request.Body); readErr != nil {
+			t.Errorf("read artifact request body: %v", readErr)
+		}
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/virtual-machines/42/guest-setup" || request.Header.Get("Content-Type") != "application/vnd.organesson.artifact+gzip" || request.Header.Get("X-Organesson-Artifact-SHA256") != artifact.SHA256 || request.Header.Get("X-Organesson-Artifact-Entrypoint") != "entrypoint.sh" || !bytes.Equal(body, artifact.Archive) {
+			t.Errorf("provider did not send the exact verified archive and metadata: method=%s path=%s headers=%v bytes=%d", request.Method, request.URL.Path, request.Header, len(body))
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]any{"execution": map[string]any{"sha256": artifact.SHA256, "status": "succeeded", "exit_code": 0}})
+	}))
+	defer server.Close()
+	var client *apiClient
+	if client, err = configuredClient(server.URL, "test-token"); err != nil {
+		t.Fatal(err)
+	}
+	var resource *schema.Resource = guestSetupResource()
+	var data *schema.ResourceData = schema.TestResourceDataRaw(t, resource.Schema, map[string]interface{}{
+		"artifact_id":        "local:artifact:test",
+		"entrypoint":         "entrypoint.sh",
+		"sha256":             artifact.SHA256,
+		"source_directory":   sourceDirectory,
+		"virtual_machine_id": "42",
+	})
+	if diagnostics := resource.CreateContext(context.Background(), data, client); diagnostics.HasError() {
+		t.Fatalf("guest setup apply failed: %v", diagnostics)
+	}
+	if requestCount.Load() != 1 || data.Get("execution_status") != "succeeded" || data.Get("exit_code") != 0 || data.Id() == "" {
+		t.Fatalf("guest setup result was not recorded: calls=%d status=%v exit=%v id=%q", requestCount.Load(), data.Get("execution_status"), data.Get("exit_code"), data.Id())
+	}
+	if diagnostics := resource.ReadContext(context.Background(), data, client); diagnostics.HasError() || requestCount.Load() != 1 {
+		t.Fatalf("refresh reran one-shot guest setup: diagnostics=%v calls=%d", diagnostics, requestCount.Load())
+	}
+}
 
 // TestProviderAPIApplyRefreshAndPermissionRevocation exercises the real API without Proxmox.
 func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {

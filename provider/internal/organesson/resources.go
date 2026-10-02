@@ -186,7 +186,7 @@ func resourceVirtualDisk() (resource *schema.Resource) {
 		"virtual_machine_id": requiredStringSchema("The attached virtual machine identifier."),
 		"summary":            summarySchema(),
 	}, func(data *schema.ResourceData) (description string, err error) {
-		description = fmt.Sprintf("attach %d GiB disk %q from storage class %q to VM %q", data.Get("size_gib").(int), data.Get("name").(string), data.Get("storage_class").(string), data.Get("virtual_machine_id").(string))
+		description = fmt.Sprintf("declare %d GiB disk %q from storage class %q for VM %q; Proxmox disk lifecycle is not implemented", data.Get("size_gib").(int), data.Get("name").(string), data.Get("storage_class").(string), data.Get("virtual_machine_id").(string))
 
 		return
 	})
@@ -256,15 +256,21 @@ func resourceGuestNetworkConfiguration() (resource *schema.Resource) {
 
 // resourceArtifact defines an immutable package built from an artifact source directory.
 func resourceArtifact() (resource *schema.Resource) {
-	resource = localResource("artifact", map[string]*schema.Schema{
-		"deployment_id":    requiredStringSchema("The owning deployment identifier."),
-		"entrypoint":       requiredStringSchema("The executable path within the source directory."),
-		"source_directory": requiredStringSchema("The local source directory to package immutably."),
-		"summary":          summarySchema(),
-	}, func(data *schema.ResourceData) (description string, err error) {
-		description = fmt.Sprintf("package source directory %q with entrypoint %q into an immutable deployment artifact for deployment %q", data.Get("source_directory").(string), data.Get("entrypoint").(string), data.Get("deployment_id").(string))
+	resource = artifactProviderResource()
 
-		return
+	return
+}
+
+// artifactProviderResource validates and fingerprints an immutable local artifact package.
+func artifactProviderResource() (resource *schema.Resource) {
+	resource = artifactResource(map[string]*schema.Schema{
+		"deployment_id":    {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The deployment using this local artifact."},
+		"entrypoint":       {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The executable path within the source directory."},
+		"source_directory": {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The local source directory to package immutably."},
+		"file_count":       {Type: schema.TypeInt, Computed: true, Description: "Number of regular files in the package."},
+		"sha256":           {Type: schema.TypeString, Computed: true, Description: "SHA-256 digest of the deterministic compressed package."},
+		"size_bytes":       {Type: schema.TypeInt, Computed: true, Description: "Compressed package size in bytes."},
+		"summary":          summarySchema(),
 	})
 
 	return
@@ -272,15 +278,7 @@ func resourceArtifact() (resource *schema.Resource) {
 
 // resourceGuestSetup defines a guest-scoped first-time setup operation.
 func resourceGuestSetup() (resource *schema.Resource) {
-	resource = localResource("guest-setup", map[string]*schema.Schema{
-		"artifact_id":        requiredStringSchema("The setup artifact identifier."),
-		"virtual_machine_id": requiredStringSchema("The target virtual machine identifier."),
-		"summary":            summarySchema(),
-	}, func(data *schema.ResourceData) (description string, err error) {
-		description = fmt.Sprintf("build temporary read-only media from artifact %q, run it on VM %q, verify readiness, detach media, and delete temporary media", data.Get("artifact_id").(string), data.Get("virtual_machine_id").(string))
-
-		return
-	})
+	resource = guestSetupResource()
 
 	return
 }

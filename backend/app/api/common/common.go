@@ -168,6 +168,9 @@ func DomainError(ctx fiber.Ctx, err error) (responseErr error) {
 	case errors.Is(err, domain.ErrInvalidInput):
 		status = fiber.StatusBadRequest
 		message = "The provided values are invalid."
+	case errors.Is(err, domain.ErrProvisioningInProgress):
+		status = fiber.StatusConflict
+		message = "An identical guest operation is already running."
 	}
 	responseErr = ctx.Status(status).JSON(fiber.Map{"error": message})
 	return

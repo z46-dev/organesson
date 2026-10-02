@@ -31,4 +31,6 @@ The package never creates test users. `@organesson` references a test identity s
 
 ## Current lifecycle acceptance boundary
 
-The complete classroom topology above is the intended test-project shape, not yet a live Proxmox deployment. Set `proxmox_lifecycle_smoke = true` in `examples/test_project` to clone only Charlie's `internet_fedora` from a catalog source marked ready. The other VM instances use the simulated lifecycle; networks, disks, and guest setup remain declarations and do not create PVE resources. Use [`examples/proxmox_vm_lifecycle/README.md`](../../examples/proxmox_vm_lifecycle/README.md) for the one-clone live-lab acceptance procedure.
+The full Alice/Bob/Charlie/Dave topology has been applied and destroyed against the lab using `proxmox_test_deployment = true` in [`examples/test_project`](../../examples/test_project/README.md). The exercised path includes four Proxmox VMs, isolated SDN networks, address allocation, NIC attachment, guest IPv4 setup, permission-aware access, refresh, and destroy. The lab policy uses pool `organesson` and storage `laas`.
+
+Extra virtual disks remain declarations only. Artifact packaging and root execution have API/fake-Proxmox coverage and a completed live acceptance run using [`examples/artifact_smoke`](../../examples/artifact_smoke/README.md); the Alice/Bob/Charlie/Dave topology itself does not yet include that live artifact verification. See the [Proxmox lifecycle checklist](../proxmox-vm-lifecycle.md) before running against a live cluster.

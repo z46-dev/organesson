@@ -78,6 +78,11 @@ type (
 		Remove(context.Context, GuestNetworkRequest) error
 	}
 
+	// GuestArtifactDriver transfers and runs a validated Linux artifact through QEMU Guest Agent.
+	GuestArtifactDriver interface {
+		Execute(context.Context, GuestArtifactRequest, []GuestArtifactFile) (GuestArtifactResult, error)
+	}
+
 	// Service configures the Proxmox API driver and performs read-only checks.
 	Service struct {
 		settings                config.ProxmoxConfiguration
@@ -87,6 +92,7 @@ type (
 		sdnNetworkDriver        SDNNetworkDriver
 		networkAttachmentDriver NetworkAttachmentDriver
 		guestNetworkDriver      GuestNetworkDriver
+		guestArtifactDriver     GuestArtifactDriver
 		lifecycleLock           sync.Mutex
 		alwaysConfigured        bool
 	}
@@ -101,6 +107,7 @@ func New(settings config.ProxmoxConfiguration) (service *Service) {
 	service.sdnNetworkDriver = &apiSDNNetworkDriver{settings: settings}
 	service.networkAttachmentDriver = &apiNetworkAttachmentDriver{settings: settings}
 	service.guestNetworkDriver = &apiGuestNetworkDriver{settings: settings}
+	service.guestArtifactDriver = &apiGuestArtifactDriver{settings: settings}
 	return
 }
 
@@ -122,6 +129,15 @@ func NewWithProvisioningDrivers(vmDriver VMDriver, networkDriver SDNNetworkDrive
 		vmDriver: vmDriver, sdnNetworkDriver: networkDriver,
 		networkAttachmentDriver: attachmentDriver, inventoryReader: inventoryReader,
 		guestNetworkDriver: guestNetworkDriver, alwaysConfigured: true,
+	}
+	return
+}
+
+// NewWithArtifactExecutionDrivers injects source inspection, inventory, VM, and artifact seams for API tests.
+func NewWithArtifactExecutionDrivers(vmDriver VMDriver, inventory ResourceInventoryReader, inspector Inspector, artifactDriver GuestArtifactDriver) (service *Service) {
+	service = &Service{
+		vmDriver: vmDriver, inventoryReader: inventory, inspector: inspector,
+		guestArtifactDriver: artifactDriver, alwaysConfigured: true,
 	}
 	return
 }

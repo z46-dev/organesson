@@ -106,6 +106,7 @@ func initDeployments(parent fiber.Router, services common.Services) {
 	parent.Get("/permission-grants/:grant_id", common.RequireActor(services.Authentication), getPermissionGrant(services))
 	parent.Delete("/permission-grants/:grant_id", common.RequireActor(services.Authentication), deletePermissionGrant(services))
 	parent.Post("/virtual-machines/:resource_id/power", common.RequireActor(services.Authentication), setVirtualMachinePower(services))
+	parent.Post("/virtual-machines/:resource_id/guest-setup", common.RequireActor(services.Authentication), executeGuestArtifactHandler(services))
 	parent.Get("/virtual-machines/:resource_id", common.RequireActor(services.Authentication), getVirtualMachine(services))
 	parent.Get("/address-pool-requests/:resource_id", common.RequireActor(services.Authentication), getAddressPoolRequestHandler(services))
 	parent.Delete("/address-pool-requests/:resource_id", common.RequireActor(services.Authentication), deleteAddressPoolRequestHandler(services))

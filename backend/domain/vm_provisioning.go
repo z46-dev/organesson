@@ -96,7 +96,15 @@ func (service *Service) ReserveProxmoxVirtualMachine(actorID int, deploymentID i
 	}
 	for _, current := range resources {
 		if current.OperationKey == request.OperationKey {
-			if current.ConfigurationJSON != string(encoded) {
+			var existingConfiguration proxmox.VMCloneRequest
+			if err = json.Unmarshal([]byte(current.ConfigurationJSON), &existingConfiguration); err != nil {
+				return
+			}
+			var existingEncoded []byte
+			if existingEncoded, err = json.Marshal(existingConfiguration); err != nil {
+				return
+			}
+			if string(existingEncoded) != string(encoded) {
 				err = fmt.Errorf("%w: VM %q already exists with a different configuration", ErrInvalidInput, request.Name)
 				return
 			}

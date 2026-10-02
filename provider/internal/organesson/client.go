@@ -61,6 +61,39 @@ func (client *apiClient) request(ctx context.Context, method string, path string
 	return
 }
 
+// requestBytes sends an authenticated binary package without encoding its contents into JSON.
+func (client *apiClient) requestBytes(ctx context.Context, method string, path string, contentType string, headers map[string]string, body []byte, result any) (err error) {
+	var request *http.Request
+	if request, err = http.NewRequestWithContext(ctx, method, client.endpoint+path, bytes.NewReader(body)); err != nil {
+		return
+	}
+	request.Header.Set("Authorization", "Bearer "+client.token)
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", contentType)
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	var response *http.Response
+	if response, err = client.client.Do(request); err != nil {
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		err = errRemoteNotFound
+		return
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		var responseBody []byte
+		responseBody, _ = io.ReadAll(io.LimitReader(response.Body, 4096))
+		err = fmt.Errorf("Organesson API %s %s returned %s: %s", method, path, response.Status, strings.TrimSpace(string(responseBody)))
+		return
+	}
+	if result != nil && response.StatusCode != http.StatusNoContent {
+		err = json.NewDecoder(response.Body).Decode(result)
+	}
+	return
+}
+
 // configuredClient validates endpoint and creates the bounded HTTP client used by provider resources.
 func configuredClient(endpoint string, token string) (client *apiClient, err error) {
 	var parsed *url.URL

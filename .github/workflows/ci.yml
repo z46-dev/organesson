@@ -125,7 +125,7 @@ jobs:
           tofu_wrapper: false
 
       - name: Check OpenTofu formatting
-        run: tofu fmt -check -recursive examples/test_project examples/proxmox_vm_lifecycle
+        run: tofu fmt -check -recursive examples/test_project examples/artifact_smoke
 
       - name: Build local provider
         run: |
@@ -136,5 +136,8 @@ jobs:
         run: |
           cli_config="$RUNNER_TEMP/organesson-tofu.rc"
           sed "s|REPOSITORY_ROOT|$GITHUB_WORKSPACE|g" examples/test_project/tofu.rc.example > "$cli_config"
-          TF_CLI_CONFIG_FILE="$cli_config" tofu -chdir=examples/test_project validate
-          TF_CLI_CONFIG_FILE="$cli_config" tofu -chdir=examples/proxmox_vm_lifecycle validate
+          export TF_CLI_CONFIG_FILE="$cli_config"
+          export ORGANESSON_ENDPOINT="http://127.0.0.1:6800"
+          export ORGANESSON_TOKEN="ci-validation-only"
+          tofu -chdir=examples/test_project validate
+          tofu -chdir=examples/artifact_smoke validate

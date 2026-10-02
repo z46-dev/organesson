@@ -13,10 +13,11 @@ import (
 )
 
 var (
-	ErrForbidden         = errors.New("permission denied")
-	ErrNotFound          = errors.New("resource not found")
-	ErrInvalidPermission = errors.New("permission is not defined by Organesson")
-	ErrInvalidInput      = errors.New("invalid input")
+	ErrForbidden              = errors.New("permission denied")
+	ErrNotFound               = errors.New("resource not found")
+	ErrInvalidPermission      = errors.New("permission is not defined by Organesson")
+	ErrInvalidInput           = errors.New("invalid input")
+	ErrProvisioningInProgress = errors.New("an identical guest operation is already running")
 )
 
 type (

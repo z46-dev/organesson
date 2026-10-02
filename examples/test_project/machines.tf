@@ -42,15 +42,21 @@ resource "organesson_artifact" "first_time_setup" {
 }
 
 resource "organesson_guest_setup" "internet_fedora" {
-  for_each = local.students
+  for_each = local.proxmox_internet_vms
 
   artifact_id        = organesson_artifact.first_time_setup.id
+  entrypoint         = organesson_artifact.first_time_setup.entrypoint
+  sha256             = organesson_artifact.first_time_setup.sha256
+  source_directory   = organesson_artifact.first_time_setup.source_directory
   virtual_machine_id = organesson_virtual_machine.internet_fedora[each.key].id
 }
 
 resource "organesson_guest_setup" "lan_fedora" {
-  for_each = local.students
+  for_each = var.proxmox_test_deployment ? local.students : toset([])
 
   artifact_id        = organesson_artifact.first_time_setup.id
+  entrypoint         = organesson_artifact.first_time_setup.entrypoint
+  sha256             = organesson_artifact.first_time_setup.sha256
+  source_directory   = organesson_artifact.first_time_setup.source_directory
   virtual_machine_id = organesson_virtual_machine.lan_fedora[each.key].id
 }

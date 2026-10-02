@@ -10,6 +10,20 @@ resource "organesson_virtual_machine" "fedora" {
   template          = "og-template-fedora-server-latest"
 }
 
+resource "organesson_artifact" "smoke" {
+  deployment_id    = organesson_deployment.lifecycle.id
+  entrypoint       = "entrypoint.sh"
+  source_directory = "artifacts/smoke"
+}
+
+resource "organesson_guest_setup" "smoke" {
+  artifact_id        = organesson_artifact.smoke.id
+  entrypoint         = organesson_artifact.smoke.entrypoint
+  sha256             = organesson_artifact.smoke.sha256
+  source_directory   = organesson_artifact.smoke.source_directory
+  virtual_machine_id = organesson_virtual_machine.fedora.id
+}
+
 resource "organesson_permission_grant" "charlie_view" {
   permission = "resource.view"
   scope      = "self"

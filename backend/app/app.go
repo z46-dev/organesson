@@ -12,11 +12,13 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/limiter"
 	"github.com/gofiber/fiber/v3/middleware/session"
 	"github.com/z46-dev/organesson/backend/app/api"
+	"github.com/z46-dev/organesson/backend/proxmox"
 )
 
 // New builds the HTTP application with secure browser sessions and CSRF protection.
 func New(services api.Services, secureCookies bool, allowedOrigins []string) (application *fiber.App) {
-	application = fiber.New(fiber.Config{BodyLimit: 1 << 20})
+	application = fiber.New(fiber.Config{BodyLimit: proxmox.MaxGuestArtifactArchiveBytes})
+	application.Use(limitRequestBodies)
 	application.Use(helmet.New())
 
 	if len(allowedOrigins) > 0 {
@@ -51,6 +53,19 @@ func New(services api.Services, secureCookies bool, allowedOrigins []string) (ap
 	}))
 	ApplyAuthenticationLimit(application)
 	api.Init(application, services)
+	return
+}
+
+// limitRequestBodies keeps ordinary JSON requests small while allowing bounded artifact uploads.
+func limitRequestBodies(ctx fiber.Ctx) (err error) {
+	var maximum int = 1 << 20
+	if ctx.Method() == fiber.MethodPost && strings.HasPrefix(ctx.Path(), "/api/v1/virtual-machines/") && strings.HasSuffix(ctx.Path(), "/guest-setup") {
+		maximum = proxmox.MaxGuestArtifactArchiveBytes
+	}
+	if len(ctx.Request().Body()) > maximum {
+		return ctx.SendStatus(fiber.StatusRequestEntityTooLarge)
+	}
+	err = ctx.Next()
 	return
 }
 

@@ -15,11 +15,11 @@ The guest-network provider resource starts a stopped managed VM, waits for QEMU 
 
 Before a full apply, the administrator must validate a Proxmox resource policy with the selected resource pool/storage, sufficient optional capacity limits, the `cyber.lab` address pool, and isolated SDN networking enabled. Proxmox Simple-zone DHCP uses its dnsmasq integration, which requires the `dnsmasq` package on every node that can host these guests; the shared VNet has no physical uplink or SNAT. See the [Proxmox SDN documentation](https://github.com/proxmox/pve-docs/blob/master/pvesdn.adoc). This example's Debian/Proxmox host prerequisite must be handled before enabling DHCP; Organesson does not install host packages.
 
-Virtual disks and artifact/Ansible setup declarations are still prototypes; they do not create disks or execute the artifact/playbook. The test-project lifecycle covered here is VM clone, SDN network, address allocation, NIC attachment, guest IPv4 setup, permissions/power UI, refresh, and destroy.
+Additional data disks and the Ansible verification playbook are still prototypes. `organesson_guest_setup` sends each declared local artifact to its Proxmox-backed Linux VM for one-time root execution through QEMU Guest Agent. That path has completed a focused live acceptance run in [`artifact_smoke`](../artifact_smoke/README.md); the broader Alice/Bob/Charlie/Dave topology separately covers VM clone, SDN network, address allocation, NIC attachment, guest IPv4 setup, permissions/power UI, refresh, and destroy.
 
-## Run the single-VM smoke
+## Run the single-VM lifecycle smoke
 
-Follow [the lifecycle acceptance guide](../proxmox_vm_lifecycle/README.md) for backend, fake-user, source-catalog, policy, and API-token setup. From the repository root, build the local provider and set the documented provider environment variables, then run:
+Follow [the Proxmox lifecycle checklist](../../docs/proxmox-vm-lifecycle.md) for source-catalog, policy, and API-token prerequisites. The smaller [`artifact_smoke`](../artifact_smoke/README.md) project is the moving acceptance target for new lifecycle features. From the repository root, build the local provider and set the documented provider environment variables, then run:
 
 ```sh
 TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" tofu -chdir=examples/test_project validate
