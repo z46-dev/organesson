@@ -44,13 +44,10 @@ button:disabled {
 }
 
 .wordmark,
-.account-menu,
-.account-name,
 .quiet-button,
 .primary-action,
 .secondary-action,
-.icon-button,
-.message {
+.icon-button {
     display: inline-flex;
     align-items: center;
 }
@@ -65,19 +62,12 @@ button:disabled {
 }
 
 .wordmark-mark {
-    display: grid;
-    width: 25px;
-    height: 25px;
-    place-items: center;
-    border-radius: 50%;
-    background: #1f5a44;
-    color: #fff;
-    font-family: Georgia, serif;
-    font-size: 14px;
+    width: 28px;
+    height: 28px;
+    border-radius: 9px;
 }
 
-.environment-label,
-.account-name {
+.environment-label {
     color: #66736b;
     font-size: 13px;
 }
@@ -110,13 +100,75 @@ button:disabled {
     color: #1f5a44;
 }
 
-.account-menu {
-    gap: 20px;
-}
-
-.account-name,
 .quiet-button {
     gap: 7px;
+}
+
+.profile-menu {
+    position: relative;
+    color: #536158;
+    font-size: 13px;
+}
+
+.profile-menu summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    list-style: none;
+}
+
+.profile-menu summary::-webkit-details-marker {
+    display: none;
+}
+
+.profile-menu summary:hover {
+    color: #1f5a44;
+}
+
+.profile-icon {
+    display: grid;
+    width: 27px;
+    height: 27px;
+    place-items: center;
+    border-radius: 50%;
+    background: #e5efe8;
+    color: #1f5a44;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.profile-popover {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + 10px);
+    right: 0;
+    display: grid;
+    min-width: 205px;
+    gap: 9px;
+    padding: 12px;
+    border: 1px solid #dce3dc;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 12px 32px #17201c1c;
+}
+
+.profile-popover > span {
+    overflow: hidden;
+    color: #66736b;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.profile-popover .quiet-button {
+    justify-content: flex-start;
+    padding: 8px;
+    border-radius: 5px;
+    text-align: left;
+}
+
+.profile-popover .quiet-button:hover {
+    background: #f4f7f4;
 }
 
 .quiet-button,
@@ -690,22 +742,6 @@ h2 {
 
 .tree-resource-state.is-running {
     background: #4e836b;
-}
-
-.sidebar-footnote {
-    display: flex;
-    align-items: flex-start;
-    gap: 7px;
-    margin: auto 4px 0;
-    padding: 12px 2px 0;
-    border-top: 1px solid #edf0ed;
-    color: #849087;
-    font-size: 10px;
-    line-height: 1.4;
-}
-
-.sidebar-footnote svg {
-    flex: 0 0 auto;
 }
 
 .workspace-content {
@@ -1361,27 +1397,6 @@ h2 {
     gap: 8px;
 }
 
-.message {
-    gap: 9px;
-    margin: 0 0 18px;
-    padding: 12px 14px;
-    border: 1px solid;
-    border-radius: 7px;
-    font-size: 13px;
-}
-
-.message-error {
-    border-color: #e7c9c5;
-    background: #fff8f7;
-    color: #9b382d;
-}
-
-.message-success {
-    border-color: #c9dfcf;
-    background: #f5fbf6;
-    color: #276443;
-}
-
 .auth-layout {
     display: grid;
     grid-template-columns: minmax(0, 1.2fr) minmax(310px, 0.8fr);
@@ -1409,7 +1424,8 @@ h2 {
     font-weight: 600;
 }
 
-.auth-card input {
+.auth-card input,
+.auth-card select {
     width: 100%;
     min-height: 40px;
     padding: 9px 11px;
@@ -1420,7 +1436,8 @@ h2 {
     outline: none;
 }
 
-.auth-card input:focus {
+.auth-card input:focus,
+.auth-card select:focus {
     border-color: #4e836b;
     box-shadow: 0 0 0 3px #e6f1e9;
 }
@@ -1499,18 +1516,11 @@ h2 {
         font-size: 12px;
     }
 
-    .account-menu {
-        gap: 8px;
-    }
-
-    .account-name {
-        max-width: 105px;
+    .profile-menu summary {
+        max-width: 180px;
         overflow: hidden;
         text-overflow: ellipsis;
-    }
-
-    .account-name svg {
-        flex: 0 0 auto;
+        white-space: nowrap;
     }
 
     .main-content {
@@ -1624,5 +1634,103 @@ h2 {
 
     .auth-card {
         padding: 20px;
+    }
+}
+
+.toast-viewport {
+    position: fixed;
+    z-index: 1000;
+    top: 16px;
+    right: 18px;
+    display: grid;
+    width: min(390px, calc(100vw - 32px));
+    gap: 9px;
+    pointer-events: none;
+}
+
+.toast-card {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    overflow: hidden;
+    padding: 13px 12px 15px;
+    border: 1px solid;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 12px 30px #17201c24;
+    font-size: 13px;
+    line-height: 1.45;
+    pointer-events: auto;
+}
+
+.toast-card > svg {
+    flex: 0 0 auto;
+    margin-top: 1px;
+}
+
+.toast-card p {
+    flex: 1;
+    margin: 0;
+}
+
+.toast-error {
+    border-color: #e7c9c5;
+    color: #91382e;
+}
+
+.toast-success {
+    border-color: #c9dfcf;
+    color: #276443;
+}
+
+.toast-dismiss {
+    display: grid;
+    width: 24px;
+    height: 24px;
+    flex: 0 0 auto;
+    place-items: center;
+    margin: -3px -2px 0 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: #758078;
+}
+
+.toast-dismiss:hover {
+    background: #f2f5f2;
+    color: #17201c;
+}
+
+.toast-lifetime {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 3px;
+    transform-origin: left;
+    animation-name: toast-lifetime;
+    animation-timing-function: linear;
+    animation-fill-mode: forwards;
+    background: #1f5a44;
+}
+
+.toast-error .toast-lifetime {
+    background: #bd5a4f;
+}
+
+.toast-lifetime.is-paused {
+    animation-play-state: paused;
+}
+
+@keyframes toast-lifetime {
+    to { transform: scaleX(0); }
+}
+
+@media (max-width: 560px) {
+    .toast-viewport {
+        top: 10px;
+        right: 10px;
+        width: calc(100vw - 20px);
     }
 }

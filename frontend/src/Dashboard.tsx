@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Boxes, ChevronDown, ChevronRight, CircleUserRound, FolderTree, KeyRound, RefreshCw, Server, Shield, Users } from "lucide-react";
+import { Boxes, ChevronDown, ChevronRight, CircleUserRound, FolderTree, KeyRound, RefreshCw, Server, Users } from "lucide-react";
 import type { ApiRequest } from "./api";
 import type { Deployment, DeploymentAccess, DeploymentDetail, Resource } from "./types";
 import { ResourcePowerControl } from "./ResourcePowerControl";
@@ -181,7 +181,6 @@ export function Dashboard({ request, onError }: Props) {
                             })}
                         </ul>
                     )}
-                    <p className="sidebar-footnote"><Shield size={13} /> Only resources visible to your account are listed.</p>
                 </aside>
 
                 <main className="workspace-content">
@@ -189,7 +188,7 @@ export function Dashboard({ request, onError }: Props) {
                         <div className="workspace-empty panel">
                             <Boxes size={26} />
                             <h2>{loadingDeployments ? "Loading your workspace" : "No deployments yet"}</h2>
-                            <p>{loadingDeployments ? "Your accessible deployments will appear here." : "When a deployment is shared with your account, it will appear in this workspace."}</p>
+                            {loadingDeployments && <p>Loading your workspace…</p>}
                         </div>
                     ) : loadingDetails && !selectedDeployment ? (
                         <div className="workspace-empty panel" role="status"><p>Loading deployment details…</p></div>

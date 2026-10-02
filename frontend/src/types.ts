@@ -77,5 +77,6 @@ export type DeploymentAccess = {
 export type AuthStatus = {
     setup_required: boolean;
     authenticated: boolean;
+    realms?: string[];
     account?: Account;
 };

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -589,6 +590,21 @@ func (service *Service) Authenticate(qualifiedName string, password string) (acc
 		account = nil
 		err = ErrInvalidCredentials
 	}
+	return
+}
+
+// AuthenticationRealms returns enabled local realms that can currently accept password logins.
+func (service *Service) AuthenticationRealms() (realms []string, err error) {
+	var providers []*db.AuthenticationProvider
+	if providers, err = service.store.AuthenticationProviders.SelectAll(); err != nil {
+		return
+	}
+	for _, provider := range providers {
+		if provider.Enabled && provider.Kind == db.AuthenticationProviderKindLocal {
+			realms = append(realms, provider.Alias)
+		}
+	}
+	sort.Strings(realms)
 	return
 }
 

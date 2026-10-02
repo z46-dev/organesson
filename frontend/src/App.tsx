@@ -1,9 +1,9 @@
-import { useEffect, useState, type FormEvent, type MouseEvent } from "react";
-import { CircleAlert, LogOut, ShieldCheck, UserRound } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent } from "react";
 import { AdminPage } from "./AdminPage";
 import { apiRequest } from "./api";
 import { Dashboard } from "./Dashboard";
 import { VMConsolePage } from "./VMConsolePage";
+import { ToastViewport, type ToastNotice } from "./Toasts";
 import { resolveRoute } from "./routes.js";
 import type { AuthStatus } from "./types";
 import "./index.css";
@@ -15,13 +15,22 @@ export function App() {
     const [status, setStatus] = useState<AuthStatus | null>(null);
     const [mode, setMode] = useState<ViewMode>("login");
     const [pathname, setPathname] = useState(window.location.pathname);
-    const [error, setError] = useState("");
-    const [notice, setNotice] = useState("");
+    const [toasts, setToasts] = useState<ToastNotice[]>([]);
     const [busy, setBusy] = useState(false);
     const [loginName, setLoginName] = useState("");
+    const [realm, setRealm] = useState("");
     const [password, setPassword] = useState("");
     const [oneTimeToken, setOneTimeToken] = useState("");
     const [newPassword, setNewPassword] = useState("");
+    const nextToastID = useRef(0);
+
+    const pushToast = useCallback((kind: ToastNotice["kind"], message: string) => {
+        nextToastID.current += 1;
+        setToasts((current) => [...current.slice(-3), { id: nextToastID.current, kind, message }]);
+    }, []);
+    const dismissToast = useCallback((id: number) => setToasts((current) => current.filter((toast) => toast.id !== id)), []);
+    const onError = useCallback((message: string) => pushToast("error", message), [pushToast]);
+    const onNotice = useCallback((message: string) => pushToast("success", message), [pushToast]);
 
     useEffect(() => {
         let active = true;
@@ -34,11 +43,21 @@ export function App() {
                     }
                 }
             })
-            .catch((requestError: Error) => active && setError(requestError.message));
+            .catch((requestError: Error) => active && onError(requestError.message));
         return () => {
             active = false;
         };
-    }, []);
+    }, [onError]);
+
+    useEffect(() => {
+        const realms = status?.realms ?? [];
+        if (realms.length > 0 && !realms.includes(realm)) {
+            const firstRealm = realms[0];
+            if (firstRealm) {
+                setRealm(firstRealm);
+            }
+        }
+    }, [realm, status?.realms]);
 
     useEffect(() => {
         function updatePath() {
@@ -54,7 +73,6 @@ export function App() {
         }
         window.history.pushState({}, "", path);
         setPathname(path);
-        setError("");
     }
 
     function handleNavigation(event: MouseEvent<HTMLAnchorElement>, path: string) {
@@ -68,8 +86,6 @@ export function App() {
     async function submitAuth(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
         setBusy(true);
-        setError("");
-        setNotice("");
         try {
             if (mode === "activate") {
                 await apiRequest("/auth/password/redeem", "POST", { token: oneTimeToken, password: newPassword });
@@ -78,35 +94,34 @@ export function App() {
                 setPassword("");
                 setOneTimeToken("");
                 setNewPassword("");
-                setNotice("Account activated. Sign in with the username and password you just set.");
+                onNotice("Account activated. Sign in with the username and password you just set.");
                 return;
             }
             if (mode === "bootstrap") {
                 await apiRequest("/auth/bootstrap/redeem", "POST", { token: oneTimeToken, password: newPassword });
                 setOneTimeToken("");
                 setNewPassword("");
-                setNotice("Administrator account is ready.");
+                onNotice("Administrator account is ready.");
             } else {
-                await apiRequest("/auth/login", "POST", { qualified_name: loginName, password });
+                await apiRequest("/auth/login", "POST", { username: loginName, realm, password });
                 setPassword("");
             }
             setStatus(await apiRequest<AuthStatus>("/auth/status"));
         } catch (requestError) {
-            setError((requestError as Error).message);
+            onError((requestError as Error).message);
         } finally {
             setBusy(false);
         }
     }
 
     async function signOut() {
-        setError("");
         try {
             await apiRequest("/auth/logout", "POST", {});
-            setStatus({ setup_required: false, authenticated: false });
-            setNotice("Signed out.");
+            setStatus({ setup_required: false, authenticated: false, realms: status?.realms });
+            onNotice("Signed out.");
             navigate("/");
         } catch (requestError) {
-            setError((requestError as Error).message);
+            onError((requestError as Error).message);
         }
     }
 
@@ -117,7 +132,7 @@ export function App() {
         <div className="app-shell">
             <header className="site-header">
                 <a className="wordmark" href="/" aria-label="Organesson home" onClick={(event) => handleNavigation(event, "/")}>
-                    <span className="wordmark-mark" aria-hidden="true">O</span>
+                    <img className="wordmark-mark" src="/organesson-mark.svg" alt="" />
                     <span>organesson</span>
                 </a>
                 {account ? (
@@ -126,31 +141,30 @@ export function App() {
                             <a className="nav-link" href="/" aria-current={route === "dashboard" ? "page" : undefined} onClick={(event) => handleNavigation(event, "/")}>Dashboard</a>
                             {account.platform_administrator && <a className="nav-link" href="/admin" aria-current={route === "admin" ? "page" : undefined} onClick={(event) => handleNavigation(event, "/admin")}>Administration</a>}
                         </nav>
-                        <div className="account-menu">
-                            <span className="account-name"><UserRound size={15} />{account.qualified_name}</span>
-                            <button className="quiet-button" type="button" onClick={signOut}><LogOut size={15} /> Sign out</button>
-                        </div>
+                        <details className="profile-menu">
+                            <summary><span className="profile-icon" aria-hidden="true">{account.display_name.slice(0, 1).toUpperCase()}</span>{account.qualified_name}</summary>
+                            <div className="profile-popover"><span>{account.qualified_name}</span><button className="quiet-button" type="button" onClick={signOut}>Sign out</button></div>
+                        </details>
                     </div>
                 ) : <span className="environment-label">Proxmox resource management</span>}
             </header>
 
             <main className={`main-content${account && route === "dashboard" ? " dashboard-main" : account && route === "admin" ? " admin-main" : ""}`}>
-                {error && <p className="message message-error" role="alert"><CircleAlert size={17} />{error}</p>}
-                {notice && <p className="message message-success" role="status"><ShieldCheck size={17} />{notice}</p>}
                 {!status ? <section className="auth-card"><p className="eyebrow">Connecting</p><h1>Loading Organesson…</h1></section> : account ? (
-                    route === "dashboard" ? <Dashboard request={apiRequest} onError={setError} />
-                        : route === "admin" ? <AdminPage request={apiRequest} onError={setError} onNotice={setNotice} />
-                            : route === "console" ? <VMConsolePage resourceID={Number(pathname.split("/").filter(Boolean)[1])} request={apiRequest} onError={setError} />
+                    route === "dashboard" ? <Dashboard request={apiRequest} onError={onError} />
+                        : route === "admin" ? <AdminPage request={apiRequest} onError={onError} onNotice={onNotice} />
+                            : route === "console" ? <VMConsolePage resourceID={Number(pathname.split("/").filter(Boolean)[1])} request={apiRequest} onError={onError} />
                             : route === "forbidden" ? <section className="panel route-message"><p className="eyebrow">Platform administration</p><h1>Access restricted.</h1><p>Your account is not a platform administrator. Deployment roles do not grant platform-wide administration.</p><a className="primary-action" href="/" onClick={(event) => handleNavigation(event, "/")}>Return to dashboard</a></section>
                                 : <section className="panel route-message"><p className="eyebrow">Not found</p><h1>That page doesn’t exist.</h1><a className="primary-action" href="/" onClick={(event) => handleNavigation(event, "/")}>Return to dashboard</a></section>
                 ) : (
                     <section className="auth-layout">
-                        <div className="auth-intro"><p className="eyebrow">Resource ownership, made clear</p><h1>{mode === "bootstrap" ? "Set up the administrator." : mode === "activate" ? "Activate your account." : "Sign in to Organesson."}</h1><p className="lede">Organesson keeps infrastructure and access organized around the people and teams who own it.</p></div>
+                        <div className="auth-intro"><p className="eyebrow">Resource ownership, made clear</p><h1>{mode === "bootstrap" ? "Set up the administrator." : mode === "activate" ? "Activate your account." : "Sign in to Organesson."}</h1></div>
                         <form className="panel auth-card" onSubmit={submitAuth}>
                             {mode === "login" ? <>
-                                <label>Username<input autoComplete="username" value={loginName} onChange={(event) => setLoginName(event.target.value)} placeholder="name@organesson" required /></label>
+                                <label>Realm<select value={realm} onChange={(event) => setRealm(event.target.value)} required disabled={(status.realms ?? []).length === 0}><option value="" disabled>{(status.realms ?? []).length === 0 ? "No realms available" : "Select realm"}</option>{(status.realms ?? []).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
+                                <label>Username<input autoComplete="username" value={loginName} onChange={(event) => setLoginName(event.target.value)} placeholder="username" required /></label>
                                 <label>Password<input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
-                                <button className="primary-action full-width" type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+                                <button className="primary-action full-width" type="submit" disabled={busy || !realm}>{busy ? "Signing in…" : "Sign in"}</button>
                                 <button className="text-action" type="button" onClick={() => setMode("activate")}>Have a one-time activation token?</button>
                             </> : <>
                                 <p className="form-intro">{mode === "bootstrap" ? "Paste the one-time setup token printed by the backend, then choose a strong password." : "Paste the one-time token from the local fixture seeding output, then choose a password for this account."}</p>
@@ -163,6 +177,7 @@ export function App() {
                     </section>
                 )}
             </main>
+            <ToastViewport toasts={toasts} onDismiss={dismissToast} />
         </div>
     );
 }

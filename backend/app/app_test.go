@@ -74,6 +74,58 @@ func TestHTTPBoundaryReportsSetupAndRejectsUnauthenticatedMutations(t *testing.T
 	}
 }
 
+// TestLoginAcceptsUsernameAndRealmKeepsTheSuffixOutOfTheLoginFormContract.
+func TestLoginAcceptsUsernameAndRealm(t *testing.T) {
+	var store *db.Store
+	var err error
+	if store, err = db.Open(filepath.Join(t.TempDir(), "organesson.db"), golog.New(), false); err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+
+	var authentication *localauth.Service
+	if authentication, err = localauth.New(store); err != nil {
+		t.Fatalf("create authentication service: %v", err)
+	}
+	var activationToken string
+	if activationToken, _, err = authentication.EnsureInitialActivationLink(); err != nil {
+		t.Fatalf("create administrator activation: %v", err)
+	}
+	if _, err = authentication.RedeemPasswordLink(activationToken, "A-strong-test-password"); err != nil {
+		t.Fatalf("activate administrator: %v", err)
+	}
+	var application *fiber.App = New(api.Services{
+		Authentication: authentication,
+		Domain:         domain.New(store),
+		Store:          store,
+	}, false, nil)
+	var jar *cookiejar.Jar
+	if jar, err = cookiejar.New(nil); err != nil {
+		t.Fatalf("create cookie jar: %v", err)
+	}
+	var csrfToken string
+	if csrfToken, err = requestCSRFToken(t, application, jar); err != nil {
+		t.Fatalf("get login CSRF token: %v", err)
+	}
+	var response *http.Response = performRequest(t, application, jar, http.MethodGet, "/api/v1/auth/status", "", "")
+	var status struct {
+		Realms []string `json:"realms"`
+	}
+	if response.StatusCode != fiber.StatusOK || json.NewDecoder(response.Body).Decode(&status) != nil {
+		response.Body.Close()
+		t.Fatalf("read login realms: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if len(status.Realms) != 1 || status.Realms[0] != "organesson" {
+		t.Fatalf("unexpected local authentication realms: %v", status.Realms)
+	}
+	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/auth/login", `{"username":"administrator","realm":"organesson","password":"A-strong-test-password"}`, csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("login with username and selected realm returned %d", response.StatusCode)
+	}
+}
+
 func TestRequestBodyLimitOnlyAllowsBoundedArtifactUploadSizeOnSetupRoute(t *testing.T) {
 	var application *fiber.App = fiber.New(fiber.Config{BodyLimit: proxmox.MaxGuestArtifactArchiveBytes})
 	application.Use(limitRequestBodies)

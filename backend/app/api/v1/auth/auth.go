@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -15,6 +16,8 @@ import (
 type (
 	loginRequest struct {
 		QualifiedName string `json:"qualified_name"`
+		Username      string `json:"username"`
+		Realm         string `json:"realm"`
 		Password      string `json:"password"`
 	}
 
@@ -134,7 +137,11 @@ func status(services common.Services) (handler fiber.Handler) {
 		if setupRequired, err = services.Authentication.SetupRequired(); err != nil {
 			return common.AuthError(ctx, err)
 		}
-		var response fiber.Map = fiber.Map{"setup_required": setupRequired, "authenticated": false}
+		var realms []string
+		if realms, err = services.Authentication.AuthenticationRealms(); err != nil {
+			return common.AuthError(ctx, err)
+		}
+		var response fiber.Map = fiber.Map{"setup_required": setupRequired, "authenticated": false, "realms": realms}
 		if middleware := session.FromContext(ctx); middleware != nil {
 			if accountID, valid := middleware.Get("account_id").(int); valid {
 				var account *db.Account
@@ -185,7 +192,30 @@ func redeemBootstrap(services common.Services) (handler fiber.Handler) {
 func login(services common.Services) (handler fiber.Handler) {
 	handler = func(ctx fiber.Ctx) (err error) {
 		var request loginRequest
-		if err = ctx.Bind().Body(&request); err != nil || request.QualifiedName == "" || request.Password == "" {
+		if err = ctx.Bind().Body(&request); err != nil || request.Password == "" {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Username and password are required."})
+		}
+		if request.Username != "" || request.Realm != "" {
+			if request.Username == "" || request.Realm == "" || strings.Contains(request.Username, "@") {
+				return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Enter a username and select a realm."})
+			}
+			var realms []string
+			if realms, err = services.Authentication.AuthenticationRealms(); err != nil {
+				return common.AuthError(ctx, err)
+			}
+			var available bool
+			for _, realm := range realms {
+				if strings.EqualFold(realm, request.Realm) {
+					available = true
+					request.QualifiedName = request.Username + "@" + realm
+					break
+				}
+			}
+			if !available {
+				return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Select an available realm."})
+			}
+		}
+		if request.QualifiedName == "" {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Username and password are required."})
 		}
 		var account *db.Account
