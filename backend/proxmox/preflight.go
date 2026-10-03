@@ -64,6 +64,11 @@ type (
 		Delete(context.Context, string, string) error
 	}
 
+	// SDNNetworkIPAMReader reads address records associated with one SDN VNet.
+	SDNNetworkIPAMReader interface {
+		ReadIPAM(context.Context, SDNNetworkRequest, SDNNetworkPlacement) ([]SDNIPAMEntry, string, error)
+	}
+
 	// NetworkAttachmentDriver attaches owned VNet or approved bridge interfaces to managed VMs.
 	NetworkAttachmentDriver interface {
 		Attach(context.Context, NetworkAttachmentRequest) (NetworkAttachmentPlacement, error)

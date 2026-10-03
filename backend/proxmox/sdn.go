@@ -34,6 +34,15 @@ type (
 	apiSDNNetworkDriver struct {
 		settings config.ProxmoxConfiguration
 	}
+
+	// SDNIPAMEntry is a single address assignment reported by a Proxmox IPAM backend.
+	SDNIPAMEntry struct {
+		IP       string `json:"ip"`
+		MAC      string `json:"mac,omitempty"`
+		Hostname string `json:"hostname,omitempty"`
+		Subnet   string `json:"subnet,omitempty"`
+		VMID     string `json:"vmid,omitempty"`
+	}
 )
 
 // CreateSDNNetwork provisions an isolated VNet and its optional subnet in Proxmox.
@@ -57,6 +66,25 @@ func (service *Service) ReadSDNNetwork(ctx context.Context, request SDNNetworkRe
 	service.lifecycleLock.Lock()
 	defer service.lifecycleLock.Unlock()
 	err = service.sdnNetworkDriver.Read(ctx, request, placement)
+	return
+}
+
+// ReadSDNNetworkIPAM returns address records when the configured driver can read IPAM.
+func (service *Service) ReadSDNNetworkIPAM(ctx context.Context, request SDNNetworkRequest, placement SDNNetworkPlacement) (entries []SDNIPAMEntry, state string, err error) {
+	if service == nil || service.sdnNetworkDriver == nil || !service.Configured() {
+		state = "unavailable"
+		err = ErrNotConfigured
+		return
+	}
+	var reader SDNNetworkIPAMReader
+	var supported bool
+	if reader, supported = service.sdnNetworkDriver.(SDNNetworkIPAMReader); !supported {
+		state = "unavailable"
+		return
+	}
+	service.lifecycleLock.Lock()
+	defer service.lifecycleLock.Unlock()
+	entries, state, err = reader.ReadIPAM(ctx, request, placement)
 	return
 }
 
@@ -270,6 +298,78 @@ func (driver *apiSDNNetworkDriver) Read(ctx context.Context, request SDNNetworkR
 		}
 	} else if len(subnets) != 0 {
 		err = errors.New("Proxmox unmanaged layer-2 VNet unexpectedly has subnet configuration")
+	}
+	return
+}
+
+// ReadIPAM lists only address assignments attached to the expected Organesson VNet.
+func (driver *apiSDNNetworkDriver) ReadIPAM(ctx context.Context, request SDNNetworkRequest, placement SDNNetworkPlacement) (entries []SDNIPAMEntry, state string, err error) {
+	if err = validateSDNNetworkRequest(request); err != nil {
+		state = "unavailable"
+		return
+	}
+	var expected SDNNetworkPlacement = namesForSDNNetwork(request.OperationKey)
+	if placement != expected {
+		state = "unavailable"
+		err = errors.New("stored Proxmox SDN placement does not match its operation key")
+		return
+	}
+	var client *pve.Client
+	if client, err = newAPIClient(driver.settings); err != nil {
+		state = "unavailable"
+		return
+	}
+	var cluster *pve.Cluster
+	if cluster, err = client.Cluster(ctx); err != nil {
+		state = "unavailable"
+		return
+	}
+	var zones []*pve.SDNZone
+	if zones, err = cluster.SDNZones(ctx); err != nil {
+		state = "unavailable"
+		return
+	}
+	var ipam string
+	for _, zone := range zones {
+		if zone != nil && zone.Name == expected.Zone {
+			ipam = zone.IPAM
+			break
+		}
+	}
+	if ipam == "" {
+		state = "unconfigured"
+		return
+	}
+	var records []map[string]any
+	if records, err = cluster.SDNIPAM(ipam).Status(ctx); err != nil {
+		state = "unavailable"
+		return
+	}
+	state = "available"
+	for _, record := range records {
+		var recordVNet string = ipamString(record["vnet"])
+		var recordZone string = ipamString(record["zone"])
+		if recordVNet != expected.VNet || (recordZone != "" && recordZone != expected.Zone) {
+			continue
+		}
+		var entry SDNIPAMEntry = SDNIPAMEntry{
+			IP:       ipamString(record["ip"]),
+			MAC:      ipamString(record["mac"]),
+			Hostname: ipamString(record["hostname"]),
+			Subnet:   ipamString(record["subnet"]),
+			VMID:     ipamString(record["vmid"]),
+		}
+		if entry.IP != "" {
+			entries = append(entries, entry)
+		}
+	}
+	return
+}
+
+// ipamString converts optional API fields to displayable strings.
+func ipamString(value any) (result string) {
+	if value != nil {
+		result = fmt.Sprint(value)
 	}
 	return
 }

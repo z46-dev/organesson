@@ -1100,6 +1100,124 @@ h2 {
     font-weight: 650;
 }
 
+.address-properties-table,
+.address-usage-table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+}
+
+.address-properties-table th,
+.address-properties-table td,
+.address-usage-table th,
+.address-usage-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--theme-border-soft);
+    font-size: 12px;
+    vertical-align: top;
+}
+
+.address-properties-table th {
+    width: 190px;
+    color: var(--theme-muted);
+    font-weight: 550;
+}
+
+.address-properties-table td {
+    color: var(--theme-text);
+}
+
+.address-usage-section {
+    margin-top: 17px;
+    padding-top: 14px;
+    border-top: 1px solid var(--theme-border-soft);
+}
+
+.ipam-section {
+    border-top: 0;
+}
+
+.address-usage-section h4 {
+    margin-bottom: 9px;
+}
+
+.address-usage-scroll {
+    max-height: 270px;
+    overflow: auto;
+    border: 1px solid var(--theme-border-soft);
+    border-radius: 6px;
+}
+
+.address-usage-table thead {
+    position: sticky;
+    top: 0;
+    background: var(--theme-surface-soft);
+}
+
+.address-usage-table th {
+    color: var(--theme-muted);
+    font-size: 10px;
+    font-weight: 620;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.address-usage-table td {
+    color: var(--theme-text);
+}
+
+.address-usage-table code,
+.address-properties-table code {
+    color: inherit;
+    font-size: 12px;
+}
+
+.ipam-empty {
+    margin: 10px 0 0;
+    color: var(--theme-muted);
+    font-size: 12px;
+}
+
+.ipam-tree,
+.ipam-tree ul {
+    margin: 0;
+    padding-left: 18px;
+    list-style: none;
+}
+
+.ipam-tree {
+    padding-top: 8px;
+}
+
+.ipam-tree ul {
+    border-left: 1px solid var(--theme-border-soft);
+}
+
+.ipam-tree li {
+    position: relative;
+    padding: 5px 0 5px 12px;
+    color: var(--theme-text);
+    font-size: 12px;
+}
+
+.ipam-tree li::before {
+    position: absolute;
+    top: 13px;
+    left: 0;
+    width: 8px;
+    border-top: 1px solid var(--theme-border-soft);
+    content: "";
+}
+
+.ipam-tree > li {
+    padding-left: 0;
+    font-weight: 600;
+}
+
+.ipam-tree > li::before {
+    display: none;
+}
+
 .resource-live-state {
     width: fit-content;
     margin: 10px 0 0;

@@ -124,6 +124,17 @@ func TestAPISDNNetworkDriverCreatesOnlyIsolatedSimpleZoneAndDeletesIt(t *testing
 				result = append(result, vnet)
 			}
 			data = result
+		case request.Method == http.MethodGet && path == "/cluster/sdn/ipams/pve/status":
+			var vnetName string
+			var zoneName string
+			for name, vnet := range vnets {
+				vnetName = name
+				zoneName = vnet["zone"].(string)
+			}
+			data = []map[string]any{
+				{"vnet": vnetName, "zone": zoneName, "ip": "192.168.100.12", "mac": "02:00:00:00:00:12", "hostname": "student-vm", "subnet": "192.168.100.0-24", "vmid": "301"},
+				{"vnet": "unrelated", "zone": zoneName, "ip": "192.168.100.13", "vmid": "302"},
+			}
 		case request.Method == http.MethodPost && path == "/cluster/sdn/vnets":
 			vnets[body["vnet"].(string)] = body
 		case request.Method == http.MethodGet && strings.HasPrefix(path, "/cluster/sdn/vnets/") && !strings.HasSuffix(path, "/subnets"):
@@ -194,6 +205,14 @@ func TestAPISDNNetworkDriverCreatesOnlyIsolatedSimpleZoneAndDeletesIt(t *testing
 	}
 	if err = driver.Read(context.Background(), request, placement); err != nil {
 		t.Fatalf("refresh created isolated SDN network: %v", err)
+	}
+	var ipamEntries []SDNIPAMEntry
+	var ipamState string
+	if ipamEntries, ipamState, err = driver.ReadIPAM(context.Background(), request, placement); err != nil {
+		t.Fatalf("read network IPAM: %v", err)
+	}
+	if ipamState != "available" || len(ipamEntries) != 1 || ipamEntries[0].IP != "192.168.100.12" || ipamEntries[0].VMID != "301" {
+		t.Fatalf("unexpected filtered IPAM entries: state=%q entries=%#v", ipamState, ipamEntries)
 	}
 	zones[placement.Zone]["dhcp"] = "unexpected"
 	if err = driver.Read(context.Background(), request, placement); err == nil {

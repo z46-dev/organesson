@@ -7,11 +7,24 @@ import { DeploymentAccessPanel } from "./DeploymentAccessPanel";
 import { VMSnapshotPanel } from "./VMSnapshotPanel";
 
 type WorkspaceSection = "resources" | "users" | "groups";
-type AddressPoolDetails = { deployment_id: number; name: string; environment_network: string; address_family: string; address_count: number; pool_name: string; prefix: string; gateway?: string; dns?: string[]; addresses: string[] };
+type AddressPoolDetails = {
+    deployment_id: number;
+    name: string;
+    environment_network: string;
+    address_family: string;
+    address_count: number;
+    pool_name: string;
+    prefix: string;
+    gateway?: string;
+    dns?: string[];
+    addresses: string[];
+    address_usage: { address: string; in_use: boolean; virtual_machine_id?: number; virtual_machine_name?: string }[];
+};
 type ResourceLiveState = "verified" | "missing" | "unknown" | "unavailable";
+type SDNIPAMEntry = { ip: string; mac?: string; hostname?: string; subnet?: string; vmid?: string };
 type NetworkDetails = { request: { mode: string; subnet?: string; gateway?: string; dhcp_enabled: boolean; egress_policy: string }; placement: { zone: string; vnet: string } };
 type AttachmentDetails = { request: { node: string; vmid: string; bridge: string }; placement: { device: string; mac: string }; addresses: string[]; environment_network?: string; logical_network_id?: number; address_pool_request_id?: number; requested_address_count?: number; address_prefix?: string; address_gateway?: string; address_dns?: string[]; guest_network?: { ipv4_method: string; ipv4_address?: string; ipv4_gateway?: string; ipv4_dns?: string[] } };
-type SelectedResourceDetails = { allocation?: AddressPoolDetails; configuration?: NetworkDetails | AttachmentDetails; live_state?: ResourceLiveState };
+type SelectedResourceDetails = { allocation?: AddressPoolDetails; configuration?: NetworkDetails | AttachmentDetails; live_state?: ResourceLiveState; ipam_state?: "available" | "unconfigured" | "unavailable"; ipam_entries?: SDNIPAMEntry[] };
 
 type Props = {
     request: ApiRequest;
@@ -310,13 +323,13 @@ export function Dashboard({ request, onError }: Props) {
                                     <div className="resource-detail-heading">
                                         <div className="resource-detail-icon">{selectedResource.kind === "virtual_machine" ? <Server size={19} /> : <Network size={19} />}</div>
                                         <div><p className="eyebrow">{selectedResource.kind.replaceAll("_", " ")}</p><h3 id="resource-detail-heading">{selectedResource.name}</h3></div>
-                                        <span className={`power-state${selectedResource.power_state === "running" ? " is-running" : ""}`}>{selectedResource.power_state}</span>
+                                        {selectedResource.kind !== "address_pool_request" && selectedResource.kind !== "virtual_network" && <span className={`power-state${selectedResource.power_state === "running" ? " is-running" : ""}`}>{selectedResource.power_state}</span>}
                                     </div>
-                                    <dl className="resource-facts">
+                                    {selectedResource.kind !== "address_pool_request" && selectedResource.kind !== "virtual_network" && <dl className="resource-facts">
                                         <div><dt>Resource ID</dt><dd>{selectedResource.id}</dd></div>
                                         <div><dt>Type</dt><dd>{selectedResource.kind.replaceAll("_", " ")}</dd></div>
                                         <div><dt>{selectedResource.kind === "virtual_machine" ? "Power state" : "Status"}</dt><dd>{selectedResource.power_state}</dd></div>
-                                    </dl>
+                                    </dl>}
                                     {selectedResource.kind === "virtual_machine" ? <>
                                         <ResourcePowerControl resource={selectedResource} onPower={changePower} />
                                         {selectedResource.can_snapshot_control && <VMSnapshotPanel resourceID={selectedResource.id} request={request} onError={onError} />}
@@ -324,18 +337,32 @@ export function Dashboard({ request, onError }: Props) {
                                     </> : null}
                                     {resourceDetailsLoading && <p className="resource-detail-loading" role="status">Loading resource details…</p>}
                                     {resourceDetailsError && <p className="resource-detail-error" role="alert">{resourceDetailsError}</p>}
-                                    {selectedResource.kind === "virtual_network" && selectedResourceDetails?.configuration && <section className="typed-resource-details" aria-label="Virtual network details">
-                                        <h4>Network configuration</h4>
-                                        <p className={`resource-live-state is-${selectedResourceDetails.live_state ?? "unavailable"}`}>Proxmox state: {selectedResourceDetails.live_state ?? "unavailable"}</p>
-                                        <dl className="resource-facts">
-                                            {"mode" in selectedResourceDetails.configuration.request && <div><dt>Mode</dt><dd>{selectedResourceDetails.configuration.request.mode}</dd></div>}
-                                            {"subnet" in selectedResourceDetails.configuration.request && <div><dt>IPv4 subnet</dt><dd>{selectedResourceDetails.configuration.request.subnet || "None"}</dd></div>}
-                                            {"gateway" in selectedResourceDetails.configuration.request && <div><dt>Gateway</dt><dd>{selectedResourceDetails.configuration.request.gateway || "None"}</dd></div>}
-                                            {"dhcp_enabled" in selectedResourceDetails.configuration.request && <div><dt>DHCP</dt><dd>{selectedResourceDetails.configuration.request.dhcp_enabled ? "Enabled" : "Disabled"}</dd></div>}
-                                            {"egress_policy" in selectedResourceDetails.configuration.request && <div><dt>Egress</dt><dd>{selectedResourceDetails.configuration.request.egress_policy}</dd></div>}
-                                            {"vnet" in selectedResourceDetails.configuration.placement && <div><dt>Proxmox VNet</dt><dd>{selectedResourceDetails.configuration.placement.vnet}</dd></div>}
-                                            {"zone" in selectedResourceDetails.configuration.placement && <div><dt>SDN zone</dt><dd>{selectedResourceDetails.configuration.placement.zone}</dd></div>}
-                                        </dl>
+                                    {selectedResource.kind === "virtual_network" && selectedResourceDetails?.configuration && "mode" in selectedResourceDetails.configuration.request && "vnet" in selectedResourceDetails.configuration.placement && <section className="typed-resource-details" aria-label="Virtual network details">
+                                        <table className="address-properties-table"><tbody>
+                                            <tr><th scope="row">Network mode</th><td>{selectedResourceDetails.configuration.request.mode === "managed" ? "Managed subnet" : "Unmanaged Layer 2"}</td></tr>
+                                            {selectedResourceDetails.configuration.request.mode === "managed" && <>
+                                                <tr><th scope="row">Subnet</th><td>{selectedResourceDetails.configuration.request.subnet || "—"}</td></tr>
+                                                <tr><th scope="row">Gateway</th><td>{selectedResourceDetails.configuration.request.gateway || "—"}</td></tr>
+                                                <tr><th scope="row">DHCP</th><td>{selectedResourceDetails.configuration.request.dhcp_enabled ? "Enabled" : "Disabled"}</td></tr>
+                                            </>}
+                                            <tr><th scope="row">Egress</th><td>{selectedResourceDetails.configuration.request.egress_policy}</td></tr>
+                                            <tr><th scope="row">Proxmox VNet</th><td>{selectedResourceDetails.configuration.placement.vnet}</td></tr>
+                                            <tr><th scope="row">SDN zone</th><td>{selectedResourceDetails.configuration.placement.zone}</td></tr>
+                                            <tr><th scope="row">Proxmox state</th><td>{selectedResourceDetails.live_state ?? "unavailable"}</td></tr>
+                                        </tbody></table>
+                                        {selectedResourceDetails.configuration.request.mode === "managed" && <section className="address-usage-section ipam-section" aria-label="Virtual network IPAM">
+                                            <h4>IPAM</h4>
+                                            {selectedResourceDetails.live_state !== "verified" || selectedResourceDetails.ipam_state === "unavailable" ? <p className="ipam-empty">IPAM data unavailable</p> : selectedResourceDetails.ipam_state === "unconfigured" ? <p className="ipam-empty">No IPAM configured</p> : selectedResourceDetails.ipam_entries?.length ? <ul className="ipam-tree">
+                                                <li><span>{selectedResourceDetails.configuration.placement.vnet}</span><ul>
+                                                    {Array.from(new Set(selectedResourceDetails.ipam_entries.map((entry) => entry.subnet || "Unassigned"))).map((subnet) => <li key={subnet}><span>{subnet}</span><ul>
+                                                        {selectedResourceDetails.ipam_entries?.filter((entry) => (entry.subnet || "Unassigned") === subnet).map((entry) => {
+                                                            const guest = selectedDeployment?.resources.find((item) => item.kind === "virtual_machine" && item.external_id === entry.vmid);
+                                                            return <li key={`${entry.ip}-${entry.mac ?? ""}`}><span><code>{entry.ip}</code>{entry.hostname ? ` · ${entry.hostname}` : ""}{entry.mac ? ` · ${entry.mac}` : ""}{guest ? <> · <button className="inline-link" type="button" onClick={() => setSelectedResourceID(guest.id)}>{guest.name} (Resource ID: {guest.id})</button></> : entry.vmid ? ` · VM ${entry.vmid}` : ""}</span></li>;
+                                                        })}
+                                                    </ul></li>)}
+                                                </ul></li>
+                                            </ul> : <p className="ipam-empty">No IPAM assignments</p>}
+                                        </section>}
                                     </section>}
                                     {selectedResource.kind === "network_attachment" && selectedResourceDetails?.configuration && <section className="typed-resource-details" aria-label="Network attachment details">
                                         <h4>Network interface</h4>
@@ -354,17 +381,28 @@ export function Dashboard({ request, onError }: Props) {
                                         </dl>
                                     </section>}
                                     {selectedResource.kind === "address_pool_request" && selectedResourceDetails?.allocation && <section className="typed-resource-details" aria-label="Address allocation details">
-                                        <h4>Address allocation</h4>
-                                        <dl className="resource-facts">
-                                            <div><dt>Environment network</dt><dd>{selectedResourceDetails.allocation.environment_network}</dd></div>
-                                            <div><dt>Pool</dt><dd>{selectedResourceDetails.allocation.pool_name}</dd></div>
-                                            <div><dt>Address family</dt><dd>{selectedResourceDetails.allocation.address_family}</dd></div>
-                                            <div><dt>Requested count</dt><dd>{selectedResourceDetails.allocation.address_count}</dd></div>
-                                            <div><dt>Guest prefix</dt><dd>{selectedResourceDetails.allocation.prefix}</dd></div>
-                                            {selectedResourceDetails.allocation.gateway && <div><dt>Gateway</dt><dd>{selectedResourceDetails.allocation.gateway}</dd></div>}
-                                            {selectedResourceDetails.allocation.dns?.length ? <div><dt>DNS</dt><dd>{selectedResourceDetails.allocation.dns.join(", ")}</dd></div> : null}
-                                            <div className="resource-address-list"><dt>Reserved addresses</dt><dd>{selectedResourceDetails.allocation.addresses.map((address) => <code key={address}>{address}</code>)}</dd></div>
-                                        </dl>
+                                        <table className="address-properties-table"><tbody>
+                                            <tr><th scope="row">Environment Network</th><td>{selectedResourceDetails.allocation.environment_network}</td></tr>
+                                            <tr><th scope="row">Pool</th><td>{selectedResourceDetails.allocation.pool_name}</td></tr>
+                                            <tr><th scope="row">Address Family</th><td>{selectedResourceDetails.allocation.address_family}</td></tr>
+                                            <tr><th scope="row">Guest Prefix</th><td>{selectedResourceDetails.allocation.prefix}</td></tr>
+                                            <tr><th scope="row">Gateway</th><td>{selectedResourceDetails.allocation.gateway || "—"}</td></tr>
+                                            <tr><th scope="row">DNS</th><td>{selectedResourceDetails.allocation.dns?.join(", ") || "—"}</td></tr>
+                                            <tr><th scope="row">Requested Count</th><td>{selectedResourceDetails.allocation.address_count}</td></tr>
+                                            <tr><th scope="row">Usable Range</th><td>{selectedResourceDetails.allocation.addresses[0]} – {selectedResourceDetails.allocation.addresses.at(-1)}</td></tr>
+                                        </tbody></table>
+                                        <section className="address-usage-section" aria-label="Allocated address usage">
+                                            <h4>Addresses</h4>
+                                            <div className="address-usage-scroll" tabIndex={0}>
+                                                <table className="address-usage-table">
+                                                    <thead><tr><th scope="col">Address</th><th scope="col">Use</th></tr></thead>
+                                                    <tbody>{selectedResourceDetails.allocation.address_usage.map((usage) => <tr key={usage.address}>
+                                                        <td><code>{usage.address}</code></td>
+                                                        <td>{usage.in_use ? usage.virtual_machine_id ? <button className="inline-link" type="button" onClick={() => setSelectedResourceID(usage.virtual_machine_id ?? null)}>{usage.virtual_machine_name} (Resource ID: {usage.virtual_machine_id})</button> : "In use" : "Available"}</td>
+                                                    </tr>)}</tbody>
+                                                </table>
+                                            </div>
+                                        </section>
                                     </section>}
                                 </section>
                             ) : (

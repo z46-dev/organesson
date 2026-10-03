@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -15,16 +16,24 @@ import (
 type (
 	// AddressPoolRequest reserves environment-network addresses for one deployment.
 	AddressPoolRequest struct {
-		DeploymentID       int      `json:"deployment_id"`
-		Name               string   `json:"name"`
-		EnvironmentNetwork string   `json:"environment_network"`
-		AddressFamily      string   `json:"address_family"`
-		AddressCount       int      `json:"address_count"`
-		PoolName           string   `json:"pool_name"`
-		Prefix             string   `json:"prefix"`
-		Gateway            string   `json:"gateway,omitempty"`
-		DNS                []string `json:"dns,omitempty"`
-		Addresses          []string `json:"addresses"`
+		DeploymentID       int                       `json:"deployment_id"`
+		Name               string                    `json:"name"`
+		EnvironmentNetwork string                    `json:"environment_network"`
+		AddressFamily      string                    `json:"address_family"`
+		AddressCount       int                       `json:"address_count"`
+		PoolName           string                    `json:"pool_name"`
+		Prefix             string                    `json:"prefix"`
+		Gateway            string                    `json:"gateway,omitempty"`
+		DNS                []string                  `json:"dns,omitempty"`
+		Addresses          []string                  `json:"addresses"`
+		AddressUsage       []AddressPoolAddressUsage `json:"address_usage,omitempty"`
+	}
+
+	AddressPoolAddressUsage struct {
+		Address            string `json:"address"`
+		InUse              bool   `json:"in_use"`
+		VirtualMachineID   int    `json:"virtual_machine_id,omitempty"`
+		VirtualMachineName string `json:"virtual_machine_name,omitempty"`
 	}
 )
 
@@ -174,7 +183,57 @@ func (service *Service) GetAddressPoolRequest(actorID int, resourceID int) (reso
 		resource = nil
 		return
 	}
-	err = json.Unmarshal([]byte(resource.ConfigurationJSON), &allocation)
+	if err = json.Unmarshal([]byte(resource.ConfigurationJSON), &allocation); err != nil {
+		return
+	}
+	allocation.AddressUsage = make([]AddressPoolAddressUsage, len(allocation.Addresses))
+	var usageIndexes map[string]int = make(map[string]int, len(allocation.Addresses))
+	for index, address := range allocation.Addresses {
+		allocation.AddressUsage[index] = AddressPoolAddressUsage{Address: address}
+		usageIndexes[address] = index
+	}
+	var resources []*db.ManagedResource
+	if resources, err = service.store.ManagedResources.SelectAll(); err != nil {
+		return
+	}
+	var resourcesByID map[int]*db.ManagedResource = make(map[int]*db.ManagedResource, len(resources))
+	for _, current := range resources {
+		resourcesByID[current.ID] = current
+	}
+	for _, current := range resources {
+		if current.DeploymentID != resource.DeploymentID || current.Kind != "network_attachment" || current.ConfigurationJSON == "" {
+			continue
+		}
+		var configuration ManagedNetworkAttachmentConfiguration
+		if err = json.Unmarshal([]byte(current.ConfigurationJSON), &configuration); err != nil {
+			return
+		}
+		if configuration.AddressPoolRequestID != resourceID {
+			continue
+		}
+		var virtualMachine *db.ManagedResource = resourcesByID[configuration.VirtualMachineID]
+		var virtualMachineVisible bool
+		if virtualMachine != nil && virtualMachine.DeploymentID == resource.DeploymentID && virtualMachine.Kind == "virtual_machine" {
+			if err = service.requireResourceView(actorID, virtualMachine); err == nil {
+				virtualMachineVisible = true
+			} else if errors.Is(err, ErrForbidden) {
+				err = nil
+			} else {
+				return
+			}
+		}
+		for _, address := range configuration.Addresses {
+			index, found := usageIndexes[address]
+			if !found {
+				continue
+			}
+			allocation.AddressUsage[index].InUse = true
+			if virtualMachineVisible {
+				allocation.AddressUsage[index].VirtualMachineID = virtualMachine.ID
+				allocation.AddressUsage[index].VirtualMachineName = virtualMachine.Name
+			}
+		}
+	}
 	return
 }
 

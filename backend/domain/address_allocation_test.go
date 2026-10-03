@@ -85,6 +85,73 @@ func TestAddressPoolRequestsPersistAndUniquelyAllocate(t *testing.T) {
 	if second.Addresses[0] != "10.192.0.12" {
 		t.Fatalf("second request reused an allocated address: %v", second.Addresses)
 	}
+	var vmOwner *db.OwnershipNode = &db.OwnershipNode{
+		DeploymentID: deployment.ID, ParentID: deployment.RootNodeID, Kind: db.OwnershipNodeKindResource,
+		Name: "student-vm", CreatedAt: time.Now().UTC(),
+	}
+	if err = store.OwnershipNodes.Insert(vmOwner); err != nil {
+		t.Fatalf("insert VM ownership: %v", err)
+	}
+	var vm *db.ManagedResource = &db.ManagedResource{
+		DeploymentID: deployment.ID, OwnershipID: vmOwner.ID, Kind: "virtual_machine", Name: "student-vm", PowerState: "running", CreatedAt: time.Now().UTC(),
+	}
+	if err = store.ManagedResources.Insert(vm); err != nil {
+		t.Fatalf("insert VM: %v", err)
+	}
+	var attachmentOwner *db.OwnershipNode = &db.OwnershipNode{
+		DeploymentID: deployment.ID, ParentID: &vmOwner.ID, Kind: db.OwnershipNodeKindResource,
+		Name: "internet-nic", CreatedAt: time.Now().UTC(),
+	}
+	if err = store.OwnershipNodes.Insert(attachmentOwner); err != nil {
+		t.Fatalf("insert attachment ownership: %v", err)
+	}
+	var attachmentConfiguration ManagedNetworkAttachmentConfiguration = ManagedNetworkAttachmentConfiguration{
+		VirtualMachineID: vm.ID, AddressPoolRequestID: first.ID, Addresses: []string{allocation.Addresses[0]},
+	}
+	var attachmentJSON []byte
+	if attachmentJSON, err = json.Marshal(attachmentConfiguration); err != nil {
+		t.Fatalf("encode attachment: %v", err)
+	}
+	var attachment *db.ManagedResource = &db.ManagedResource{
+		DeploymentID: deployment.ID, OwnershipID: attachmentOwner.ID, Kind: "network_attachment", Name: "internet-nic",
+		PowerState: "ready", ConfigurationJSON: string(attachmentJSON), CreatedAt: time.Now().UTC(),
+	}
+	if err = store.ManagedResources.Insert(attachment); err != nil {
+		t.Fatalf("insert attachment: %v", err)
+	}
+	var visibleAllocation AddressPoolRequest
+	if _, visibleAllocation, err = service.GetAddressPoolRequest(admin.ID, first.ID); err != nil {
+		t.Fatalf("get allocation usage as admin: %v", err)
+	}
+	if !visibleAllocation.AddressUsage[0].InUse || visibleAllocation.AddressUsage[0].VirtualMachineID != vm.ID || visibleAllocation.AddressUsage[0].VirtualMachineName != vm.Name {
+		t.Fatalf("allocation did not identify visible VM usage: %#v", visibleAllocation.AddressUsage[0])
+	}
+	var allocationViewer *db.Account = &db.Account{DisplayName: "Allocation viewer", CreatedAt: time.Now().UTC()}
+	if err = store.Accounts.Insert(allocationViewer); err != nil {
+		t.Fatalf("insert allocation viewer: %v", err)
+	}
+	if _, err = service.CreatePermissionGrant(admin.ID, db.GrantSubjectKindAccount, allocationViewer.ID, db.PermissionResourceView, first.OwnershipID); err != nil {
+		t.Fatalf("grant allocation visibility: %v", err)
+	}
+	var privateAllocation AddressPoolRequest
+	if _, privateAllocation, err = service.GetAddressPoolRequest(allocationViewer.ID, first.ID); err != nil {
+		t.Fatalf("get allocation usage as viewer: %v", err)
+	}
+	if !privateAllocation.AddressUsage[0].InUse || privateAllocation.AddressUsage[0].VirtualMachineID != 0 || privateAllocation.AddressUsage[0].VirtualMachineName != "" {
+		t.Fatalf("allocation usage leaked an inaccessible VM: %#v", privateAllocation.AddressUsage[0])
+	}
+	if err = store.ManagedResources.Delete(attachment.ID); err != nil {
+		t.Fatalf("remove test attachment: %v", err)
+	}
+	if err = store.OwnershipNodes.Delete(attachmentOwner.ID); err != nil {
+		t.Fatalf("remove test attachment ownership: %v", err)
+	}
+	if err = store.ManagedResources.Delete(vm.ID); err != nil {
+		t.Fatalf("remove test VM: %v", err)
+	}
+	if err = store.OwnershipNodes.Delete(vmOwner.ID); err != nil {
+		t.Fatalf("remove test VM ownership: %v", err)
+	}
 	request.Name = "student-internet"
 	request.AddressCount = 3
 	if _, _, err = service.ReserveAddressPoolRequest(admin.ID, request); !errors.Is(err, ErrInvalidInput) {

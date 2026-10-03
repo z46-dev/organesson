@@ -382,16 +382,22 @@ func getNetworkHandler(services common.Services) (handler fiber.Handler) {
 			return common.DomainError(ctx, err)
 		}
 		var liveState string = "unavailable"
+		var ipamState string = "unavailable"
+		var ipamEntries []proxmox.SDNIPAMEntry
 		if services.Proxmox != nil && services.Proxmox.Configured() {
 			if err = services.Proxmox.ReadSDNNetwork(ctx, configuration.Request, configuration.Placement); err == nil {
 				liveState = "verified"
+				ipamEntries, ipamState, err = services.Proxmox.ReadSDNNetworkIPAM(ctx, configuration.Request, configuration.Placement)
+				if err != nil {
+					ipamState = "unavailable"
+				}
 			} else if errors.Is(err, proxmox.ErrSDNNetworkNotFound) {
 				liveState = "missing"
 			} else {
 				liveState = "unknown"
 			}
 		}
-		err = ctx.JSON(fiber.Map{"resource": resource, "configuration": configuration, "live_state": liveState})
+		err = ctx.JSON(fiber.Map{"resource": resource, "configuration": configuration, "live_state": liveState, "ipam_state": ipamState, "ipam_entries": ipamEntries})
 		return
 	}
 	return
