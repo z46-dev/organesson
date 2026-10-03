@@ -1,149 +1,103 @@
-import { useState } from "react";
-import type { ApiRequest } from "./api";
-import type { DeploymentAccess, DeploymentAccessAccount, DeploymentAccessGroup } from "./types";
+import { Boxes, CircleUserRound, Users } from "lucide-react";
+import type { DeploymentAccess, DeploymentAccessAccount, PermissionGrant } from "./types";
 
 type Props = {
-    deploymentID: number;
-    section: "users" | "groups" | "permissions";
+    section: "users" | "groups";
     access: DeploymentAccess;
-    request: ApiRequest;
-    onChanged: () => Promise<void>;
-    onError: (message: string) => void;
+    selectedUserID: number | null;
+    selectedGroupID: number | null;
+    onSelectUser: (accountID: number) => void;
+    onSelectGroup: (groupID: number) => void;
 };
 
-const permissionCatalog: [string, string][] = [
-    ["deployment.view", "View deployment"],
-    ["deployment.manage_configuration", "Manage deployment configuration"],
-    ["deployment.manage_groups", "Manage groups"],
-    ["deployment.manage_permissions", "Manage permissions"],
-    ["deployment.manage_users", "Manage users"],
-    ["resource.view", "View resources"],
-    ["resource.create", "Create resources"],
-    ["vm.power_control", "Control VM power"],
-    ["vm.console_control", "Control VM console"],
-    ["vm.snapshot_control", "Manage VM snapshots"]
-];
+function permissionName(permission: string) {
+    const names: Record<string, string> = {
+        "deployment.view": "View deployment",
+        "deployment.manage": "Manage deployment",
+        "resource.view": "View resources",
+        "resource.manage": "Manage resources",
+        "vm.power_control": "Control VM power",
+        "vm.snapshot_control": "Manage VM snapshots",
+        "vm.console": "Open VM console"
+    };
+    return names[permission] ?? permission.split(".").map((part) => part.replaceAll("_", " ")).join(" · ");
+}
 
-// Renders deployment-scoped user, group, and permission management.
-export function DeploymentAccessPanel({ deploymentID, section, access, request, onChanged, onError }: Props) {
-    const [groupName, setGroupName] = useState("");
-    const [subject, setSubject] = useState("");
-    const [permission, setPermission] = useState("resource.view");
-    const [targetNodeID, setTargetNodeID] = useState("");
-    const [saving, setSaving] = useState(false);
-
-    async function createGroup(event: React.FormEvent<HTMLFormElement>) {
-        event.preventDefault();
-        setSaving(true);
-        try {
-            await request(`/deployments/${deploymentID}/user-groups`, "POST", { name: groupName, members: [] });
-            setGroupName("");
-            await onChanged();
-        } catch (requestError) {
-            onError((requestError as Error).message);
-        } finally {
-            setSaving(false);
-        }
+function GrantList({ grants, onSelectGroup }: { grants: PermissionGrant[]; onSelectGroup?: (groupID: number) => void }) {
+    if (grants.length === 0) {
+        return <p className="access-empty">No permissions.</p>;
     }
 
-    async function saveMembers(group: DeploymentAccessGroup, event: React.FormEvent<HTMLFormElement>) {
-        event.preventDefault();
-        const form = new FormData(event.currentTarget);
-        const members = form.getAll("members").map((value) => String(value));
-        setSaving(true);
-        try {
-            await request(`/user-groups/${group.id}/members`, "PUT", { members });
-            await onChanged();
-        } catch (requestError) {
-            onError((requestError as Error).message);
-        } finally {
-            setSaving(false);
-        }
-    }
+    return <ul className="access-list">
+        {grants.map((grant) => <li key={grant.id}>
+            <div className="access-grant-description">
+                <strong>{permissionName(grant.permission)}</strong>
+                <span>{grant.node_name}{grant.inherit_descendants ? " and children" : ""}</span>
+                {grant.subject_kind === 1 && onSelectGroup && <button className="inline-link" type="button" onClick={() => onSelectGroup(grant.subject_id)}>via {grant.subject_name}</button>}
+            </div>
+        </li>)}
+    </ul>;
+}
 
-    async function createGrant(event: React.FormEvent<HTMLFormElement>) {
-        event.preventDefault();
-        const [subjectKind, subjectID] = subject.split(":");
-        if (!subjectKind || !subjectID || !targetNodeID) {
-            onError("Choose a subject and ownership group.");
-            return;
-        }
-        setSaving(true);
-        try {
-            await request(`/ownership-nodes/${targetNodeID}/grants`, "POST", {
-                subject_kind: Number(subjectKind),
-                subject_id: Number(subjectID),
-                permission,
-                inherit_descendants: true
-            });
-            await onChanged();
-        } catch (requestError) {
-            onError((requestError as Error).message);
-        } finally {
-            setSaving(false);
-        }
-    }
+function AccountLink({ account, onSelectUser }: { account: DeploymentAccessAccount; onSelectUser: (accountID: number) => void }) {
+    return <button className="access-entity-link" type="button" onClick={() => onSelectUser(account.id)}>
+        <CircleUserRound size={14} />
+        <strong>{account.display_name}</strong>
+        <span>{account.qualified_name}</span>
+    </button>;
+}
 
-    async function revokeGrant(grantID: number) {
-        setSaving(true);
-        try {
-            await request(`/permission-grants/${grantID}`, "DELETE");
-            await onChanged();
-        } catch (requestError) {
-            onError((requestError as Error).message);
-        } finally {
-            setSaving(false);
-        }
-    }
-
-    async function deleteGroup(group: DeploymentAccessGroup) {
-        if (!window.confirm(`Delete ${group.name} and its permission grants?`)) {
-            return;
-        }
-        setSaving(true);
-        try {
-            await request(`/user-groups/${group.id}`, "DELETE");
-            await onChanged();
-        } catch (requestError) {
-            onError((requestError as Error).message);
-        } finally {
-            setSaving(false);
-        }
-    }
-
-    const groupsByID = new Map<number, DeploymentAccessGroup>(access.groups.map((group) => [group.id, group]));
-    const accountsByID = new Map<number, DeploymentAccessAccount>(access.accounts.map((account) => [account.id, account]));
-    const availablePermissions = permissionCatalog.filter(([name]) => access.can_manage_configuration || name !== "deployment.manage_configuration");
-
+// Shows deployment ownership and permission data without changing OpenTofu-managed configuration.
+export function DeploymentAccessPanel({ section, access, selectedUserID, selectedGroupID, onSelectUser, onSelectGroup }: Props) {
     if (section === "users") {
-        return (
-            <section className="access-panel panel" aria-labelledby="access-panel-title">
-                <div className="resource-overview-heading"><div><p className="eyebrow">Deployment access</p><h3 id="access-panel-title">Users</h3></div><span className="resource-count">{access.accounts.length} available</span></div>
-                {access.can_manage_groups ? <ul className="access-list">{access.accounts.map((account) => <li key={account.id}><strong>{account.display_name}</strong><span>{account.qualified_name}</span></li>)}</ul> : <p className="access-empty">You do not have permission to manage deployment users.</p>}
+        const account = access.accounts.find((item) => item.id === selectedUserID);
+        if (!account) {
+            return <div className="workspace-empty" aria-label="No selection"><Boxes size={26} /></div>;
+        }
+
+        const memberships = access.groups.filter((group) => group.members.some((member) => member.id === account.id));
+        const directGrants = access.permission_grants.filter((grant) => grant.subject_kind === 0 && grant.subject_id === account.id);
+        const inheritedGrants = access.permission_grants.filter((grant) => grant.subject_kind === 1 && memberships.some((group) => group.id === grant.subject_id));
+
+        return <section className="access-panel panel user-detail-panel" aria-label={`User ${account.display_name}`}>
+            <header className="resource-detail-heading">
+                <div className="resource-detail-icon"><CircleUserRound size={18} /></div>
+                <div><p className="eyebrow">User</p><h3>{account.display_name}</h3></div>
+                <span className="account-qualified-name">{account.qualified_name}</span>
+            </header>
+            <section className="access-detail-section">
+                <h4>Groups</h4>
+                {memberships.length ? <ul className="access-membership-list">{memberships.map((group) => <li key={group.id}><button className="access-entity-link" type="button" onClick={() => onSelectGroup(group.id)}><Users size={14} /><strong>{group.name}</strong></button></li>)}</ul> : <p className="access-empty">No group memberships.</p>}
             </section>
-        );
+            <section className="access-detail-section">
+                <h4>Direct permissions</h4>
+                {access.can_manage_permissions ? <GrantList grants={directGrants} /> : <p className="access-empty">Permission details are not available.</p>}
+            </section>
+            <section className="access-detail-section">
+                <h4>From groups</h4>
+                {access.can_manage_permissions ? <GrantList grants={inheritedGrants} onSelectGroup={onSelectGroup} /> : <p className="access-empty">Permission details are not available.</p>}
+            </section>
+        </section>;
     }
 
-    if (section === "groups") {
-        return (
-            <section className="access-panel panel" aria-labelledby="access-panel-title">
-                <div className="resource-overview-heading"><div><p className="eyebrow">Deployment access</p><h3 id="access-panel-title">Groups</h3></div><span className="resource-count">{access.groups.length} groups</span></div>
-                {access.can_manage_groups && <form className="access-inline-form" onSubmit={createGroup}><label>New group<input aria-label="New group name" value={groupName} onChange={(event) => setGroupName(event.target.value)} required maxLength={128} /></label><button className="primary-action" type="submit" disabled={saving || groupName.trim() === ""}>Create group</button></form>}
-                {access.groups.length === 0 ? <p className="access-empty">No groups have been created.</p> : <ul className="access-groups">{access.groups.map((group) => <li key={group.id}><form onSubmit={(event) => saveMembers(group, event)}><div className="access-group-heading"><strong>{group.name}</strong><span>{group.members.length} members</span></div><label className="access-members-label">Members<select name="members" multiple defaultValue={group.members.map((member) => member.qualified_name)} disabled={!access.can_manage_groups}>{access.accounts.map((account) => <option key={account.qualified_name} value={account.qualified_name}>{account.display_name} · {account.qualified_name}</option>)}</select></label>{access.can_manage_groups && <div className="access-group-actions"><button className="secondary-action" type="submit" disabled={saving}>Save members</button><button className="text-action" type="button" disabled={saving} onClick={() => deleteGroup(group)}>Delete group</button></div>}</form></li>)}</ul>}
-            </section>
-        );
+    const group = access.groups.find((item) => item.id === selectedGroupID);
+    if (!group) {
+        return <div className="workspace-empty" aria-label="No selection"><Boxes size={26} /></div>;
     }
 
-    return (
-        <section className="access-panel panel" aria-labelledby="access-panel-title">
-            <div className="resource-overview-heading"><div><p className="eyebrow">Deployment access</p><h3 id="access-panel-title">Permissions</h3></div><span className="resource-count">{access.permission_grants.length} grants</span></div>
-            {access.can_manage_permissions && <form className="access-grant-form" onSubmit={createGrant}>
-                <label>Subject<select value={subject} onChange={(event) => setSubject(event.target.value)} required><option value="">Select user or group</option><optgroup label="Users">{access.accounts.map((account) => <option key={account.id} value={`0:${account.id}`}>{account.display_name} · {account.qualified_name}</option>)}</optgroup><optgroup label="Groups">{access.groups.map((group) => <option key={group.id} value={`1:${group.id}`}>{group.name}</option>)}</optgroup></select></label>
-                <label>Permission<select value={permission} onChange={(event) => setPermission(event.target.value)}>{availablePermissions.map(([name, label]) => <option key={name} value={name}>{label}</option>)}</select></label>
-                <label>Ownership node<select value={targetNodeID} onChange={(event) => setTargetNodeID(event.target.value)} required><option value="">Select group</option>{access.ownership_nodes.map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
-                <button className="primary-action" type="submit" disabled={saving || !subject || !targetNodeID}>Grant</button>
-            </form>}
-            {access.permission_grants.length === 0 ? <p className="access-empty">No explicit permission grants.</p> : <ul className="access-list">{access.permission_grants.map((grant) => <li key={grant.id}><div><strong>{grant.subject_name || groupsByID.get(grant.subject_id)?.name || accountsByID.get(grant.subject_id)?.qualified_name || "Unknown subject"}</strong><span>{grant.permission} · {grant.node_name}{grant.inherit_descendants ? " and descendants" : ""}</span></div>{access.can_manage_permissions && <button className="text-action" type="button" disabled={saving} onClick={() => revokeGrant(grant.id)}>Revoke</button>}</li>)}</ul>}
+    const grants = access.permission_grants.filter((grant) => grant.subject_kind === 1 && grant.subject_id === group.id);
+    return <section className="access-panel panel group-detail-panel" aria-label={`Group ${group.name}`}>
+        <header className="resource-detail-heading">
+            <div className="resource-detail-icon"><Users size={18} /></div>
+            <div><p className="eyebrow">Group</p><h3>{group.name}</h3></div>
+        </header>
+        <section className="access-detail-section">
+            <h4>Members</h4>
+            {group.members.length ? <ul className="access-membership-list">{group.members.map((member) => <li key={member.id}><AccountLink account={member} onSelectUser={onSelectUser} /></li>)}</ul> : <p className="access-empty">No members.</p>}
         </section>
-    );
+        <section className="access-detail-section">
+            <h4>Permissions</h4>
+            {access.can_manage_permissions ? <GrantList grants={grants} /> : <p className="access-empty">Permission details are not available.</p>}
+        </section>
+    </section>;
 }

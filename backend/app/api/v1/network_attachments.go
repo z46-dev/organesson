@@ -222,7 +222,7 @@ func ensureGuestVMRunning(ctx fiber.Ctx, services common.Services, resourceID in
 	return
 }
 
-// getNetworkAttachmentHandler refreshes the saved NIC placement from Proxmox.
+// getNetworkAttachmentHandler returns saved NIC details with best-effort live Proxmox status.
 func getNetworkAttachmentHandler(services common.Services) (handler fiber.Handler) {
 	handler = func(ctx fiber.Ctx) (err error) {
 		var actorID int
@@ -238,16 +238,17 @@ func getNetworkAttachmentHandler(services common.Services) (handler fiber.Handle
 		if resource, configuration, err = services.Domain.GetNetworkAttachment(actorID, resourceID); err != nil {
 			return common.DomainError(ctx, err)
 		}
-		if services.Proxmox == nil || !services.Proxmox.Configured() {
-			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; live NIC state cannot be refreshed."})
-		}
-		if err = services.Proxmox.ReadNetworkAttachment(ctx, configuration.Request, configuration.Placement); err != nil {
-			if errors.Is(err, proxmox.ErrNetworkAttachmentNotFound) {
-				return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "The managed NIC no longer exists in Proxmox."})
+		var liveState string = "unavailable"
+		if services.Proxmox != nil && services.Proxmox.Configured() {
+			if err = services.Proxmox.ReadNetworkAttachment(ctx, configuration.Request, configuration.Placement); err == nil {
+				liveState = "verified"
+			} else if errors.Is(err, proxmox.ErrNetworkAttachmentNotFound) {
+				liveState = "missing"
+			} else {
+				liveState = "unknown"
 			}
-			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not verify the managed NIC in Proxmox."})
 		}
-		err = ctx.JSON(fiber.Map{"resource": resource, "configuration": configuration})
+		err = ctx.JSON(fiber.Map{"resource": resource, "configuration": configuration, "live_state": liveState})
 		return
 	}
 	return

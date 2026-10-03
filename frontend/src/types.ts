@@ -18,6 +18,9 @@ export type Resource = {
     name: string;
     kind: string;
     power_state: string;
+    external_id?: string;
+    external_node?: string;
+    can_manage_resource: boolean;
     can_power_control: boolean;
     can_snapshot_control: boolean;
     can_console_control: boolean;

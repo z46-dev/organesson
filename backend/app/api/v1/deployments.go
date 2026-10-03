@@ -365,7 +365,7 @@ func createNetworkHandler(services common.Services) (handler fiber.Handler) {
 	return
 }
 
-// getNetworkHandler returns a visible network and its immutable PVE identity.
+// getNetworkHandler returns the recorded network configuration and best-effort live PVE status.
 func getNetworkHandler(services common.Services) (handler fiber.Handler) {
 	handler = func(ctx fiber.Ctx) (err error) {
 		var actorID int
@@ -381,16 +381,17 @@ func getNetworkHandler(services common.Services) (handler fiber.Handler) {
 		if resource, configuration, err = services.Domain.GetSDNNetwork(actorID, resourceID); err != nil {
 			return common.DomainError(ctx, err)
 		}
-		if services.Proxmox == nil || !services.Proxmox.Configured() {
-			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; live network state cannot be refreshed."})
-		}
-		if err = services.Proxmox.ReadSDNNetwork(ctx, configuration.Request, configuration.Placement); err != nil {
-			if errors.Is(err, proxmox.ErrSDNNetworkNotFound) {
-				return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "The managed Proxmox SDN network no longer exists."})
+		var liveState string = "unavailable"
+		if services.Proxmox != nil && services.Proxmox.Configured() {
+			if err = services.Proxmox.ReadSDNNetwork(ctx, configuration.Request, configuration.Placement); err == nil {
+				liveState = "verified"
+			} else if errors.Is(err, proxmox.ErrSDNNetworkNotFound) {
+				liveState = "missing"
+			} else {
+				liveState = "unknown"
 			}
-			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not verify the managed Proxmox SDN network."})
 		}
-		err = ctx.JSON(fiber.Map{"resource": resource, "configuration": configuration})
+		err = ctx.JSON(fiber.Map{"resource": resource, "configuration": configuration, "live_state": liveState})
 		return
 	}
 	return

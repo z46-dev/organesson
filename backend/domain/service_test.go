@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/z46-dev/golog"
 	"github.com/z46-dev/organesson/backend/db"
+	"github.com/z46-dev/organesson/backend/proxmox"
 )
 
 // TestInheritedGroupGrantsScopeViewsAndVMOperations exercises the core access path.
@@ -32,6 +34,10 @@ func TestInheritedGroupGrantsScopeViewsAndVMOperations(t *testing.T) {
 	var outsider *db.Account = &db.Account{DisplayName: "Outsider", ActivatedAt: timePointer(time.Now()), CreatedAt: time.Now()}
 	if err = store.Accounts.Insert(outsider); err != nil {
 		t.Fatalf("insert outsider: %v", err)
+	}
+	var deploymentViewer *db.Account = &db.Account{DisplayName: "Deployment viewer", ActivatedAt: timePointer(time.Now()), CreatedAt: time.Now()}
+	if err = store.Accounts.Insert(deploymentViewer); err != nil {
+		t.Fatalf("insert deployment viewer: %v", err)
 	}
 
 	var deployment *db.Deployment
@@ -73,6 +79,9 @@ func TestInheritedGroupGrantsScopeViewsAndVMOperations(t *testing.T) {
 	if _, err = service.CreatePermissionGrant(admin.ID, db.GrantSubjectKindGroup, accessGroup.ID, db.PermissionVMConsole, studentOwner.ID); err != nil {
 		t.Fatalf("grant inherited console control: %v", err)
 	}
+	if _, err = service.CreatePermissionGrant(admin.ID, db.GrantSubjectKindAccount, deploymentViewer.ID, db.PermissionDeploymentView, *deployment.RootNodeID); err != nil {
+		t.Fatalf("grant deployment view: %v", err)
+	}
 
 	var allowed bool
 	if allowed, err = service.Can(student.ID, db.PermissionResourcePower, studentVM.OwnershipID); err != nil || !allowed {
@@ -97,6 +106,21 @@ func TestInheritedGroupGrantsScopeViewsAndVMOperations(t *testing.T) {
 	}
 	if len(summary.OwnershipNodes) != 3 {
 		t.Fatalf("deployment view should include only the visible resource and its ownership ancestors: %#v", summary.OwnershipNodes)
+	}
+	var networkNode *db.OwnershipNode = &db.OwnershipNode{DeploymentID: deployment.ID, ParentID: deployment.RootNodeID, Kind: db.OwnershipNodeKindResource, Name: "isolated-net", CreatedAt: time.Now()}
+	if err = store.OwnershipNodes.Insert(networkNode); err != nil {
+		t.Fatalf("insert network ownership node: %v", err)
+	}
+	var networkConfig []byte
+	if networkConfig, err = json.Marshal(ManagedNetworkConfiguration{Request: proxmox.SDNNetworkRequest{Name: "isolated-net", Mode: "isolated", EgressPolicy: "none"}, Placement: proxmox.SDNNetworkPlacement{Zone: "og-zone", VNet: "og-vnet"}}); err != nil {
+		t.Fatalf("encode network config: %v", err)
+	}
+	var network *db.ManagedResource = &db.ManagedResource{DeploymentID: deployment.ID, OwnershipID: networkNode.ID, Kind: "virtual_network", Name: networkNode.Name, PowerState: "ready", ConfigurationJSON: string(networkConfig), CreatedAt: time.Now()}
+	if err = store.ManagedResources.Insert(network); err != nil {
+		t.Fatalf("insert network resource: %v", err)
+	}
+	if _, configuration, getErr := service.GetSDNNetwork(deploymentViewer.ID, network.ID); getErr != nil || configuration.Request.Name != "isolated-net" {
+		t.Fatalf("deployment viewer could not open network details: config=%#v err=%v", configuration, getErr)
 	}
 	for _, node := range summary.OwnershipNodes {
 		if node.ID == otherOwner.ID {
@@ -169,11 +193,15 @@ func TestDeploymentAccessSeparatesManagersFromDeploymentAdministrators(t *testin
 	if err = store.Accounts.Insert(charlie); err != nil {
 		t.Fatalf("insert Charlie: %v", err)
 	}
+	var permissionObserver *db.Account = &db.Account{DisplayName: "Permission observer", ActivatedAt: timePointer(time.Now()), CreatedAt: time.Now()}
+	if err = store.Accounts.Insert(permissionObserver); err != nil {
+		t.Fatalf("insert permission observer: %v", err)
+	}
 	var localIdentity *db.AccountIdentity
 	if _, localIdentity, err = store.InitialAdministrator(); err != nil {
 		t.Fatalf("get local identity provider: %v", err)
 	}
-	for _, account := range []*db.Account{manager, charlie} {
+	for _, account := range []*db.Account{manager, charlie, permissionObserver} {
 		var username string = strings.ToLower(account.DisplayName)
 		if err = store.AccountIdentities.Insert(&db.AccountIdentity{
 			AccountID: account.ID, AuthenticationProviderID: localIdentity.AuthenticationProviderID,
@@ -203,6 +231,9 @@ func TestDeploymentAccessSeparatesManagersFromDeploymentAdministrators(t *testin
 	if _, err = service.CreatePermissionGrant(admin.ID, db.GrantSubjectKindAccount, manager.ID, db.PermissionResourceView, *deployment.RootNodeID); err != nil {
 		t.Fatalf("grant manager resource view: %v", err)
 	}
+	if _, err = service.CreatePermissionGrant(admin.ID, db.GrantSubjectKindAccount, permissionObserver.ID, db.PermissionDeploymentManagePermissions, *deployment.RootNodeID); err != nil {
+		t.Fatalf("grant permission observer access: %v", err)
+	}
 	var protectedGrant *db.PermissionGrant
 	if protectedGrant, err = service.CreatePermissionGrant(admin.ID, db.GrantSubjectKindGroup, group.ID, db.PermissionDeploymentManage, *deployment.RootNodeID); err != nil {
 		t.Fatalf("create protected administrator grant: %v", err)
@@ -224,8 +255,14 @@ func TestDeploymentAccessSeparatesManagersFromDeploymentAdministrators(t *testin
 	if access, err = service.GetDeploymentAccess(manager.ID, deployment.ID); err != nil {
 		t.Fatalf("load manager access workspace: %v", err)
 	}
-	if !access.CanManagePermissions || !access.CanManageGroups || access.CanManageConfiguration || len(access.PermissionGrants) != 6 || len(access.Groups) != 1 || len(access.Groups[0].Members) != 1 || access.Groups[0].Members[0].QualifiedName != "charlie@organesson" || len(access.Accounts) != 2 {
+	if !access.CanManagePermissions || !access.CanManageGroups || access.CanManageConfiguration || len(access.PermissionGrants) != 7 || len(access.Groups) != 1 || len(access.Groups[0].Members) != 1 || access.Groups[0].Members[0].QualifiedName != "charlie@organesson" || len(access.Accounts) != 3 {
 		t.Fatalf("unexpected scoped manager access workspace: %#v", access)
+	}
+	if access, err = service.GetDeploymentAccess(permissionObserver.ID, deployment.ID); err != nil {
+		t.Fatalf("load permission-only observer access: %v", err)
+	}
+	if access.CanManageGroups || len(access.Groups) != 1 || len(access.Groups[0].Members) != 1 || access.Groups[0].Members[0].QualifiedName != "charlie@organesson" {
+		t.Fatalf("permission managers must be able to inspect group membership: %#v", access)
 	}
 }
 

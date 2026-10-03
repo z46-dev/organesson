@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -123,6 +124,86 @@ func TestLoginAcceptsUsernameAndRealm(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != fiber.StatusOK {
 		t.Fatalf("login with username and selected realm returned %d", response.StatusCode)
+	}
+}
+
+// TestAdminAuthenticationRealmAPIProtectsCredentialsAndAllowsRealmManagement.
+func TestAdminAuthenticationRealmAPIProtectsCredentialsAndAllowsRealmManagement(t *testing.T) {
+	t.Setenv("ORGANESSON_AUTH_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	var store *db.Store
+	var err error
+	if store, err = db.Open(filepath.Join(t.TempDir(), "organesson.db"), golog.New(), false); err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+	var authentication *localauth.Service
+	if authentication, err = localauth.New(store); err != nil {
+		t.Fatalf("create authentication service: %v", err)
+	}
+	var activationToken string
+	if activationToken, _, err = authentication.EnsureInitialActivationLink(); err != nil {
+		t.Fatalf("create administrator activation: %v", err)
+	}
+	if _, err = authentication.RedeemPasswordLink(activationToken, "A-strong-test-password"); err != nil {
+		t.Fatalf("activate administrator: %v", err)
+	}
+	var application *fiber.App = New(api.Services{Authentication: authentication, Domain: domain.New(store), Store: store}, false, nil)
+	var jar *cookiejar.Jar
+	if jar, err = cookiejar.New(nil); err != nil {
+		t.Fatalf("create cookie jar: %v", err)
+	}
+	var csrfToken string
+	if csrfToken, err = requestCSRFToken(t, application, jar); err != nil {
+		t.Fatalf("get login CSRF token: %v", err)
+	}
+	var response *http.Response = performRequest(t, application, jar, http.MethodPost, "/api/v1/auth/login", `{"username":"administrator","realm":"organesson","password":"A-strong-test-password"}`, csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("login as administrator: status %d", response.StatusCode)
+	}
+	if csrfToken, err = requestCSRFToken(t, application, jar); err != nil {
+		t.Fatalf("get administrator CSRF token: %v", err)
+	}
+	var realmBody string = `{"alias":"cyber","enabled":true,"url":"ldaps://ipa.cyber.lab:636","base_dn":"cn=users,cn=accounts,dc=cyber,dc=lab","user_filter":"(uid={username})","username_attribute":"uid","display_name_attribute":"cn","bind_dn":"uid=organesson,cn=users,cn=accounts,dc=cyber,dc=lab","bind_password":"secret-bind-password"}`
+	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/auth/admin/realms/ldap", realmBody, csrfToken)
+	var responseBody []byte
+	responseBody, _ = io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusCreated || bytes.Contains(responseBody, []byte("secret-bind-password")) {
+		t.Fatalf("create LDAP realm must succeed without echoing credentials: status=%d body=%s", response.StatusCode, responseBody)
+	}
+	response = performRequest(t, application, jar, http.MethodPut, "/api/v1/auth/admin/realms/local", `{"enabled":false}`, csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusConflict {
+		t.Fatalf("last administrator login realm should not be disableable: status %d", response.StatusCode)
+	}
+	response = performRequest(t, application, jar, http.MethodGet, "/api/v1/auth/status", "", "")
+	var status struct {
+		Realms []string `json:"realms"`
+	}
+	if response.StatusCode != fiber.StatusOK || json.NewDecoder(response.Body).Decode(&status) != nil {
+		response.Body.Close()
+		t.Fatalf("read available sign-in realms: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if len(status.Realms) != 2 || status.Realms[0] != "cyber" || status.Realms[1] != "organesson" {
+		t.Fatalf("new LDAP realm was not exposed to login: %v", status.Realms)
+	}
+	response = performRequest(t, application, jar, http.MethodGet, "/api/v1/auth/admin/users", "", "")
+	var usersResult struct {
+		Users []struct {
+			Identities []struct {
+				Realm string `json:"realm"`
+			} `json:"identities"`
+		} `json:"users"`
+	}
+	if response.StatusCode != fiber.StatusOK || json.NewDecoder(response.Body).Decode(&usersResult) != nil {
+		response.Body.Close()
+		t.Fatalf("read user directory: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if len(usersResult.Users) != 1 || len(usersResult.Users[0].Identities) != 1 || usersResult.Users[0].Identities[0].Realm != "organesson" {
+		t.Fatalf("user directory did not preserve the account source: %#v", usersResult.Users)
 	}
 }
 

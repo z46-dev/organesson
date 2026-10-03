@@ -170,12 +170,9 @@ func (service *Service) GetAddressPoolRequest(actorID int, resourceID int) (reso
 		err = ErrNotFound
 		return
 	}
-	if err = service.Require(actorID, db.PermissionResourceView, resource.OwnershipID); err != nil {
-		err = service.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID)
-		if err != nil {
-			resource = nil
-			return
-		}
+	if err = service.requireResourceView(actorID, resource); err != nil {
+		resource = nil
+		return
 	}
 	err = json.Unmarshal([]byte(resource.ConfigurationJSON), &allocation)
 	return
@@ -193,6 +190,23 @@ func (service *Service) DeleteAddressPoolRequest(actorID int, resourceID int) (e
 	}
 	if err = service.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
 		return
+	}
+	var resources []*db.ManagedResource
+	if resources, err = service.store.ManagedResources.SelectAll(); err != nil {
+		return
+	}
+	for _, candidate := range resources {
+		if candidate.Kind != "network_attachment" || candidate.ConfigurationJSON == "" {
+			continue
+		}
+		var configuration ManagedNetworkAttachmentConfiguration
+		if err = json.Unmarshal([]byte(candidate.ConfigurationJSON), &configuration); err != nil {
+			return
+		}
+		if configuration.AddressPoolRequestID == resourceID {
+			err = fmt.Errorf("%w: address allocation is still used by network attachment %q", ErrInvalidInput, candidate.Name)
+			return
+		}
 	}
 	if err = service.store.ManagedResources.Delete(resource.ID); err != nil {
 		return

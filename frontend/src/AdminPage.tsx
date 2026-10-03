@@ -3,6 +3,8 @@ import { Copy, KeyRound } from "lucide-react";
 import { TemplateCatalog } from "./TemplateCatalog";
 import type { ApiRequest } from "./api";
 import { ProxmoxResourcePolicy } from "./ProxmoxResourcePolicy";
+import { AuthenticationSettings } from "./AuthenticationSettings";
+import { UserDirectory } from "./UserDirectory";
 
 type Props = {
     request: ApiRequest;
@@ -12,14 +14,13 @@ type Props = {
 
 // Groups platform-wide configuration and credential management away from deployments.
 export function AdminPage({ request, onError, onNotice }: Props) {
-    const [section, setSection] = useState<"capacity" | "resources" | "networks" | "templates" | "access">("capacity");
+    const [section, setSection] = useState<"capacity" | "resources" | "networks" | "templates" | "authentication" | "users" | "access">("capacity");
     const [token, setToken] = useState("");
     const [tokenId, setTokenId] = useState<number | null>(null);
     const [busy, setBusy] = useState(false);
 
     async function createProviderToken() {
         setBusy(true);
-        onError("");
         try {
             const result = await request<{ id: number; token: string }>("/auth/api-tokens", "POST", {
                 name: "OpenTofu provider",
@@ -40,7 +41,6 @@ export function AdminPage({ request, onError, onNotice }: Props) {
             return;
         }
         setBusy(true);
-        onError("");
         try {
             await request(`/auth/api-tokens/${tokenId}`, "DELETE", {});
             setToken("");
@@ -71,11 +71,15 @@ export function AdminPage({ request, onError, onNotice }: Props) {
                     <button type="button" aria-current={section === "resources" ? "page" : undefined} onClick={() => setSection("resources")}>PVE resources</button>
                     <button type="button" aria-current={section === "networks" ? "page" : undefined} onClick={() => setSection("networks")}>Networks</button>
                     <button type="button" aria-current={section === "templates" ? "page" : undefined} onClick={() => setSection("templates")}>Source VMs</button>
+                    <button type="button" aria-current={section === "authentication" ? "page" : undefined} onClick={() => setSection("authentication")}>Authentication</button>
+                    <button type="button" aria-current={section === "users" ? "page" : undefined} onClick={() => setSection("users")}>Users</button>
                     <button type="button" aria-current={section === "access" ? "page" : undefined} onClick={() => setSection("access")}>Provider access</button>
                 </nav>
                 <div className="admin-settings-content">
                     {(section === "capacity" || section === "resources" || section === "networks") && <ProxmoxResourcePolicy request={request} section={section} onError={onError} onNotice={onNotice} />}
                     {section === "templates" && <TemplateCatalog request={request} onError={onError} onNotice={onNotice} />}
+                    {section === "authentication" && <AuthenticationSettings request={request} onError={onError} onNotice={onNotice} />}
+                    {section === "users" && <UserDirectory request={request} onError={onError} onNotice={onNotice} />}
                     {section === "access" && <section className="panel token-panel" aria-labelledby="provider-token-heading">
                 <div className="token-copy"><span className="panel-icon"><KeyRound size={17} /></span><div><p className="eyebrow">OpenTofu access</p><h2 id="provider-token-heading">Provider API token</h2><p>Create a short-lived token for the local provider smoke example. It belongs to your account and can be revoked by signing in again.</p></div></div>
                 <button className="primary-action" type="button" disabled={busy || tokenId !== null} onClick={createProviderToken}>{busy ? "Creating…" : tokenId !== null ? "Token created in this tab" : "Create 30-day token"}</button>

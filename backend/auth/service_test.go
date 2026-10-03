@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -48,6 +49,63 @@ func TestBootstrapLinkIsSingleUseAndCreatesLocalAuthentication(t *testing.T) {
 	}
 	if _, err = service.Authenticate("administrator@organesson", "wrong-password-value"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("wrong password should be rejected, got %v", err)
+	}
+}
+
+// TestLDAPRealmCredentialsAreEncryptedAndLocalRealmCannotLockOutTheOnlyAdmin.
+func TestLDAPRealmCredentialsAreEncryptedAndLocalRealmCannotLockOutTheOnlyAdmin(t *testing.T) {
+	var store *db.Store
+	var err error
+	if store, err = db.Open(filepath.Join(t.TempDir(), "organesson.db"), golog.New(), false); err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+
+	var service *Service
+	if service, err = New(store); err != nil {
+		t.Fatalf("create authentication service: %v", err)
+	}
+	service.encryptionKey = bytes.Repeat([]byte{0x42}, 32)
+	var realm AuthenticationRealm
+	if realm, err = service.CreateLDAPRealm(LDAPRealmInput{
+		Alias: "cyber", Enabled: true, BindPassword: "sensitive-bind-password",
+		LDAPRealmConfiguration: LDAPRealmConfiguration{
+			URL: "ldaps://ipa.cyber.lab:636", BaseDN: "cn=users,cn=accounts,dc=cyber,dc=lab",
+			UserFilter: "(uid={username})", UsernameAttribute: "uid", DisplayNameAttribute: "cn",
+			BindDN: "uid=organesson,cn=users,cn=accounts,dc=cyber,dc=lab",
+		},
+	}); err != nil {
+		t.Fatalf("create LDAP realm: %v", err)
+	}
+	if realm.Alias != "cyber" || realm.Kind != "ldap" || !realm.Enabled || !realm.HasBindPassword {
+		t.Fatalf("unexpected LDAP realm metadata: %#v", realm)
+	}
+	var providers []*db.AuthenticationProvider
+	if providers, err = store.AuthenticationProviders.SelectAll(); err != nil {
+		t.Fatalf("load authentication providers: %v", err)
+	}
+	var storedSecret *db.AuthenticationProvider
+	for _, provider := range providers {
+		if provider.Alias == "cyber" {
+			storedSecret = provider
+		}
+	}
+	if storedSecret == nil || bytes.Contains([]byte(storedSecret.EncryptedSecretsJSON), []byte("sensitive-bind-password")) {
+		t.Fatalf("LDAP bind password was stored in plaintext: %#v", storedSecret)
+	}
+	var recoveredPassword string
+	if recoveredPassword, err = service.decryptBindPassword(storedSecret); err != nil || recoveredPassword != "sensitive-bind-password" {
+		t.Fatalf("could not recover encrypted LDAP bind password: password=%q err=%v", recoveredPassword, err)
+	}
+	var realms []string
+	if realms, err = service.AuthenticationRealms(); err != nil {
+		t.Fatalf("list authentication realms: %v", err)
+	}
+	if len(realms) != 2 || realms[0] != "cyber" || realms[1] != "organesson" {
+		t.Fatalf("unexpected login realms: %v", realms)
+	}
+	if _, err = service.SetLocalRealmEnabled(false); err == nil {
+		t.Fatal("local realm was disabled while it was the only administrator login")
 	}
 }
 

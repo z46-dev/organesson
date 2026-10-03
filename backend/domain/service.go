@@ -45,6 +45,7 @@ type (
 		CanPowerControl    bool `json:"can_power_control"`
 		CanSnapshotControl bool `json:"can_snapshot_control"`
 		CanConsoleControl  bool `json:"can_console_control"`
+		CanManageResource  bool `json:"can_manage_resource"`
 	}
 
 	DeploymentAccessSummary struct {
@@ -281,13 +282,29 @@ func (service *Service) GetVirtualMachine(actorID int, resourceID int) (resource
 		err = ErrNotFound
 		return
 	}
-	var viewErr error = service.Require(actorID, db.PermissionResourceView, resource.OwnershipID)
-	if viewErr != nil {
-		viewErr = service.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID)
-	}
-	if viewErr != nil {
-		err = viewErr
+	if err = service.requireResourceView(actorID, resource); err != nil {
 		resource = nil
+	}
+	return
+}
+
+// requireResourceView allows resource-level or inherited deployment access consistently across typed resource APIs.
+func (service *Service) requireResourceView(actorID int, resource *db.ManagedResource) (err error) {
+	var allowed bool
+	if allowed, err = service.Can(actorID, db.PermissionResourceView, resource.OwnershipID); err != nil || allowed {
+		return
+	}
+	var deployment *db.Deployment
+	if deployment, err = service.store.Deployments.Select(resource.DeploymentID); err != nil {
+		return
+	}
+	if deployment != nil && deployment.RootNodeID != nil {
+		if allowed, err = service.Can(actorID, db.PermissionDeploymentView, *deployment.RootNodeID); err != nil || allowed {
+			return
+		}
+	}
+	if err = service.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
+		return
 	}
 	return
 }
@@ -642,11 +659,16 @@ func (service *Service) GetDeployment(actorID int, deploymentID int) (summary *D
 			if canConsoleControl, err = service.Can(actorID, db.PermissionVMConsole, resource.OwnershipID); err != nil {
 				return
 			}
+			var canManageResource bool
+			if canManageResource, err = service.Can(actorID, db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
+				return
+			}
 			summary.Resources = append(summary.Resources, &ResourceSummary{
 				ManagedResource:    resource,
 				CanPowerControl:    canPowerControl,
 				CanSnapshotControl: canSnapshotControl,
 				CanConsoleControl:  canConsoleControl,
+				CanManageResource:  canManageResource,
 			})
 			visibleOwnershipIDs[resource.OwnershipID] = struct{}{}
 		}
@@ -753,26 +775,22 @@ func (service *Service) GetDeploymentAccess(actorID int, deploymentID int) (acce
 		sort.Slice(access.Accounts, func(left int, right int) bool {
 			return access.Accounts[left].QualifiedName < access.Accounts[right].QualifiedName
 		})
-		if access.CanManageGroups {
-			if memberships, err = service.store.GroupMemberships.SelectAll(); err != nil {
-				return
-			}
+		if memberships, err = service.store.GroupMemberships.SelectAll(); err != nil {
+			return
 		}
 		for _, group := range groups {
 			if group.DeploymentID != deploymentID {
 				continue
 			}
 			var accessGroup DeploymentAccessGroup = DeploymentAccessGroup{UserGroup: group, Members: []DeploymentAccessAccount{}}
-			if access.CanManageGroups {
-				for _, membership := range memberships {
-					if membership.GroupID != group.ID {
-						continue
-					}
-					for _, account := range access.Accounts {
-						if account.ID == membership.AccountID {
-							accessGroup.Members = append(accessGroup.Members, account)
-							break
-						}
+			for _, membership := range memberships {
+				if membership.GroupID != group.ID {
+					continue
+				}
+				for _, account := range access.Accounts {
+					if account.ID == membership.AccountID {
+						accessGroup.Members = append(accessGroup.Members, account)
+						break
 					}
 				}
 			}

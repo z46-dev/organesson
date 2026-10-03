@@ -121,7 +121,7 @@ func (store *Store) ensureInitialAdministrator() (err error) {
 			return
 		}
 	}
-	if localProvider.Kind != AuthenticationProviderKindLocal || !localProvider.Enabled || !localProvider.SystemManaged {
+	if localProvider.Kind != AuthenticationProviderKindLocal || !localProvider.SystemManaged {
 		err = errors.New("reserved organesson authentication provider has invalid settings")
 		return
 	}

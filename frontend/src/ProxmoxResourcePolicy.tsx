@@ -76,7 +76,6 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
         event.preventDefault();
         setBusy(true);
         setIssues([]);
-        onError("");
         try {
             const result = await request<{ validated_at: string }>("/admin/proxmox/resources", "PUT", policy);
             setValidatedAt(result.validated_at);

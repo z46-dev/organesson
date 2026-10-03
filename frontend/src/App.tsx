@@ -9,6 +9,7 @@ import type { AuthStatus } from "./types";
 import "./index.css";
 
 type ViewMode = "login" | "bootstrap" | "activate";
+type Theme = "light" | "dark";
 
 // Owns authentication, shared application chrome, and top-level navigation.
 export function App() {
@@ -22,6 +23,7 @@ export function App() {
     const [password, setPassword] = useState("");
     const [oneTimeToken, setOneTimeToken] = useState("");
     const [newPassword, setNewPassword] = useState("");
+    const [theme, setTheme] = useState<Theme>(() => localStorage.getItem("organesson-theme") === "dark" ? "dark" : "light");
     const nextToastID = useRef(0);
 
     const pushToast = useCallback((kind: ToastNotice["kind"], message: string) => {
@@ -58,6 +60,11 @@ export function App() {
             }
         }
     }, [realm, status?.realms]);
+
+    useEffect(() => {
+        document.documentElement.dataset.theme = theme;
+        localStorage.setItem("organesson-theme", theme);
+    }, [theme]);
 
     useEffect(() => {
         function updatePath() {
@@ -143,7 +150,11 @@ export function App() {
                         </nav>
                         <details className="profile-menu">
                             <summary><span className="profile-icon" aria-hidden="true">{account.display_name.slice(0, 1).toUpperCase()}</span>{account.qualified_name}</summary>
-                            <div className="profile-popover"><span>{account.qualified_name}</span><button className="quiet-button" type="button" onClick={signOut}>Sign out</button></div>
+                            <div className="profile-popover">
+                                <span>{account.qualified_name}</span>
+                                <div className="theme-control"><span>Theme</span><div role="group" aria-label="Color theme"><button type="button" aria-pressed={theme === "light"} onClick={() => setTheme("light")}>Light</button><button type="button" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>Dark</button></div></div>
+                                <button className="quiet-button" type="button" onClick={signOut}>Sign out</button>
+                            </div>
                         </details>
                     </div>
                 ) : <span className="environment-label">Proxmox resource management</span>}

@@ -324,12 +324,9 @@ func (service *Service) GetNetworkAttachment(actorID int, resourceID int) (resou
 		err = ErrNotFound
 		return
 	}
-	if err = service.Require(actorID, db.PermissionResourceView, resource.OwnershipID); err != nil {
-		err = service.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID)
-		if err != nil {
-			resource = nil
-			return
-		}
+	if err = service.requireResourceView(actorID, resource); err != nil {
+		resource = nil
+		return
 	}
 	err = json.Unmarshal([]byte(resource.ConfigurationJSON), &configuration)
 	return

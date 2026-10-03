@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,21 +33,23 @@ const (
 )
 
 var (
-	ErrInvalidCredentials = errors.New("invalid credentials")
-	ErrInvalidToken       = errors.New("invalid or expired password link")
-	ErrInvalidPassword    = errors.New("password must be between 12 and 1024 bytes")
-	ErrForbidden          = errors.New("permission denied")
-	ErrInvalidInput       = errors.New("invalid input")
-	ErrConflict           = errors.New("account already exists")
+	ErrInvalidCredentials    = errors.New("invalid credentials")
+	ErrInvalidToken          = errors.New("invalid or expired password link")
+	ErrInvalidPassword       = errors.New("password must be between 12 and 1024 bytes")
+	ErrForbidden             = errors.New("permission denied")
+	ErrInvalidInput          = errors.New("invalid input")
+	ErrConflict              = errors.New("account already exists")
+	ErrEncryptionKeyRequired = errors.New("ORGANESSON_AUTH_ENCRYPTION_KEY must be set to manage LDAP bind credentials")
 )
 
 type (
 	// Service handles local password credentials and one-time password links.
 	Service struct {
-		store     *db.Store
-		dummyHash string
-		now       func() time.Time
-		tokenLock sync.Mutex
+		store         *db.Store
+		dummyHash     string
+		encryptionKey []byte
+		now           func() time.Time
+		tokenLock     sync.Mutex
 	}
 
 	// LocalAccountSetup contains a new local account and its one-time activation token.
@@ -71,6 +74,13 @@ func New(store *db.Store) (service *Service, err error) {
 	}
 
 	service = &Service{store: store, now: time.Now}
+	if encodedKey, exists := os.LookupEnv("ORGANESSON_AUTH_ENCRYPTION_KEY"); exists && strings.TrimSpace(encodedKey) != "" {
+		if service.encryptionKey, err = base64.StdEncoding.DecodeString(strings.TrimSpace(encodedKey)); err != nil || len(service.encryptionKey) != 32 {
+			service = nil
+			err = errors.New("ORGANESSON_AUTH_ENCRYPTION_KEY must be base64-encoded 32-byte key material")
+			return
+		}
+	}
 	service.dummyHash = encodePasswordHash(argon2.IDKey([]byte("invalid-account-password"), salt[:], passwordIterations, passwordMemoryKiB, passwordThreads, passwordHashLength), salt[:])
 	return
 }
@@ -542,6 +552,19 @@ func (service *Service) Authenticate(qualifiedName string, password string) (acc
 		err = ErrInvalidCredentials
 		return
 	}
+	qualifiedName = strings.TrimSpace(qualifiedName)
+	var realmDelimiter int = strings.LastIndex(qualifiedName, "@")
+	if realmDelimiter > 0 && realmDelimiter < len(qualifiedName)-1 {
+		var providers []*db.AuthenticationProvider
+		if providers, err = service.store.AuthenticationProviders.SelectAll(); err != nil {
+			return
+		}
+		for _, provider := range providers {
+			if strings.EqualFold(provider.Alias, qualifiedName[realmDelimiter+1:]) && provider.Kind == db.AuthenticationProviderKindLDAP {
+				return service.authenticateLDAP(provider, qualifiedName[:realmDelimiter], password)
+			}
+		}
+	}
 
 	var identities []*db.AccountIdentity
 	if identities, err = service.store.AccountIdentities.SelectAll(); err != nil {
@@ -550,7 +573,7 @@ func (service *Service) Authenticate(qualifiedName string, password string) (acc
 
 	var identity *db.AccountIdentity
 	for _, candidate := range identities {
-		if strings.EqualFold(candidate.QualifiedName, strings.TrimSpace(qualifiedName)) {
+		if strings.EqualFold(candidate.QualifiedName, qualifiedName) {
 			identity = candidate
 			break
 		}
@@ -593,14 +616,14 @@ func (service *Service) Authenticate(qualifiedName string, password string) (acc
 	return
 }
 
-// AuthenticationRealms returns enabled local realms that can currently accept password logins.
+// AuthenticationRealms returns enabled local and LDAP realms that can currently accept password logins.
 func (service *Service) AuthenticationRealms() (realms []string, err error) {
 	var providers []*db.AuthenticationProvider
 	if providers, err = service.store.AuthenticationProviders.SelectAll(); err != nil {
 		return
 	}
 	for _, provider := range providers {
-		if provider.Enabled && provider.Kind == db.AuthenticationProviderKindLocal {
+		if provider.Enabled && (provider.Kind == db.AuthenticationProviderKindLocal || provider.Kind == db.AuthenticationProviderKindLDAP) {
 			realms = append(realms, provider.Alias)
 		}
 	}

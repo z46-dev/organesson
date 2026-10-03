@@ -119,7 +119,6 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
     async function saveTemplate(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
         setBusy(true);
-        onError("");
         try {
             if (editingId === null) {
                 await request("/admin/vm-templates", "POST", {
@@ -166,7 +165,6 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
             return;
         }
         setBusy(true);
-        onError("");
         try {
             await request(`/admin/vm-templates/${templateId}/aliases`, "POST", { alias });
             setAliasDrafts((current) => ({ ...current, [templateId]: "" }));
@@ -181,7 +179,6 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
 
     async function removeAlias(templateId: number, aliasId: number) {
         setBusy(true);
-        onError("");
         try {
             await request(`/admin/vm-templates/${templateId}/aliases/${aliasId}`, "DELETE");
             await refresh();
@@ -195,7 +192,6 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
 
     async function runPreflight(templateId: number) {
         setBusy(true);
-        onError("");
         try {
             const result = await request<{ preflight: PreflightResult }>(`/admin/vm-templates/${templateId}/preflight`, "POST", {});
             await refresh();
