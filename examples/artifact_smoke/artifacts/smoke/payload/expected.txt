@@ -1,1 +1,0 @@
-artifact payload delivered through QEMU Guest Agent
