@@ -2,6 +2,7 @@ package domain
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,12 +14,55 @@ import (
 	"github.com/z46-dev/organesson/backend/proxmox"
 )
 
+// allocateManagedNetworkAddresses assigns the first free hosts inside a declared range.
+func allocateManagedNetworkAddresses(pool proxmox.AddressPool, rangeStart string, rangeEnd string, count int, reserved []string) (addresses []string, err error) {
+	var (
+		first       netip.Addr
+		last        netip.Addr
+		prefix      netip.Prefix
+		reservedSet map[string]bool = make(map[string]bool, len(reserved))
+	)
+	if first, err = netip.ParseAddr(rangeStart); err != nil {
+		return
+	}
+	if last, err = netip.ParseAddr(rangeEnd); err != nil {
+		return
+	}
+	if prefix, err = netip.ParsePrefix(pool.Prefix); err != nil {
+		return
+	}
+	if !first.Is4() || !last.Is4() || !prefix.Contains(first) || !prefix.Contains(last) || first.Compare(last) > 0 {
+		err = errors.New("managed network allocation range is outside its IPv4 subnet")
+		return
+	}
+	for _, address := range reserved {
+		reservedSet[address] = true
+	}
+	var current netip.Addr = first
+	for current.IsValid() && current.Compare(last) <= 0 && len(addresses) < count {
+		if !reservedSet[current.String()] {
+			addresses = append(addresses, current.String())
+		}
+		if current == last {
+			break
+		}
+		current = current.Next()
+	}
+	if len(addresses) != count {
+		err = fmt.Errorf("managed network address range has only %d available addresses; %d requested", len(addresses), count)
+	}
+	return
+}
+
 type (
-	// AddressPoolRequest reserves environment-network addresses for one deployment.
+	// AddressPoolRequest reserves deployment-scoped addresses from an environment pool or managed VNet range.
 	AddressPoolRequest struct {
 		DeploymentID       int                       `json:"deployment_id"`
+		LogicalNetworkID   int                       `json:"logical_network_id,omitempty"`
 		Name               string                    `json:"name"`
 		EnvironmentNetwork string                    `json:"environment_network"`
+		RangeStart         string                    `json:"range_start,omitempty"`
+		RangeEnd           string                    `json:"range_end,omitempty"`
 		AddressFamily      string                    `json:"address_family"`
 		AddressCount       int                       `json:"address_count"`
 		PoolName           string                    `json:"pool_name"`
@@ -37,14 +81,14 @@ type (
 	}
 )
 
-// ReserveAddressPoolRequest validates policy and durably allocates a deployment's environment addresses.
+// ReserveAddressPoolRequest validates policy and durably allocates a deployment's network addresses.
 func (service *Service) ReserveAddressPoolRequest(actorID int, request AddressPoolRequest) (resource *db.ManagedResource, allocation AddressPoolRequest, err error) {
 	service.provisioningLock.Lock()
 	defer service.provisioningLock.Unlock()
 	request.Name = strings.TrimSpace(request.Name)
 	request.EnvironmentNetwork = strings.TrimSpace(request.EnvironmentNetwork)
 	request.AddressFamily = strings.TrimSpace(request.AddressFamily)
-	if request.DeploymentID < 1 || request.Name == "" || len(request.Name) > 128 || request.EnvironmentNetwork == "" || (request.AddressFamily != "ipv4" && request.AddressFamily != "ipv6") || request.AddressCount < 1 || request.AddressCount > 4096 {
+	if request.DeploymentID < 1 || request.Name == "" || len(request.Name) > 128 || request.LogicalNetworkID < 0 || (request.EnvironmentNetwork == "") == (request.LogicalNetworkID == 0) || (request.AddressFamily != "ipv4" && request.AddressFamily != "ipv6") || request.AddressCount < 1 || request.AddressCount > 4096 {
 		err = fmt.Errorf("%w: address-pool request is invalid", ErrInvalidInput)
 		return
 	}
@@ -76,45 +120,100 @@ func (service *Service) ReserveAddressPoolRequest(actorID int, request AddressPo
 		if err = json.Unmarshal([]byte(current.ConfigurationJSON), &allocation); err != nil {
 			return
 		}
-		if allocation.DeploymentID != request.DeploymentID || allocation.Name != request.Name || allocation.EnvironmentNetwork != request.EnvironmentNetwork || allocation.AddressFamily != request.AddressFamily || allocation.AddressCount != request.AddressCount {
+		if allocation.DeploymentID != request.DeploymentID || allocation.Name != request.Name || allocation.EnvironmentNetwork != request.EnvironmentNetwork || allocation.LogicalNetworkID != request.LogicalNetworkID || allocation.RangeStart != request.RangeStart || allocation.RangeEnd != request.RangeEnd || allocation.AddressFamily != request.AddressFamily || allocation.AddressCount != request.AddressCount {
 			err = fmt.Errorf("%w: address-pool request already exists with different settings", ErrInvalidInput)
 			return
 		}
 		resource = current
 		return
 	}
-	var policy proxmox.ResourcePolicy
-	if err = service.validatedProxmoxPolicy(&policy); err != nil {
-		return
-	}
 	var selectedPool *proxmox.AddressPool
-	for _, network := range policy.Networks {
-		if network.Name != request.EnvironmentNetwork {
-			continue
+	if request.LogicalNetworkID > 0 {
+		if request.AddressFamily != "ipv4" || request.RangeStart == "" || request.RangeEnd == "" {
+			err = fmt.Errorf("%w: managed-network requests require an IPv4 range", ErrInvalidInput)
+			return
 		}
-		for index := range network.AddressPools {
-			var pool proxmox.AddressPool = network.AddressPools[index]
-			var allocationPrefix string = pool.AllocationPrefix
-			if allocationPrefix == "" {
-				allocationPrefix = pool.Prefix
+		var networkResource *db.ManagedResource
+		if networkResource, err = service.store.ManagedResources.Select(request.LogicalNetworkID); err != nil {
+			return
+		}
+		if networkResource == nil || networkResource.Kind != "virtual_network" || networkResource.DeploymentID != request.DeploymentID || networkResource.PowerState != "ready" {
+			err = fmt.Errorf("%w: address ranges require a ready managed network in this deployment", ErrInvalidInput)
+			return
+		}
+		var networkConfiguration ManagedNetworkConfiguration
+		if err = json.Unmarshal([]byte(networkResource.ConfigurationJSON), &networkConfiguration); err != nil {
+			return
+		}
+		var prefix netip.Prefix
+		var firstAddress netip.Addr
+		var lastAddress netip.Addr
+		if prefix, err = netip.ParsePrefix(networkConfiguration.Request.Subnet); err != nil {
+			return
+		}
+		if firstAddress, err = netip.ParseAddr(request.RangeStart); err != nil {
+			return
+		}
+		if lastAddress, err = netip.ParseAddr(request.RangeEnd); err != nil {
+			return
+		}
+		gateway, gatewayErr := netip.ParseAddr(networkConfiguration.Request.Gateway)
+		var broadcast netip.Addr
+		if prefix.Addr().Is4() {
+			var networkBytes [4]byte = prefix.Masked().Addr().As4()
+			var hostBits uint = uint(32 - prefix.Bits())
+			var hostMask uint32
+			if hostBits == 32 {
+				hostMask = ^uint32(0)
+			} else {
+				hostMask = (uint32(1) << hostBits) - 1
 			}
-			var prefix netip.Prefix
-			if prefix, err = netip.ParsePrefix(allocationPrefix); err != nil {
-				return
-			}
-			if (request.AddressFamily == "ipv4") != prefix.Addr().Is4() {
+			var broadcastBytes [4]byte
+			binary.BigEndian.PutUint32(broadcastBytes[:], binary.BigEndian.Uint32(networkBytes[:])|hostMask)
+			broadcast = netip.AddrFrom4(broadcastBytes)
+		}
+		if gatewayErr != nil || !prefix.Addr().Is4() || !firstAddress.Is4() || !lastAddress.Is4() || !prefix.Contains(firstAddress) || !prefix.Contains(lastAddress) || firstAddress.Compare(lastAddress) > 0 || firstAddress == prefix.Masked().Addr() || lastAddress == broadcast || gateway.IsValid() && gateway.Compare(firstAddress) >= 0 && gateway.Compare(lastAddress) <= 0 {
+			err = fmt.Errorf("%w: address range must be ordered usable host addresses within the managed network and exclude its gateway", ErrInvalidInput)
+			return
+		}
+		selectedPool = &proxmox.AddressPool{Name: "managed-network", Prefix: prefix.String(), AllocationPrefix: prefix.String(), Gateway: networkConfiguration.Request.Gateway}
+	} else {
+		if request.RangeStart != "" || request.RangeEnd != "" {
+			err = fmt.Errorf("%w: range bounds are only valid for a managed network", ErrInvalidInput)
+			return
+		}
+		var policy proxmox.ResourcePolicy
+		if err = service.validatedProxmoxPolicy(&policy); err != nil {
+			return
+		}
+		for _, network := range policy.Networks {
+			if network.Name != request.EnvironmentNetwork {
 				continue
 			}
-			if selectedPool != nil {
-				err = fmt.Errorf("%w: environment network %q has multiple %s pools; allocation is ambiguous", ErrInvalidInput, request.EnvironmentNetwork, request.AddressFamily)
-				return
+			for index := range network.AddressPools {
+				var pool proxmox.AddressPool = network.AddressPools[index]
+				var allocationPrefix string = pool.AllocationPrefix
+				if allocationPrefix == "" {
+					allocationPrefix = pool.Prefix
+				}
+				var prefix netip.Prefix
+				if prefix, err = netip.ParsePrefix(allocationPrefix); err != nil {
+					return
+				}
+				if (request.AddressFamily == "ipv4") != prefix.Addr().Is4() {
+					continue
+				}
+				if selectedPool != nil {
+					err = fmt.Errorf("%w: environment network %q has multiple %s pools; allocation is ambiguous", ErrInvalidInput, request.EnvironmentNetwork, request.AddressFamily)
+					return
+				}
+				selectedPool = &pool
 			}
-			selectedPool = &pool
 		}
-	}
-	if selectedPool == nil {
-		err = fmt.Errorf("%w: no %s address pool is configured for environment network %q", ErrInvalidInput, request.AddressFamily, request.EnvironmentNetwork)
-		return
+		if selectedPool == nil {
+			err = fmt.Errorf("%w: no %s address pool is configured for environment network %q", ErrInvalidInput, request.AddressFamily, request.EnvironmentNetwork)
+			return
+		}
 	}
 	var reserved []string
 	for _, current := range resources {
@@ -125,17 +224,25 @@ func (service *Service) ReserveAddressPoolRequest(actorID int, request AddressPo
 		if err = json.Unmarshal([]byte(current.ConfigurationJSON), &existing); err != nil {
 			return
 		}
-		if existing.EnvironmentNetwork == request.EnvironmentNetwork && existing.PoolName == selectedPool.Name && existing.AddressFamily == request.AddressFamily {
+		if existing.EnvironmentNetwork == request.EnvironmentNetwork && existing.LogicalNetworkID == request.LogicalNetworkID && existing.PoolName == selectedPool.Name && existing.AddressFamily == request.AddressFamily {
 			reserved = append(reserved, existing.Addresses...)
 		}
 	}
-	if allocation.Addresses, err = proxmox.AllocateAddresses(*selectedPool, request.AddressCount, reserved); err != nil {
+	if request.LogicalNetworkID > 0 {
+		if allocation.Addresses, err = allocateManagedNetworkAddresses(*selectedPool, request.RangeStart, request.RangeEnd, request.AddressCount, reserved); err != nil {
+			err = fmt.Errorf("%w: %v", ErrInvalidInput, err)
+			return
+		}
+	} else if allocation.Addresses, err = proxmox.AllocateAddresses(*selectedPool, request.AddressCount, reserved); err != nil {
 		err = fmt.Errorf("%w: %v", ErrInvalidInput, err)
 		return
 	}
 	allocation.DeploymentID = request.DeploymentID
 	allocation.Name = request.Name
 	allocation.EnvironmentNetwork = request.EnvironmentNetwork
+	allocation.LogicalNetworkID = request.LogicalNetworkID
+	allocation.RangeStart = request.RangeStart
+	allocation.RangeEnd = request.RangeEnd
 	allocation.AddressFamily = request.AddressFamily
 	allocation.AddressCount = request.AddressCount
 	allocation.PoolName = selectedPool.Name

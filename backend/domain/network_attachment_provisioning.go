@@ -119,8 +119,8 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 		if err = json.Unmarshal([]byte(poolResource.ConfigurationJSON), &stored); err != nil {
 			return
 		}
-		if request.EnvironmentNetwork == "" || stored.EnvironmentNetwork != request.EnvironmentNetwork || stored.AddressFamily != "ipv4" {
-			err = fmt.Errorf("%w: address pool must use this attachment's IPv4 environment network", ErrInvalidInput)
+		if stored.AddressFamily != "ipv4" || stored.EnvironmentNetwork != request.EnvironmentNetwork || stored.LogicalNetworkID != request.LogicalNetworkID {
+			err = fmt.Errorf("%w: address pool must use this attachment's IPv4 network", ErrInvalidInput)
 			return
 		}
 		allocation = &stored
@@ -211,10 +211,11 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 
 // GuestNetworkInput is the desired guest-side IPv4 setup for a managed attachment.
 type GuestNetworkInput struct {
-	Method  string   `json:"ipv4_method"`
-	Address string   `json:"ipv4_address,omitempty"`
-	Gateway string   `json:"ipv4_gateway,omitempty"`
-	DNS     []string `json:"ipv4_dns,omitempty"`
+	Method       string   `json:"ipv4_method"`
+	Address      string   `json:"ipv4_address,omitempty"`
+	Gateway      string   `json:"ipv4_gateway,omitempty"`
+	DNS          []string `json:"ipv4_dns,omitempty"`
+	NeverDefault bool     `json:"ipv4_never_default,omitempty"`
 }
 
 // SaveGuestNetworkConfiguration stores guest settings only after the caller applies them through QGA.
@@ -243,7 +244,7 @@ func (service *Service) SaveGuestNetworkConfiguration(actorID int, resourceID in
 		Node: configuration.Request.Node, VMID: configuration.Request.VMID,
 		VMOperationKey: configuration.Request.VMOperationKey, AttachmentKey: configuration.Request.AttachmentOperationKey,
 		Bridge: configuration.Request.Bridge, NetworkOperationKey: configuration.Request.NetworkOperationKey,
-		Placement: configuration.Placement, Method: input.Method, Address: input.Address, Gateway: input.Gateway, DNS: input.DNS,
+		Placement: configuration.Placement, Method: input.Method, Address: input.Address, Gateway: input.Gateway, DNS: input.DNS, NeverDefault: input.NeverDefault,
 	}
 	configuration.GuestNetwork = &request
 	var encoded []byte

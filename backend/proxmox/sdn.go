@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"time"
 
 	pve "github.com/luthermonson/go-proxmox"
 	"github.com/z46-dev/organesson/backend/config"
@@ -24,6 +25,7 @@ type (
 		Subnet         string `json:"subnet,omitempty"`
 		Gateway        string `json:"gateway,omitempty"`
 		DHCPEnabled    bool   `json:"dhcp_enabled"`
+		RouterVMID     int    `json:"router_vmid,omitempty"`
 		EgressPolicy   string `json:"egress_policy"`
 		OperationKey   string `json:"operation_key"`
 		VNetSourceZone string `json:"vnet_source_zone,omitempty"`
@@ -48,9 +50,32 @@ type (
 		Subnet   string `json:"subnet,omitempty"`
 		VMID     string `json:"vmid,omitempty"`
 	}
+
+	// SDNRouterObservedAddress describes a leased or recently-neighbored guest address.
+	SDNRouterObservedAddress struct {
+		Address            string     `json:"address"`
+		MAC                string     `json:"mac,omitempty"`
+		Hostname           string     `json:"hostname,omitempty"`
+		Source             string     `json:"source,omitempty"`
+		LeaseExpiresAt     *time.Time `json:"lease_expires_at,omitempty"`
+		VirtualMachineID   int        `json:"virtual_machine_id,omitempty"`
+		VirtualMachineName string     `json:"virtual_machine_name,omitempty"`
+	}
+
+	// SDNRouterPollingResult contains read-only observations collected through QEMU Guest Agent.
+	SDNRouterPollingResult struct {
+		State             string                     `json:"state"`
+		RouterVMID        int                        `json:"router_vmid,omitempty"`
+		LastPolledAt      time.Time                  `json:"last_polled_at,omitempty"`
+		ObservedAddresses []SDNRouterObservedAddress `json:"observed_addresses"`
+	}
+
+	SDNRouterPoller interface {
+		PollRouter(context.Context, SDNNetworkRequest, SDNNetworkPlacement) (SDNRouterPollingResult, error)
+	}
 )
 
-// CreateSDNNetwork provisions an isolated VNet and its optional subnet in Proxmox.
+// CreateSDNNetwork provisions an isolated Proxmox SDN VNet.
 func (service *Service) CreateSDNNetwork(ctx context.Context, request SDNNetworkRequest) (placement SDNNetworkPlacement, err error) {
 	if service == nil || service.sdnNetworkDriver == nil || !service.Configured() {
 		err = ErrNotConfigured
@@ -59,6 +84,48 @@ func (service *Service) CreateSDNNetwork(ctx context.Context, request SDNNetwork
 	service.lifecycleLock.Lock()
 	defer service.lifecycleLock.Unlock()
 	placement, err = service.sdnNetworkDriver.Create(ctx, request)
+	return
+}
+
+// PollSDNRouter returns cached, read-only router observations for a managed network.
+func (service *Service) PollSDNRouter(ctx context.Context, request SDNNetworkRequest, placement SDNNetworkPlacement) (result SDNRouterPollingResult, err error) {
+	if request.RouterVMID == 0 {
+		result = SDNRouterPollingResult{State: "not_configured", ObservedAddresses: []SDNRouterObservedAddress{}}
+		return
+	}
+	if service == nil || service.sdnNetworkDriver == nil || !service.Configured() {
+		result = SDNRouterPollingResult{State: "unavailable", RouterVMID: request.RouterVMID, ObservedAddresses: []SDNRouterObservedAddress{}}
+		err = ErrNotConfigured
+		return
+	}
+	var cacheKey string = fmt.Sprintf("%s:%d", request.OperationKey, request.RouterVMID)
+	service.routerPollingLock.Lock()
+	if service.routerPollingCache == nil {
+		service.routerPollingCache = make(map[string]cachedRouterPollingResult)
+	}
+	if cached, supported := service.routerPollingCache[cacheKey]; supported && time.Since(cached.cachedAt) < cached.cacheTTL {
+		service.routerPollingLock.Unlock()
+		result = cached.result
+		return
+	}
+	service.routerPollingLock.Unlock()
+	var poller SDNRouterPoller
+	var supported bool
+	if poller, supported = service.sdnNetworkDriver.(SDNRouterPoller); !supported {
+		result = SDNRouterPollingResult{State: "unavailable", RouterVMID: request.RouterVMID, ObservedAddresses: []SDNRouterObservedAddress{}}
+		return
+	}
+	result, err = poller.PollRouter(ctx, request, placement)
+	if result.LastPolledAt.IsZero() {
+		result.LastPolledAt = time.Now().UTC()
+	}
+	service.routerPollingLock.Lock()
+	var cacheTTL time.Duration = 30 * time.Second
+	if result.State != "available" {
+		cacheTTL = 5 * time.Second
+	}
+	service.routerPollingCache[cacheKey] = cachedRouterPollingResult{result: result, cachedAt: time.Now(), cacheTTL: cacheTTL}
+	service.routerPollingLock.Unlock()
 	return
 }
 
@@ -192,7 +259,7 @@ func (driver *apiSDNNetworkDriver) Create(ctx context.Context, request SDNNetwor
 		}
 		changed = true
 	}
-	if request.Mode == "managed" {
+	if request.Mode == "managed" && existingVNet != nil {
 		var vnet *pve.VNet
 		if vnet, err = cluster.SDNVNet(ctx, placement.VNet); err != nil {
 			return
@@ -201,21 +268,13 @@ func (driver *apiSDNNetworkDriver) Create(ctx context.Context, request SDNNetwor
 		if subnets, err = vnet.Subnets(ctx); err != nil {
 			return
 		}
-		var subnetExists bool
 		for _, subnet := range subnets {
-			if subnet != nil && subnet.CIDR == request.Subnet {
-				subnetExists = true
-				if subnet.Gateway != request.Gateway {
-					err = errors.New("existing Proxmox SDN subnet has a different gateway")
+			if subnet != nil {
+				if err = vnet.Subnet(subnet.ID).Delete(ctx); err != nil {
 					return
 				}
+				changed = true
 			}
-		}
-		if !subnetExists {
-			if err = vnet.NewSubnet(ctx, &pve.SDNSubnetOptions{Subnet: request.Subnet, Gateway: request.Gateway}); err != nil {
-				return
-			}
-			changed = true
 		}
 	}
 	if changed {
@@ -310,23 +369,8 @@ func (driver *apiSDNNetworkDriver) Read(ctx context.Context, request SDNNetworkR
 	if subnets, err = vnet.Subnets(ctx); err != nil {
 		return
 	}
-	if request.Mode == "managed" {
-		var subnetFound bool
-		for _, subnet := range subnets {
-			if subnet != nil && subnet.CIDR == request.Subnet {
-				subnetFound = true
-				if subnet.Gateway != request.Gateway {
-					err = errors.New("Proxmox SDN gateway no longer matches the Organesson network")
-					return
-				}
-			}
-		}
-		if !subnetFound {
-			err = ErrSDNNetworkNotFound
-			return
-		}
-	} else if len(subnets) != 0 {
-		err = errors.New("Proxmox unmanaged layer-2 VNet unexpectedly has subnet configuration")
+	if len(subnets) != 0 {
+		err = errors.New("Organesson VNet unexpectedly has subnet configuration; gateway and DHCP are managed by the attached router")
 	}
 	return
 }
@@ -504,10 +548,14 @@ func validateSDNNetworkRequest(request SDNNetworkRequest) (err error) {
 		err = errors.New("isolated SDN network requires a name, operation key, and isolated egress policy")
 		return
 	}
+	if request.RouterVMID < 0 {
+		err = errors.New("router VMID cannot be negative")
+		return
+	}
 	switch request.Mode {
 	case "unmanaged-layer-2":
-		if request.Subnet != "" || request.Gateway != "" || request.DHCPEnabled {
-			err = errors.New("unmanaged layer-2 network cannot configure a subnet, gateway, or DHCP")
+		if request.Subnet != "" || request.Gateway != "" || request.DHCPEnabled || request.RouterVMID != 0 {
+			err = errors.New("unmanaged layer-2 network cannot configure a subnet, gateway, DHCP, or router polling")
 		}
 	case "managed":
 		var prefix netip.Prefix

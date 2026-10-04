@@ -33,7 +33,8 @@ func TestGuestSetupProviderUploadsOnlyVerifiedArtifactDuringApply(t *testing.T) 
 	}
 	var artifact artifactPackage
 	var err error
-	if artifact, err = packageArtifact(sourceDirectory, "entrypoint.sh"); err != nil {
+	var inlineFiles map[string]string = map[string]string{"router.conf": "DHCP_START=192.168.100.100\n"}
+	if artifact, err = packageArtifactWithFiles(sourceDirectory, "entrypoint.sh", inlineFiles); err != nil {
 		t.Fatal(err)
 	}
 	var requestCount atomic.Int32
@@ -59,6 +60,7 @@ func TestGuestSetupProviderUploadsOnlyVerifiedArtifactDuringApply(t *testing.T) 
 	var data *schema.ResourceData = schema.TestResourceDataRaw(t, resource.Schema, map[string]interface{}{
 		"artifact_id":        "local:artifact:test",
 		"entrypoint":         "entrypoint.sh",
+		"inline_files":       map[string]interface{}{"router.conf": "DHCP_START=192.168.100.100\n"},
 		"sha256":             artifact.SHA256,
 		"source_directory":   sourceDirectory,
 		"virtual_machine_id": "42",
@@ -169,10 +171,11 @@ func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {
 	var network *schema.ResourceData = schema.TestResourceDataRaw(t, provider.ResourcesMap["organesson_network"].Schema, map[string]interface{}{
 		"deployment_id": deployment.Id(), "name": "shared-lan", "mode": "managed", "ipv4_subnet": "192.168.100.0/24",
 		"ipv4_gateway": "192.168.100.1", "dhcp_enabled": true, "egress_policy": "isolated",
+		"router_vmid": 158,
 	})
 	createRemoteResource(t, ctx, provider.ResourcesMap["organesson_network"], network, client)
 	readRemoteResource(t, ctx, provider.ResourcesMap["organesson_network"], network, client)
-	if network.Get("proxmox_vnet") == "" || network.Get("power_state") != "ready" {
+	if network.Get("proxmox_vnet") == "" || network.Get("power_state") != "ready" || network.Get("router_vmid") != 158 || networkDriver.request.RouterVMID != 158 {
 		t.Fatalf("network refresh did not restore Proxmox placement: %#v", network.Get("proxmox_vnet"))
 	}
 	if err = deployment.Set("description", "updated description"); err != nil {
@@ -433,6 +436,7 @@ type providerLifecycleVMDriver struct {
 
 type acceptanceSDNNetworkDriver struct {
 	deleted bool
+	request proxmox.SDNNetworkRequest
 }
 
 type acceptanceNetworkAttachmentDriver struct {
@@ -475,6 +479,7 @@ func (driver *acceptanceNetworkAttachmentDriver) Detach(_ context.Context, _ pro
 }
 
 func (driver *acceptanceSDNNetworkDriver) Create(_ context.Context, request proxmox.SDNNetworkRequest) (placement proxmox.SDNNetworkPlacement, err error) {
+	driver.request = request
 	placement = proxmox.SDNNetworkNames(request.OperationKey)
 	return
 }

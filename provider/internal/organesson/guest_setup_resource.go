@@ -26,6 +26,7 @@ func guestSetupResource() (resource *schema.Resource) {
 			"entrypoint":         {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The entrypoint path within the artifact package."},
 			"execution_status":   {Type: schema.TypeString, Computed: true, Description: "Guest execution result."},
 			"exit_code":          {Type: schema.TypeInt, Computed: true, Description: "Guest entrypoint exit code."},
+			"inline_files":       {Type: schema.TypeMap, Optional: true, ForceNew: true, Sensitive: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Generated non-secret regular files packaged with the artifact."},
 			"sha256":             {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Expected SHA-256 digest from the artifact resource."},
 			"source_directory":   {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Local package source directory; artifact bytes are sent only during apply."},
 			"virtual_machine_id": {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Target Proxmox-backed VM resource identifier."},
@@ -39,7 +40,7 @@ func guestSetupCreate(ctx context.Context, data *schema.ResourceData, meta inter
 	var client *apiClient = meta.(*apiClient)
 	var artifact artifactPackage
 	var err error
-	if artifact, err = packageArtifact(data.Get("source_directory").(string), data.Get("entrypoint").(string)); err != nil {
+	if artifact, err = packageArtifactWithFiles(data.Get("source_directory").(string), data.Get("entrypoint").(string), artifactInlineFiles(data.Get("inline_files"))); err != nil {
 		diagnostics = diag.FromErr(err)
 		return
 	}
@@ -75,6 +76,19 @@ func guestSetupCreate(ctx context.Context, data *schema.ResourceData, meta inter
 		return
 	}
 	data.SetId(localResourceID("guest-setup", fmt.Sprintf("%s:%s:%s", vmID, data.Get("artifact_id").(string), artifact.SHA256)))
+	return
+}
+
+// artifactInlineFiles converts schema map values into generated artifact contents.
+func artifactInlineFiles(value interface{}) (files map[string]string) {
+	files = make(map[string]string)
+	if values, ok := value.(map[string]interface{}); ok {
+		for filePath, rawContents := range values {
+			if contents, ok := rawContents.(string); ok {
+				files[filePath] = contents
+			}
+		}
+	}
 	return
 }
 

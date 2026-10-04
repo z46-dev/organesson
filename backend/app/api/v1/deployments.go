@@ -32,7 +32,10 @@ type (
 
 	createAddressPoolRequest struct {
 		Name               string `json:"name"`
-		EnvironmentNetwork string `json:"environment_network"`
+		EnvironmentNetwork string `json:"environment_network,omitempty"`
+		LogicalNetworkID   int    `json:"logical_network_id,omitempty"`
+		RangeStart         string `json:"range_start,omitempty"`
+		RangeEnd           string `json:"range_end,omitempty"`
 		AddressFamily      string `json:"address_family"`
 		AddressCount       int    `json:"address_count"`
 	}
@@ -45,6 +48,7 @@ type (
 		Gateway      string `json:"ipv4_gateway"`
 		DHCPEnabled  bool   `json:"dhcp_enabled"`
 		EgressPolicy string `json:"egress_policy"`
+		RouterVMID   int    `json:"router_vmid"`
 	}
 
 	createNetworkAttachmentRequest struct {
@@ -270,6 +274,7 @@ func createAddressPoolRequestHandler(services common.Services) (handler fiber.Ha
 		var allocation domain.AddressPoolRequest
 		if resource, allocation, err = services.Domain.ReserveAddressPoolRequest(actorID, domain.AddressPoolRequest{
 			DeploymentID: deploymentID, Name: request.Name, EnvironmentNetwork: request.EnvironmentNetwork,
+			LogicalNetworkID: request.LogicalNetworkID, RangeStart: request.RangeStart, RangeEnd: request.RangeEnd,
 			AddressFamily: request.AddressFamily, AddressCount: request.AddressCount,
 		}); err != nil {
 			return common.DomainError(ctx, err)
@@ -342,7 +347,7 @@ func createNetworkHandler(services common.Services) (handler fiber.Handler) {
 		}
 		var networkRequest proxmox.SDNNetworkRequest = proxmox.SDNNetworkRequest{
 			Name: request.Name, Mode: request.Mode, Subnet: request.Subnet, Gateway: request.Gateway,
-			DHCPEnabled: request.DHCPEnabled, EgressPolicy: request.EgressPolicy,
+			DHCPEnabled: request.DHCPEnabled, EgressPolicy: request.EgressPolicy, RouterVMID: request.RouterVMID,
 		}
 		var resource *db.ManagedResource
 		if resource, err = services.Domain.ReserveSDNNetwork(actorID, deploymentID, request.ParentNodeID, networkRequest); err != nil {
@@ -383,22 +388,41 @@ func getNetworkHandler(services common.Services) (handler fiber.Handler) {
 			return common.DomainError(ctx, err)
 		}
 		var liveState string = "unavailable"
-		var ipamState string = "unavailable"
-		var ipamEntries []proxmox.SDNIPAMEntry
+		var staticAddresses []domain.StaticNetworkAddress = []domain.StaticNetworkAddress{}
+		var routerPolling proxmox.SDNRouterPollingResult = proxmox.SDNRouterPollingResult{
+			State: "not_configured", ObservedAddresses: []proxmox.SDNRouterObservedAddress{},
+		}
 		if services.Proxmox != nil && services.Proxmox.Configured() {
 			if err = services.Proxmox.ReadSDNNetwork(ctx, configuration.Request, configuration.Placement); err == nil {
 				liveState = "verified"
-				ipamEntries, ipamState, err = services.Proxmox.ReadSDNNetworkIPAM(ctx, configuration.Request, configuration.Placement)
-				if err != nil {
-					ipamState = "unavailable"
-				}
 			} else if errors.Is(err, proxmox.ErrSDNNetworkNotFound) {
 				liveState = "missing"
 			} else {
 				liveState = "unknown"
 			}
+			if configuration.Request.Mode == "managed" {
+				routerPolling, _ = services.Proxmox.PollSDNRouter(ctx, configuration.Request, configuration.Placement)
+				if routerPolling.ObservedAddresses, err = services.Domain.LinkObservedNetworkAddresses(actorID, resource, routerPolling.ObservedAddresses); err != nil {
+					return common.DomainError(ctx, err)
+				}
+			}
 		}
-		err = ctx.JSON(fiber.Map{"resource": resource, "configuration": configuration, "live_state": liveState, "ipam_state": ipamState, "ipam_entries": ipamEntries})
+		if configuration.Request.Mode == "managed" {
+			if staticAddresses, err = services.Domain.ListNetworkStaticAddresses(actorID, resource); err != nil {
+				return common.DomainError(ctx, err)
+			}
+			if staticAddresses == nil {
+				staticAddresses = []domain.StaticNetworkAddress{}
+			}
+		}
+		err = ctx.JSON(fiber.Map{
+			"resource": resource, "configuration": configuration, "live_state": liveState,
+			"router_polling": fiber.Map{
+				"state": routerPolling.State, "router_vmid": routerPolling.RouterVMID,
+				"last_polled_at": routerPolling.LastPolledAt, "observed_addresses": routerPolling.ObservedAddresses,
+				"static_addresses": staticAddresses,
+			},
+		})
 		return
 	}
 	return

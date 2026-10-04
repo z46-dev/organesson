@@ -122,6 +122,75 @@ func TestInheritedGroupGrantsScopeViewsAndVMOperations(t *testing.T) {
 	if _, configuration, getErr := service.GetSDNNetwork(deploymentViewer.ID, network.ID); getErr != nil || configuration.Request.Name != "isolated-net" {
 		t.Fatalf("deployment viewer could not open network details: config=%#v err=%v", configuration, getErr)
 	}
+	for _, attachment := range []struct {
+		name    string
+		vm      *db.ManagedResource
+		address string
+		mac     string
+	}{{"student-nic", studentVM, "192.168.100.10/24", "02:00:00:00:00:10"}, {"other-nic", otherVM, "192.168.100.11/24", "02:00:00:00:00:11"}} {
+		var attachmentNode *db.OwnershipNode = &db.OwnershipNode{DeploymentID: deployment.ID, ParentID: &attachment.vm.OwnershipID, Kind: db.OwnershipNodeKindResource, Name: attachment.name, CreatedAt: time.Now()}
+		if err = store.OwnershipNodes.Insert(attachmentNode); err != nil {
+			t.Fatalf("insert attachment ownership node: %v", err)
+		}
+		var attachmentConfig []byte
+		if attachmentConfig, err = json.Marshal(ManagedNetworkAttachmentConfiguration{
+			VirtualMachineID: attachment.vm.ID, LogicalNetworkID: network.ID,
+			Placement:    proxmox.NetworkAttachmentPlacement{MAC: attachment.mac},
+			GuestNetwork: &proxmox.GuestNetworkRequest{Method: "static", Address: attachment.address},
+		}); err != nil {
+			t.Fatalf("encode attachment configuration: %v", err)
+		}
+		if err = store.ManagedResources.Insert(&db.ManagedResource{
+			DeploymentID: deployment.ID, OwnershipID: attachmentNode.ID, Kind: "network_attachment",
+			Name: attachment.name, PowerState: "ready", ConfigurationJSON: string(attachmentConfig), CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("insert network attachment: %v", err)
+		}
+	}
+	if _, err = service.CreatePermissionGrant(admin.ID, db.GrantSubjectKindAccount, student.ID, db.PermissionResourceView, networkNode.ID); err != nil {
+		t.Fatalf("grant network view: %v", err)
+	}
+	var staticAddresses []StaticNetworkAddress
+	if staticAddresses, err = service.ListNetworkStaticAddresses(deploymentViewer.ID, network); err != nil {
+		t.Fatalf("list configured static addresses: %v", err)
+	}
+	if len(staticAddresses) != 2 {
+		t.Fatalf("deployment viewer should see both addresses and VM links: %#v", staticAddresses)
+	}
+	var observed []proxmox.SDNRouterObservedAddress = []proxmox.SDNRouterObservedAddress{
+		{Address: "192.168.100.10", MAC: "02:00:00:00:00:10"},
+		{Address: "192.168.100.11", MAC: "02:00:00:00:00:11"},
+	}
+	var linked []proxmox.SDNRouterObservedAddress
+	if linked, err = service.LinkObservedNetworkAddresses(deploymentViewer.ID, network, observed); err != nil {
+		t.Fatalf("link router observations: %v", err)
+	}
+	if linked[0].VirtualMachineID != studentVM.ID || linked[0].VirtualMachineName != studentVM.Name || linked[1].VirtualMachineID != otherVM.ID {
+		t.Fatalf("deployment viewer should receive links for observed guest MACs: %#v", linked)
+	}
+	if linked, err = service.LinkObservedNetworkAddresses(student.ID, network, observed); err != nil {
+		t.Fatalf("link student-visible router observations: %v", err)
+	}
+	if linked[0].VirtualMachineID != studentVM.ID || linked[1].VirtualMachineID != 0 || linked[1].VirtualMachineName != "" {
+		t.Fatalf("router observations should not disclose inaccessible VM identities: %#v", linked)
+	}
+	var deploymentVMs map[string]int = make(map[string]int)
+	for _, address := range staticAddresses {
+		deploymentVMs[address.Address] = address.VirtualMachineID
+	}
+	if deploymentVMs["192.168.100.10/24"] != studentVM.ID || deploymentVMs["192.168.100.11/24"] != otherVM.ID {
+		t.Fatalf("deployment viewer should see both address-to-VM links: %#v", deploymentVMs)
+	}
+	if staticAddresses, err = service.ListNetworkStaticAddresses(student.ID, network); err != nil {
+		t.Fatalf("list student-visible static addresses: %v", err)
+	}
+	var studentVMs map[string]int = make(map[string]int)
+	for _, address := range staticAddresses {
+		studentVMs[address.Address] = address.VirtualMachineID
+	}
+	if len(staticAddresses) != 2 || studentVMs["192.168.100.10/24"] != studentVM.ID || studentVMs["192.168.100.11/24"] != 0 {
+		t.Fatalf("network view should not disclose an inaccessible VM: %#v", staticAddresses)
+	}
 	for _, node := range summary.OwnershipNodes {
 		if node.ID == otherOwner.ID {
 			t.Fatalf("deployment view leaked another student's ownership group: %#v", summary.OwnershipNodes)

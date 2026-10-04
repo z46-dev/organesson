@@ -1,0 +1,103 @@
+#!/bin/bash
+set -euo pipefail
+
+config_file="$PWD/organesson-router.conf"
+if [[ ! -f "$config_file" ]]; then
+    echo "Organesson router configuration is missing" >&2
+    exit 1
+fi
+source "$config_file"
+
+find_interface() {
+    local expected_mac="${1,,}"
+    local device
+    for device in /sys/class/net/*; do
+        [[ -e "$device/address" ]] || continue
+        if [[ "$(<"$device/address")" == "$expected_mac" ]]; then
+            basename "$device"
+            return 0
+        fi
+    done
+    echo "No interface found for configured MAC $expected_mac" >&2
+    return 1
+}
+
+lan_interface="$(find_interface "$LAN_MAC")"
+wan_interface=""
+if [[ -n "$WAN_MAC" ]]; then
+    wan_interface="$(find_interface "$WAN_MAC")"
+fi
+
+if ! command -v dnsmasq >/dev/null 2>&1 || ! command -v nft >/dev/null 2>&1; then
+    echo "Router template must include dnsmasq and nftables" >&2
+    exit 1
+fi
+
+install -d -m 0755 /etc/dnsmasq.d
+cat >/etc/dnsmasq.d/organesson-router.conf <<EOF
+interface=$lan_interface
+bind-dynamic
+listen-address=127.0.0.1,$LAN_ADDRESS
+dhcp-range=$DHCP_START,$DHCP_END,12h
+dhcp-option=option:router,$LAN_ADDRESS
+dhcp-option=option:dns-server,$(IFS=,; echo "${DNS_SERVERS[*]}")
+domain-needed
+bogus-priv
+EOF
+
+install -d -m 0755 /etc/sysctl.d
+if [[ -n "$wan_interface" ]]; then
+    printf 'net.ipv4.ip_forward=1\n' >/etc/sysctl.d/90-organesson-router.conf
+    cat >/etc/nftables.conf <<EOF
+#!/usr/sbin/nft -f
+flush ruleset
+table inet organesson {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        iifname "lo" accept
+        ct state established,related accept
+        iifname "$lan_interface" udp dport { 53, 67 } accept
+        iifname "$lan_interface" tcp dport 53 accept
+        iifname "$lan_interface" ip protocol icmp accept
+    }
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        ct state established,related accept
+        iifname "$lan_interface" oifname "$wan_interface" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } drop
+        iifname "$lan_interface" oifname "$wan_interface" accept
+    }
+}
+table ip organesson_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        oifname "$wan_interface" ip saddr $LAN_SUBNET masquerade
+    }
+}
+EOF
+else
+    printf 'net.ipv4.ip_forward=0\n' >/etc/sysctl.d/90-organesson-router.conf
+    cat >/etc/nftables.conf <<EOF
+#!/usr/sbin/nft -f
+flush ruleset
+table inet organesson {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        iifname "lo" accept
+        ct state established,related accept
+        iifname "$lan_interface" udp dport { 53, 67 } accept
+        iifname "$lan_interface" tcp dport 53 accept
+        iifname "$lan_interface" ip protocol icmp accept
+    }
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+}
+EOF
+fi
+
+sysctl --system >/dev/null
+dnsmasq --test
+nft --check --file /etc/nftables.conf
+systemctl enable nftables.service dnsmasq.service
+systemctl restart nftables.service dnsmasq.service
+rm -f "$config_file"

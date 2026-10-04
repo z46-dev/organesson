@@ -116,6 +116,7 @@ func resourceNetwork() (resource *schema.Resource) {
 		},
 		"name":         {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The virtual network name."},
 		"power_state":  {Type: schema.TypeString, Computed: true, Description: "Proxmox SDN provisioning state."},
+		"router_vmid":  {Type: schema.TypeInt, Optional: true, ForceNew: true, Description: "Deployment-managed router VM queried through QEMU Guest Agent for Router Polling."},
 		"proxmox_vnet": {Type: schema.TypeString, Computed: true, Description: "The Organesson-owned Proxmox SDN VNet identifier."},
 		"proxmox_zone": {Type: schema.TypeString, Computed: true, Description: "The Proxmox SDN zone containing this VNet."},
 		"summary":      summarySchema(),
@@ -124,7 +125,7 @@ func resourceNetwork() (resource *schema.Resource) {
 	return
 }
 
-// resourceAddressPoolRequest defines a deployment request for addresses from one environment network.
+// resourceAddressPoolRequest reserves addresses from a validated platform pool or a managed VNet range.
 func resourceAddressPoolRequest() (resource *schema.Resource) {
 	resource = apiResource(map[string]*schema.Schema{
 		"address_count": {
@@ -132,7 +133,7 @@ func resourceAddressPoolRequest() (resource *schema.Resource) {
 			Required:     true,
 			ForceNew:     true,
 			ValidateFunc: validation.IntAtLeast(1),
-			Description:  "The number of addresses requested from the environment network.",
+			Description:  "The number of addresses reserved from the selected environment or managed-VNet range.",
 		},
 		"address_family": {
 			Type:         schema.TypeString,
@@ -142,12 +143,15 @@ func resourceAddressPoolRequest() (resource *schema.Resource) {
 			Description:  "The requested address family.",
 		},
 		"deployment_id":       {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The owning deployment identifier."},
-		"environment_network": {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The environment network supplying addresses."},
+		"environment_network": {Type: schema.TypeString, Optional: true, ForceNew: true, ExactlyOneOf: []string{"environment_network", "logical_network_id"}, Description: "The environment network supplying addresses."},
+		"logical_network_id":  {Type: schema.TypeString, Optional: true, ForceNew: true, ExactlyOneOf: []string{"environment_network", "logical_network_id"}, Description: "Managed Organesson VNet supplying addresses."},
+		"range_start":         {Type: schema.TypeString, Optional: true, ForceNew: true, RequiredWith: []string{"range_end", "logical_network_id"}, Description: "First IPv4 host in a managed VNet's reservable range."},
+		"range_end":           {Type: schema.TypeString, Optional: true, ForceNew: true, RequiredWith: []string{"range_start", "logical_network_id"}, Description: "Last IPv4 host in a managed VNet's reservable range."},
 		"name":                {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The deployment-local address pool request name."},
-		"addresses":           {Type: schema.TypeList, Computed: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Persistently allocated addresses supplied by the selected environment network pool."},
+		"addresses":           {Type: schema.TypeList, Computed: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Persistently allocated addresses supplied by the selected network range."},
 		"dns":                 {Type: schema.TypeList, Computed: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "DNS servers associated with the source network."},
 		"gateway":             {Type: schema.TypeString, Computed: true, Description: "Gateway associated with the source network."},
-		"prefix":              {Type: schema.TypeString, Computed: true, Description: "Original source network prefix; this request does not create a subnet."},
+		"prefix":              {Type: schema.TypeString, Computed: true, Description: "Source network prefix; this request does not create a subnet."},
 		"pool_name":           {Type: schema.TypeString, Computed: true, Description: "Administrator-configured address pool that supplied this request."},
 		"summary":             summarySchema(),
 	}, addressPoolRequestOperations())
@@ -202,7 +206,7 @@ func resourceNetworkAttachment() (resource *schema.Resource) {
 			Optional:     true,
 			ForceNew:     true,
 			RequiredWith: []string{"requested_address_count"},
-			Description:  "The single environment address pool request supplying this interface.",
+			Description:  "The single environment-network or managed-VNet address request supplying this interface.",
 		},
 		"environment_network": {
 			Type:         schema.TypeString,
@@ -247,6 +251,7 @@ func resourceGuestNetworkConfiguration() (resource *schema.Resource) {
 		"ipv4_dns":              {Type: schema.TypeList, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "DNS servers to configure on this interface."},
 		"ipv4_gateway":          {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The optional IPv4 gateway."},
 		"ipv4_method":           {Type: schema.TypeString, Required: true, ForceNew: true, ValidateFunc: validation.StringInSlice([]string{"dhcp", "static"}, false), Description: "The IPv4 configuration method: dhcp or static."},
+		"ipv4_never_default":    {Type: schema.TypeBool, Optional: true, ForceNew: true, Description: "Ignore this NIC as a default route, while still allowing local subnet traffic."},
 		"network_attachment_id": {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The target network attachment identifier."},
 		"summary":               summarySchema(),
 	}, guestNetworkConfigurationOperations())
@@ -266,6 +271,7 @@ func artifactProviderResource() (resource *schema.Resource) {
 	resource = artifactResource(map[string]*schema.Schema{
 		"deployment_id":    {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The deployment using this local artifact."},
 		"entrypoint":       {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The executable path within the source directory."},
+		"inline_files":     {Type: schema.TypeMap, Optional: true, ForceNew: true, Sensitive: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Generated non-secret regular files packaged with the artifact."},
 		"source_directory": {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The local source directory to package immutably."},
 		"file_count":       {Type: schema.TypeInt, Computed: true, Description: "Number of regular files in the package."},
 		"sha256":           {Type: schema.TypeString, Computed: true, Description: "SHA-256 digest of the deterministic compressed package."},

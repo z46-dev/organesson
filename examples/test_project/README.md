@@ -1,52 +1,32 @@
-# Alice's class-lab provider example
+# Test project
 
-This is the Alice, Bob, Charlie, and Dave ownership/access scenario from [`docs/usecases/user_experience.md`](../../docs/usecases/user_experience.md). `@organesson` users are local test identities; this project defines deployment groups, logical ownership groups, and fixed permission grants in OpenTofu.
+This is the Alice/Bob/Charlie/Dave ownership and access scenario from [`docs/usecases/user_experience.md`](../../docs/usecases/user_experience.md). OpenTofu defines deployment-local groups, ownership, and fixed permission grants. `@organesson` identities are supplied by Organesson's local test identity source.
 
-The topology has one `cyber.lab`-connected Fedora VM and one LAN-only Fedora VM per student. Each pair has a private static `/30` link. All LAN-only VMs also join one shared, isolated Proxmox SDN subnet and receive DHCP/DNS from a LAN-only Debian router clone. That router has no WAN NIC and cannot route or provide egress for the shared LAN. The internet NICs request addresses from the configured `cyber.lab` pool and retain that network's prefix, gateway, and DNS values; allocation does not carve out a new subnet.
+## Proxmox topology
 
-## Proxmox modes
+The default keeps virtual machines simulated. Set `proxmox_test_deployment=true` to create the full topology on Proxmox. All created VMs use pool `organesson` and storage `laas`.
 
-By default, VMs use the provider's simulated lifecycle. Two opt-in modes are available:
+Each student owns `f1`, `f2`, and `f3`, plus a private managed VNet and its router. Each `f3` connects to the single shared managed VNet and its single shared router. The shared router has the only router WAN attachment; it uses a reserved static address from the same validated `cyber.lab` request as the students' two `f1` VMs. The request is therefore three IPv4 addresses by default. Each `f1` uses its own reserved address on `cyber.lab`.
 
-- `proxmox_lifecycle_smoke = true` clones Charlie's internet Fedora VM, attaches its `cyber.lab` NIC, claims one address, and applies its static guest configuration through QEMU Guest Agent. Other test resources stay simulated/declarative.
-- `proxmox_test_deployment = true` provisions all four VMs, the per-student private SDN networks, the once-per-deployment shared DHCP subnet, all NIC attachments, and the guest IPv4 configurations. The current VM sizes request 8 vCPUs, 16 GiB RAM, and 256 GiB boot storage in total. It powers guests on for QGA setup.
+Every student-private VNet uses `192.168.2.0/24`, gateway/router address `.1`, a reservable `.2–.10` range, and configurable DHCP/DNS. Each student's three VMs each have three NICs on that VNet: a distinct address leased from `.2–.10`, a manually assigned `.20`, `.21`, or `.22`, and a DHCP interface. The private DHCP NIC is marked `never-default` so it does not compete with the intended egress NIC. Each student's `f1` and `f3` also share an unmanaged L2 network with static addresses `192.168.3.1/24` and `.2/24`.
 
-The guest-network provider resource starts a stopped managed VM, waits for QEMU Guest Agent, writes a short-lived shell script to `/run`, and applies a MAC-bound NetworkManager connection. The script removes itself. Refresh checks the saved settings; destroy removes only that Organesson-managed connection before detaching NICs or deleting VMs.
+The shared router advertises DHCP on `192.168.1.30–.40` and provides egress to `cyber.lab` by default. Its DHCP range, advertised DNS, WAN enablement, and WAN DHCP/static method are configurable. Private router DHCP ranges and DNS are configurable separately. Setting router egress to DHCP avoids consuming an extra cyber address; static egress allocates one, so the default request count is `number of students + 1`.
 
-Before applying, the administrator must validate a Proxmox resource policy with pool `organesson`, storage `laas`, sufficient optional capacity limits, the `cyber.lab` address pool, and `ogvxlan` selected as the VNet source. Proxmox `ogvxlan` is an administrator-owned VXLAN zone: Organesson creates marked VNets and subnet metadata in it but does not change the zone or configure Proxmox DHCP. The VNet subnet therefore needs an independent DHCP/DNS service. For this test that is a manual, LAN-only clone of source VM 106; its setup is in [the Debian router guide](../../docs/debian-router-source-vm.md). Do not attach a WAN NIC or enable routing on that clone. See the [Proxmox SDN documentation](https://github.com/proxmox/pve-docs/blob/master/pvesdn.adoc).
+Routers use the reusable `organesson_router` provider resource. It reads the LAN/WAN NIC MAC addresses from their Organesson attachments, packages the generic setup payload locally, and executes it through QEMU Guest Agent. No router implementation script lives in this example. The Debian source VM must include NetworkManager, `dnsmasq`, `nftables`, Python 3, and the QEMU Guest Agent; see [the router source VM guide](../../docs/router/debian-router-source-vm.md). Router Polling reads DHCP leases and neighbor data through QGA. Proxmox `ogvxlan` remains administrator-owned: Organesson creates marked VNets but does not alter the zone or create subnet/IPAM records.
 
-## Run the LAN-router test
+Before applying, validate platform policy with resource pool `organesson`, storage `laas`, enough capacity for 15 vCPU / 30 GiB RAM / 240 GiB boot disks, the cyber.lab address pool, and `ogvxlan` as the VNet source. The deployment creates five VNets (one shared, two private, two f1↔f3 links). Ensure their `192.168.1.0/24`, `192.168.2.0/24`, and `192.168.3.0/24` ranges do not overlap other connected networks.
 
-From an empty OpenTofu state, create the shared VNet first so the router has a Proxmox network to attach to:
+## Deploy and verify
 
-```sh
-TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" \
-  tofu -chdir=examples/test_project apply \
-  -target='organesson_network.shared_student_lan["shared"]' \
-  -var='proxmox_test_deployment=true'
-```
+Build the local provider and set the API endpoint, CA certificate (if using the development certificate), and `ORGANESSON_TOKEN`. From the repository root:
 
-In Proxmox, full-clone source VM 106 to a new VMID in pool `organesson`, place its disk on `laas`, and attach its only NIC to the VNet shown by:
-
-```sh
-TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" \
-  tofu -chdir=examples/test_project state show \
-  'organesson_network.shared_student_lan["shared"]'
-```
-
-Configure the clone with the LAN-only variant in the Debian router guide and start it. Then run the full `tofu apply` below. This ordering matters: the two Fedora LAN guests request DHCP during apply. The manual router clone is not in OpenTofu state; shut it down and delete it before destroying the test project so the managed VNet is no longer attached to an unmanaged VM.
-
-Additional data disks and the Ansible verification playbook are still prototypes. `organesson_guest_setup` sends each declared local artifact to its Proxmox-backed Linux VM for one-time root execution through QEMU Guest Agent. That path has completed a focused live acceptance run in [`artifact_smoke`](../artifact_smoke/README.md); the broader Alice/Bob/Charlie/Dave topology separately covers VM clone, SDN network, address allocation, NIC attachment, guest IPv4 setup, permissions/power UI, refresh, and destroy.
-
-## Run the single-VM lifecycle smoke
-
-Follow [the Proxmox lifecycle checklist](../../docs/proxmox-vm-lifecycle.md) for source-catalog, policy, and API-token prerequisites. The smaller [`artifact_smoke`](../artifact_smoke/README.md) project is the moving acceptance target for new lifecycle features. From the repository root, build the local provider and set the documented provider environment variables, then run:
+This replaces the previous two-VM-per-student layout. If the existing test deployment is still in OpenTofu state, the plan will remove its old VMs and networks and create the new topology. Review that plan carefully; a clean redeploy requires an intentional destroy followed by an apply. This change has only been validated locally and has **not** been applied to the live Proxmox deployment.
 
 ```sh
 TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" tofu -chdir=examples/test_project validate
-TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" tofu -chdir=examples/test_project plan -var='proxmox_lifecycle_smoke=true'
-TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" tofu -chdir=examples/test_project apply -var='proxmox_lifecycle_smoke=true'
-TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" tofu -chdir=examples/test_project plan -var='proxmox_lifecycle_smoke=true'
+TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" tofu -chdir=examples/test_project plan -var='proxmox_test_deployment=true'
+TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" tofu -chdir=examples/test_project apply -var='proxmox_test_deployment=true'
+TF_CLI_CONFIG_FILE="$PWD/examples/test_project/tofu.rc" tofu -chdir=examples/test_project plan -var='proxmox_test_deployment=true'
 ```
 
-The second plan should show no changes. After applying, one Proxmox VM can be manually migrated to another node in the `ogvxlan` zone to test cross-node L2, DHCP, and the per-student private link; a subsequent plan should still show no changes. Before destroying the deployment, delete the manual router clone first, then destroy the OpenTofu resources with `-var='proxmox_test_deployment=true'`. Keep provider tokens and OpenTofu state private.
+The final plan should be empty. Test each user's visibility and permissions in the UI. To check cross-node L2, migrate one student VM to another node in the `ogvxlan` zone, then confirm it retains its DHCP/static connectivity and that a plan remains empty. Destroy with the same `proxmox_test_deployment=true` value. Keep provider tokens and state private.

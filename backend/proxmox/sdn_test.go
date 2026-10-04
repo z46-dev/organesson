@@ -201,8 +201,17 @@ func TestAPISDNNetworkDriverCreatesOnlyIsolatedSimpleZoneAndDeletesIt(t *testing
 	if placement, err = driver.Create(context.Background(), request); err != nil {
 		t.Fatalf("create isolated SDN network: %v", err)
 	}
-	if zones[placement.Zone]["dhcp"] != "dnsmasq" || vnets[placement.VNet]["zone"] != placement.Zone || len(subnets[placement.VNet]) != 1 {
+	if zones[placement.Zone]["dhcp"] != "dnsmasq" || vnets[placement.VNet]["zone"] != placement.Zone || len(subnets[placement.VNet]) != 0 {
 		t.Fatalf("unexpected isolated SDN state: zones=%#v vnets=%#v subnets=%#v", zones, vnets, subnets)
+	}
+	subnets[placement.VNet] = map[string]map[string]any{
+		"legacy-subnet": {"id": "legacy-subnet", "subnet": request.Subnet, "gateway": request.Gateway},
+	}
+	if _, err = driver.Create(context.Background(), request); err != nil {
+		t.Fatalf("reconcile legacy Proxmox subnet metadata: %v", err)
+	}
+	if len(subnets[placement.VNet]) != 0 {
+		t.Fatalf("managed network retained legacy Proxmox subnet metadata: %#v", subnets[placement.VNet])
 	}
 	if err = driver.Read(context.Background(), request, placement); err != nil {
 		t.Fatalf("refresh created isolated SDN network: %v", err)

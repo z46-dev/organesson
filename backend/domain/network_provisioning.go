@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -12,6 +13,15 @@ import (
 )
 
 type (
+	// StaticNetworkAddress describes a guest address explicitly configured through Organesson.
+	StaticNetworkAddress struct {
+		Address             string `json:"address"`
+		NetworkAttachmentID int    `json:"network_attachment_id"`
+		NetworkAttachment   string `json:"network_attachment"`
+		VirtualMachineID    int    `json:"virtual_machine_id,omitempty"`
+		VirtualMachine      string `json:"virtual_machine,omitempty"`
+	}
+
 	// ManagedNetworkConfiguration persists the desired network and PVE placement together.
 	ManagedNetworkConfiguration struct {
 		Request   proxmox.SDNNetworkRequest   `json:"request"`
@@ -164,6 +174,98 @@ func (service *Service) GetSDNNetwork(actorID int, resourceID int) (resource *db
 		return
 	}
 	err = json.Unmarshal([]byte(resource.ConfigurationJSON), &configuration)
+	return
+}
+
+// ListNetworkStaticAddresses returns Organesson-declared static addresses visible to the caller.
+func (service *Service) ListNetworkStaticAddresses(actorID int, network *db.ManagedResource) (addresses []StaticNetworkAddress, err error) {
+	if network == nil || network.Kind != "virtual_network" {
+		err = ErrNotFound
+		return
+	}
+	var resources []*db.ManagedResource
+	if resources, err = service.store.ManagedResources.SelectAll(); err != nil {
+		return
+	}
+	for _, resource := range resources {
+		if resource.DeploymentID != network.DeploymentID || resource.Kind != "network_attachment" {
+			continue
+		}
+		var configuration ManagedNetworkAttachmentConfiguration
+		if err = json.Unmarshal([]byte(resource.ConfigurationJSON), &configuration); err != nil {
+			return
+		}
+		if configuration.LogicalNetworkID != network.ID || configuration.GuestNetwork == nil || configuration.GuestNetwork.Method != "static" || configuration.GuestNetwork.Address == "" {
+			continue
+		}
+		var address StaticNetworkAddress = StaticNetworkAddress{
+			Address: configuration.GuestNetwork.Address, NetworkAttachmentID: resource.ID,
+			NetworkAttachment: resource.Name,
+		}
+		var vm *db.ManagedResource
+		if vm, err = service.store.ManagedResources.Select(configuration.VirtualMachineID); err != nil {
+			return
+		}
+		if vm != nil {
+			if err = service.requireResourceView(actorID, vm); err == nil {
+				address.VirtualMachineID = vm.ID
+				address.VirtualMachine = vm.Name
+			} else if errors.Is(err, ErrForbidden) {
+				err = nil
+			} else {
+				return
+			}
+		}
+		addresses = append(addresses, address)
+	}
+	return
+}
+
+// LinkObservedNetworkAddresses adds VM identities only when the viewer may access the matching guest.
+func (service *Service) LinkObservedNetworkAddresses(actorID int, network *db.ManagedResource, observed []proxmox.SDNRouterObservedAddress) (linked []proxmox.SDNRouterObservedAddress, err error) {
+	linked = append([]proxmox.SDNRouterObservedAddress(nil), observed...)
+	if network == nil || network.Kind != "virtual_network" || len(linked) == 0 {
+		return
+	}
+	var resources []*db.ManagedResource
+	if resources, err = service.store.ManagedResources.SelectAll(); err != nil {
+		return
+	}
+	var matches map[string]*db.ManagedResource = make(map[string]*db.ManagedResource)
+	for _, attachment := range resources {
+		if attachment.DeploymentID != network.DeploymentID || attachment.Kind != "network_attachment" {
+			continue
+		}
+		var configuration ManagedNetworkAttachmentConfiguration
+		if err = json.Unmarshal([]byte(attachment.ConfigurationJSON), &configuration); err != nil {
+			return
+		}
+		if configuration.LogicalNetworkID != network.ID || configuration.Placement.MAC == "" {
+			continue
+		}
+		var vm *db.ManagedResource
+		if vm, err = service.store.ManagedResources.Select(configuration.VirtualMachineID); err != nil {
+			return
+		}
+		if vm != nil && vm.Kind == "virtual_machine" {
+			matches[strings.ToLower(configuration.Placement.MAC)] = vm
+		}
+	}
+	for index := range linked {
+		var vm *db.ManagedResource = matches[strings.ToLower(linked[index].MAC)]
+		if vm == nil {
+			continue
+		}
+		if err = service.requireResourceView(actorID, vm); err != nil {
+			if errors.Is(err, ErrForbidden) {
+				err = nil
+				continue
+			}
+			return
+		}
+		linked[index].VirtualMachineID = vm.ID
+		linked[index].VirtualMachineName = vm.Name
+	}
 	return
 }
 

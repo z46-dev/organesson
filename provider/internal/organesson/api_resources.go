@@ -61,11 +61,15 @@ type (
 			Name        string `json:"name"`
 		} `json:"resource"`
 		Allocation struct {
-			Addresses []string `json:"addresses"`
-			PoolName  string   `json:"pool_name"`
-			Prefix    string   `json:"prefix"`
-			Gateway   string   `json:"gateway"`
-			DNS       []string `json:"dns"`
+			LogicalNetworkID   int      `json:"logical_network_id"`
+			RangeStart         string   `json:"range_start"`
+			RangeEnd           string   `json:"range_end"`
+			EnvironmentNetwork string   `json:"environment_network"`
+			Addresses          []string `json:"addresses"`
+			PoolName           string   `json:"pool_name"`
+			Prefix             string   `json:"prefix"`
+			Gateway            string   `json:"gateway"`
+			DNS                []string `json:"dns"`
 		} `json:"allocation"`
 	}
 	networkResult struct {
@@ -85,6 +89,7 @@ type (
 				Gateway      string `json:"gateway"`
 				DHCPEnabled  bool   `json:"dhcp_enabled"`
 				EgressPolicy string `json:"egress_policy"`
+				RouterVMID   int    `json:"router_vmid"`
 			} `json:"request"`
 		} `json:"configuration"`
 	}
@@ -107,15 +112,16 @@ type (
 	}
 	guestNetworkConfigurationResult struct {
 		GuestNetwork struct {
-			Method  string   `json:"ipv4_method"`
-			Address string   `json:"ipv4_address,omitempty"`
-			Gateway string   `json:"ipv4_gateway,omitempty"`
-			DNS     []string `json:"ipv4_dns,omitempty"`
+			Method       string   `json:"ipv4_method"`
+			Address      string   `json:"ipv4_address,omitempty"`
+			Gateway      string   `json:"ipv4_gateway,omitempty"`
+			DNS          []string `json:"ipv4_dns,omitempty"`
+			NeverDefault bool     `json:"ipv4_never_default,omitempty"`
 		} `json:"guest_network"`
 	}
 )
 
-// addressPoolRequestOperations manages durable environment-network address reservations.
+// addressPoolRequestOperations manages durable environment or managed-VNet address reservations.
 func addressPoolRequestOperations() (operations remoteResourceOperations) {
 	operations.Create = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
 		var deploymentID string
@@ -123,12 +129,21 @@ func addressPoolRequestOperations() (operations remoteResourceOperations) {
 			return
 		}
 		var result addressPoolRequestResult
-		err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+deploymentID+"/address-pool-requests", map[string]any{
+		var body map[string]any = map[string]any{
 			"name":                data.Get("name").(string),
 			"environment_network": data.Get("environment_network").(string),
 			"address_family":      data.Get("address_family").(string),
 			"address_count":       data.Get("address_count").(int),
-		}, &result)
+			"range_start":         data.Get("range_start").(string),
+			"range_end":           data.Get("range_end").(string),
+			"logical_network_id":  0,
+		}
+		if value := data.Get("logical_network_id").(string); value != "" {
+			if body["logical_network_id"], err = strconv.Atoi(value); err != nil {
+				return
+			}
+		}
+		err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+deploymentID+"/address-pool-requests", body, &result)
 		if err != nil {
 			return
 		}
@@ -138,7 +153,19 @@ func addressPoolRequestOperations() (operations remoteResourceOperations) {
 		_ = data.Set("gateway", result.Allocation.Gateway)
 		_ = data.Set("dns", result.Allocation.DNS)
 		_ = data.Set("pool_name", result.Allocation.PoolName)
-		_ = data.Set("summary", fmt.Sprintf("reserved %d addresses from %s pool %q", len(result.Allocation.Addresses), data.Get("environment_network").(string), result.Allocation.PoolName))
+		var logicalNetworkID string
+		if result.Allocation.LogicalNetworkID > 0 {
+			logicalNetworkID = strconv.Itoa(result.Allocation.LogicalNetworkID)
+		}
+		_ = data.Set("logical_network_id", logicalNetworkID)
+		_ = data.Set("environment_network", result.Allocation.EnvironmentNetwork)
+		_ = data.Set("range_start", result.Allocation.RangeStart)
+		_ = data.Set("range_end", result.Allocation.RangeEnd)
+		var source string = data.Get("environment_network").(string)
+		if source == "" {
+			source = fmt.Sprintf("managed VNet %d", result.Allocation.LogicalNetworkID)
+		}
+		_ = data.Set("summary", fmt.Sprintf("reserved %d addresses from %s pool %q", len(result.Allocation.Addresses), source, result.Allocation.PoolName))
 		return
 	}
 	operations.Read = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
@@ -155,6 +182,14 @@ func addressPoolRequestOperations() (operations remoteResourceOperations) {
 			_ = data.Set("gateway", result.Allocation.Gateway)
 			_ = data.Set("dns", result.Allocation.DNS)
 			_ = data.Set("pool_name", result.Allocation.PoolName)
+			var logicalNetworkID string
+			if result.Allocation.LogicalNetworkID > 0 {
+				logicalNetworkID = strconv.Itoa(result.Allocation.LogicalNetworkID)
+			}
+			_ = data.Set("logical_network_id", logicalNetworkID)
+			_ = data.Set("environment_network", result.Allocation.EnvironmentNetwork)
+			_ = data.Set("range_start", result.Allocation.RangeStart)
+			_ = data.Set("range_end", result.Allocation.RangeEnd)
 		}
 		return
 	}
@@ -204,6 +239,7 @@ func networkOperations() (operations remoteResourceOperations) {
 			"parent_node_id": parentNodeID, "name": data.Get("name").(string), "mode": data.Get("mode").(string),
 			"ipv4_subnet": data.Get("ipv4_subnet").(string), "ipv4_gateway": data.Get("ipv4_gateway").(string),
 			"dhcp_enabled": data.Get("dhcp_enabled").(bool), "egress_policy": data.Get("egress_policy").(string),
+			"router_vmid": data.Get("router_vmid").(int),
 		}, &result)
 		if err != nil {
 			return
@@ -212,6 +248,7 @@ func networkOperations() (operations remoteResourceOperations) {
 		_ = data.Set("power_state", result.Resource.PowerState)
 		_ = data.Set("proxmox_vnet", result.Resource.ExternalID)
 		_ = data.Set("proxmox_zone", result.Resource.ExternalNode)
+		_ = data.Set("router_vmid", result.Configuration.Request.RouterVMID)
 		_ = data.Set("summary", fmt.Sprintf("created isolated Proxmox SDN VNet %q in zone %q", result.Resource.ExternalID, result.Resource.ExternalNode))
 		return
 	}
@@ -229,6 +266,7 @@ func networkOperations() (operations remoteResourceOperations) {
 			_ = data.Set("ipv4_gateway", result.Configuration.Request.Gateway)
 			_ = data.Set("dhcp_enabled", result.Configuration.Request.DHCPEnabled)
 			_ = data.Set("egress_policy", result.Configuration.Request.EgressPolicy)
+			_ = data.Set("router_vmid", result.Configuration.Request.RouterVMID)
 			_ = data.Set("power_state", result.Resource.PowerState)
 			_ = data.Set("proxmox_vnet", result.Resource.ExternalID)
 			_ = data.Set("proxmox_zone", result.Resource.ExternalNode)
@@ -327,6 +365,7 @@ func guestNetworkConfigurationOperations() (operations remoteResourceOperations)
 		err = client.request(ctx, http.MethodPost, "/api/v1/network-attachments/"+attachmentID+"/guest-network-configuration", map[string]any{
 			"ipv4_method": data.Get("ipv4_method").(string), "ipv4_address": data.Get("ipv4_address").(string),
 			"ipv4_gateway": data.Get("ipv4_gateway").(string), "ipv4_dns": dns,
+			"ipv4_never_default": data.Get("ipv4_never_default").(bool),
 		}, &result)
 		if err != nil {
 			return
@@ -359,15 +398,17 @@ func guestNetworkConfigurationOperations() (operations remoteResourceOperations)
 }
 
 func setGuestNetworkConfiguration(data *schema.ResourceData, configuration struct {
-	Method  string   `json:"ipv4_method"`
-	Address string   `json:"ipv4_address,omitempty"`
-	Gateway string   `json:"ipv4_gateway,omitempty"`
-	DNS     []string `json:"ipv4_dns,omitempty"`
+	Method       string   `json:"ipv4_method"`
+	Address      string   `json:"ipv4_address,omitempty"`
+	Gateway      string   `json:"ipv4_gateway,omitempty"`
+	DNS          []string `json:"ipv4_dns,omitempty"`
+	NeverDefault bool     `json:"ipv4_never_default,omitempty"`
 }) {
 	_ = data.Set("ipv4_method", configuration.Method)
 	_ = data.Set("ipv4_address", configuration.Address)
 	_ = data.Set("ipv4_gateway", configuration.Gateway)
 	_ = data.Set("ipv4_dns", configuration.DNS)
+	_ = data.Set("ipv4_never_default", configuration.NeverDefault)
 	_ = data.Set("summary", fmt.Sprintf("configured %s IPv4 on attachment %q", configuration.Method, data.Get("network_attachment_id")))
 }
 

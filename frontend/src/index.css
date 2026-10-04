@@ -1777,10 +1777,6 @@ h2 {
     border-top: 1px solid var(--theme-border-soft);
 }
 
-.ipam-section {
-    border-top: 0;
-}
-
 .address-usage-section h4 {
     margin-bottom: 9px;
 }
@@ -1816,50 +1812,50 @@ h2 {
     font-size: 12px;
 }
 
-.ipam-empty {
-    margin: 10px 0 0;
+.router-polling-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.router-polling-heading h4 {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0;
+}
+
+.router-polling-as-of {
+    color: var(--theme-muted);
+    font-size: 10px;
+}
+
+.router-polling-note,
+.router-polling-empty {
+    margin: 8px 0 0;
     color: var(--theme-muted);
     font-size: 12px;
 }
 
-.ipam-tree,
-.ipam-tree ul {
-    margin: 0;
-    padding-left: 18px;
-    list-style: none;
+.router-observed-addresses {
+    margin-top: 10px;
 }
 
-.ipam-tree {
-    padding-top: 8px;
+.router-static-addresses {
+    margin-top: 16px;
 }
 
-.ipam-tree ul {
-    border-left: 1px solid var(--theme-border-soft);
+.router-static-addresses h5 {
+    margin: 0 0 8px;
+    color: var(--theme-muted);
+    font-size: 11px;
+    font-weight: 620;
 }
 
-.ipam-tree li {
-    position: relative;
-    padding: 5px 0 5px 12px;
-    color: var(--theme-text);
-    font-size: 12px;
-}
-
-.ipam-tree li::before {
-    position: absolute;
-    top: 13px;
-    left: 0;
-    width: 8px;
-    border-top: 1px solid var(--theme-border-soft);
-    content: "";
-}
-
-.ipam-tree > li {
-    padding-left: 0;
-    font-weight: 600;
-}
-
-.ipam-tree > li::before {
-    display: none;
+.muted-resource-id {
+    color: var(--theme-muted);
+    white-space: nowrap;
 }
 
 .resource-live-state {

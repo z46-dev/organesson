@@ -78,7 +78,7 @@ func configureGuestNetworkHandler(services common.Services) (handler fiber.Handl
 			Node: attachment.Request.Node, VMID: attachment.Request.VMID, VMOperationKey: attachment.Request.VMOperationKey,
 			AttachmentKey: attachment.Request.AttachmentOperationKey, Bridge: attachment.Request.Bridge,
 			NetworkOperationKey: attachment.Request.NetworkOperationKey, Placement: attachment.Placement,
-			Method: input.Method, Address: input.Address, Gateway: input.Gateway, DNS: input.DNS,
+			Method: input.Method, Address: input.Address, Gateway: input.Gateway, DNS: input.DNS, NeverDefault: input.NeverDefault,
 		}
 		if services.Proxmox == nil || !services.Proxmox.Configured() {
 			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; guest network configuration was not applied."})

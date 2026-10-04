@@ -412,9 +412,9 @@ func validateVMTemplateInput(input VMTemplateInput) (err error) {
 		err = fmt.Errorf("%w: template name or description is invalid", ErrInvalidInput)
 		return
 	}
-	var supportedOS map[string]bool = map[string]bool{"fedora": true, "ubuntu": true, "rhel": true, "rocky": true, "almalinux": true, "windows": true}
+	var supportedOS map[string]bool = map[string]bool{"debian": true, "fedora": true, "ubuntu": true, "rhel": true, "rocky": true, "almalinux": true, "windows": true}
 	if !supportedOS[strings.ToLower(strings.TrimSpace(input.GuestOS))] {
-		err = fmt.Errorf("%w: guest OS must be fedora, ubuntu, rhel, rocky, almalinux, or windows", ErrInvalidInput)
+		err = fmt.Errorf("%w: guest OS must be debian, fedora, ubuntu, rhel, rocky, almalinux, or windows", ErrInvalidInput)
 		return
 	}
 	if strings.TrimSpace(input.GuestOSVersion) == "" || len(input.GuestOSVersion) > 64 || strings.TrimSpace(input.Edition) == "" || len(input.Edition) > 64 {

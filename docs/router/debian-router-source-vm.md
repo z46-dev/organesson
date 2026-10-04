@@ -2,7 +2,7 @@
 
 This guide builds an ordinary, editable Proxmox VM that Organesson can clone as a small IPv4 router. The source contains the operating system and required tools, but no deployment addresses, active DHCP service, or enabled routing. A clone receives those settings for one deployment.
 
-The first version uses NetworkManager for NIC configuration, `nftables` for firewalling/NAT, and `dnsmasq` for DHCP plus local/forwarding DNS. Organesson's current guest-network operation already uses NetworkManager and identifies NICs by MAC address. Router-specific configuration (DHCP ranges, forwarding policy, and firewall rules) is still an operator-applied step; this source VM does not make that behavior automatic.
+The first version uses NetworkManager for NIC configuration, `nftables` for firewalling/NAT, and `dnsmasq` for DHCP plus local/forwarding DNS. Organesson's guest-network operation configures NICs by MAC address. The reusable OpenTofu `organesson_router` resource packages the DHCP range and advertised DNS settings and executes a generic router setup through QEMU Guest Agent; it enables forwarding/NAT only when a WAN attachment is declared. The example project contains no router implementation script.
 
 ```text
 approved environment network (WAN) ── router clone ── Organesson VNet (LAN)
@@ -72,7 +72,7 @@ no-auto-default=*
 EOF
 
 sudo apt-get update
-sudo apt-get install --yes network-manager dnsmasq nftables iputils-ping tcpdump curl ca-certificates
+sudo apt-get install --yes network-manager dnsmasq nftables python3 iputils-ping tcpdump curl ca-certificates
 ```
 
 Do not put an IP address, gateway, DNS server, DHCP range, or active LAN config in the source. Disable router services on the source so it cannot accidentally answer DHCP or forward traffic while being maintained:
@@ -149,7 +149,7 @@ Do not remove the source account from the source VM; it is needed for future mai
 
 ## 6. Configure and test one disposable router clone
 
-This is a manual proof of the image, not yet an OpenTofu-managed router feature. Use a full clone in pool `organesson` with its disk on `laas`. Keep the source powered off. On the clone, attach:
+The current `examples/test_project` provisions and configures its router through OpenTofu. The manual commands in this section are retained for inspecting a disposable source-image clone; do not use them alongside an active Terraform-managed deployment. Keep any manual clone in pool `organesson` with its disk on `laas`, and keep the source powered off. On that disposable clone, attach:
 
 - `net0` to the approved WAN network (normally `vmbr0` in this lab), with one address reserved through the Organesson environment address pool; and
 - `net1` to a newly created Organesson VNet backed by `ogvxlan`, with a managed subnet and the router's LAN address recorded as the subnet gateway.
@@ -163,7 +163,7 @@ nmcli --fields GENERAL.DEVICE,GENERAL.HWADDR device show
 
 ### LAN-only test with no egress
 
-For the current `examples/test_project` networking test, do **not** attach a WAN NIC to the router. Its one VirtIO NIC connects to the managed `shared-student-lan` VNet, whose subnet is `192.168.100.0/24` and gateway is `192.168.100.1`. The router uses `192.168.100.1/24`; reserve `192.168.100.100`–`192.168.100.199` for DHCP and advertise `192.168.100.1` as both router and DNS. Keep IPv4 forwarding disabled and the nftables `forward` chain policy at `drop`. Omit WAN profiles, upstream `server=` DNS lines, WAN firewall rules, and NAT. The Fedora `internet_fedora` VMs in the example still connect directly to `cyber.lab`; this router does not provide their connectivity and does not route for the LAN.
+The Terraform-managed example creates one shared router with `cyber.lab` egress by default, using a reserved static WAN address, DHCP range `192.168.1.30–.40`, and LAN DNS `192.168.1.1`. It performs NAT to public IPv4 destinations while blocking RFC1918 and link-local forwarding. Egress can be disabled or changed to DHCP through OpenTofu inputs. Every student-private VNet gets its own router with DHCP range `192.168.2.30–.40`, DNS `192.168.2.1`, and no WAN. The rest of this subsection describes a standalone manual LAN-only clone, so do **not** attach a WAN NIC or follow its manual-clone commands while testing the Terraform-managed deployment.
 
 When recreating the example from empty state, first create only its shared VNet so the router can attach to it:
 
@@ -186,23 +186,23 @@ LAN_PROFILE="organesson-$(printf '%s' "$LAN_MAC" | tr -d ':' | tr '[:upper:]' '[
 if nmcli -t -f NAME connection show | grep -Fxq "$LAN_PROFILE"; then
   nmcli connection modify "$LAN_PROFILE" connection.autoconnect yes \
     ethernet.mac-address "$LAN_MAC" ipv4.method manual \
-    ipv4.addresses '192.168.100.1/24' ipv4.gateway '' ipv4.dns '' \
+    ipv4.addresses '192.168.1.1/24' ipv4.gateway '' ipv4.dns '' \
     ipv4.never-default yes ipv6.method disabled
 else
   nmcli connection add type ethernet ifname "$LAN_IF" con-name "$LAN_PROFILE" \
     connection.autoconnect yes ethernet.mac-address "$LAN_MAC" \
-    ipv4.method manual ipv4.addresses '192.168.100.1/24' \
+    ipv4.method manual ipv4.addresses '192.168.1.1/24' \
     ipv4.never-default yes ipv6.method disabled
 fi
 nmcli connection up "$LAN_PROFILE"
 ```
 
-Create `/etc/dnsmasq.d/organesson-router.conf` on the clone. Replace `LAN_IF` and the two MAC placeholders with observed guest values; the test project's LAN NICs are `net0` on its Fedora clones:
+Create `/etc/dnsmasq.d/organesson-router.conf` on the clone. Replace `LAN_IF` with the interface name resolved from its Proxmox attachment MAC; never assume a fixed device name such as `net0`:
 
 ```ini
 interface=LAN_IF
 except-interface=lo
-listen-address=127.0.0.1,192.168.100.1
+listen-address=127.0.0.1,192.168.1.1
 bind-dynamic
 local-service
 no-resolv
@@ -212,9 +212,9 @@ domain=testproject.test
 expand-hosts
 local=/testproject.test/
 dhcp-authoritative
-dhcp-range=192.168.100.100,192.168.100.199,255.255.255.0,12h
-dhcp-option=option:router,192.168.100.1
-dhcp-option=option:dns-server,192.168.100.1
+dhcp-range=192.168.1.30,192.168.1.40,12h
+dhcp-option=option:router,192.168.1.1
+dhcp-option=option:dns-server,192.168.1.1
 dhcp-host=CHARLIE_LAN_MAC,charlie-lan
 dhcp-host=DAVE_LAN_MAC,dave-lan
 ```

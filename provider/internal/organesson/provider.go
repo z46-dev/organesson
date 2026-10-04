@@ -41,6 +41,7 @@ func Provider() (provider *schema.Provider) {
 			"organesson_logical_group":               resourceLogicalGroup(),
 			"organesson_network":                     resourceNetwork(),
 			"organesson_network_attachment":          resourceNetworkAttachment(),
+			"organesson_router":                      resourceRouter(),
 			"organesson_permission_grant":            resourcePermissionGrant(),
 			"organesson_user_group":                  resourceUserGroup(),
 			"organesson_virtual_disk":                resourceVirtualDisk(),

@@ -107,6 +107,8 @@ type (
 		guestNetworkDriver      GuestNetworkDriver
 		guestArtifactDriver     GuestArtifactDriver
 		lifecycleLock           sync.Mutex
+		routerPollingLock       sync.Mutex
+		routerPollingCache      map[string]cachedRouterPollingResult
 		alwaysConfigured        bool
 	}
 )
@@ -294,7 +296,7 @@ func (inspector *apiInspector) Inspect(ctx context.Context, sourceID string, exp
 				Details:  guestOSDetail(expectedOS, result.GuestOSID, osMatches),
 			})
 			if osMatches && !strings.Contains(result.GuestOSID, "windows") {
-				result.GuestAgentRootVerified, err = verifyLinuxGuestAgentRoot(ctx, vm)
+				result.GuestAgentRootVerified, err = verifyLinuxGuestAgentRoot(ctx, inspector.settings, vm, vmID)
 				if err != nil {
 					var details string = fmt.Sprintf("QEMU Guest Agent root-level execution check failed: %v", err)
 					err = nil
@@ -328,14 +330,14 @@ func (inspector *apiInspector) Inspect(ctx context.Context, sourceID string, exp
 }
 
 // verifyLinuxGuestAgentRoot executes a harmless identity query through the template's SELinux QGA wrapper when present.
-func verifyLinuxGuestAgentRoot(ctx context.Context, vm *pve.VirtualMachine) (verified bool, err error) {
+func verifyLinuxGuestAgentRoot(ctx context.Context, settings config.ProxmoxConfiguration, vm *pve.VirtualMachine, vmid int) (verified bool, err error) {
 	var pid int
 	var command string = `check='test "$(/usr/bin/id -u)" = "0" || exit 1; context=$(/usr/bin/id -Z 2>/dev/null || true); case "$context" in *:virt_qemu_ga_t:*) exit 1 ;; esac'; if [ -x /usr/libexec/qemu-ga/fsfreeze-hook.d/organesson-qga-exec ]; then exec /usr/libexec/qemu-ga/fsfreeze-hook.d/organesson-qga-exec /bin/sh -c "$check"; fi; exec /bin/sh -c "$check"`
 	if pid, err = vm.AgentExec(ctx, []string{"/bin/sh", "-c", command}, ""); err != nil {
 		return
 	}
-	var status *pve.AgentExecStatus
-	if status, err = vm.WaitForAgentExecExit(ctx, pid, 10); err != nil {
+	var status guestAgentExecStatus
+	if status, err = waitForGuestExecExit(ctx, settings, vm.Node, vmid, pid, 10); err != nil {
 		return
 	}
 	verified = status.ExitCode == 0

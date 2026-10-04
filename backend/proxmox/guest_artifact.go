@@ -8,10 +8,14 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +61,80 @@ type (
 		settings config.ProxmoxConfiguration
 	}
 )
+
+type guestAgentExecStatus struct {
+	ExitCode int    `json:"exitcode"`
+	OutData  string `json:"out-data"`
+	ErrData  string `json:"err-data"`
+}
+
+// waitForGuestExecExit polls QEMU Guest Agent status without relying on provider response fields that vary by PVE version.
+func waitForGuestExecExit(ctx context.Context, settings config.ProxmoxConfiguration, node string, vmid int, pid int, timeoutSeconds int) (status guestAgentExecStatus, err error) {
+	var service *Service = &Service{settings: settings}
+	var transport *http.Transport
+	if transport, err = service.consoleTransport(); err != nil {
+		return
+	}
+	var client *http.Client = &http.Client{
+		Timeout: 15 * time.Second, Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) (err error) { return http.ErrUseLastResponse },
+	}
+	var apiURL *url.URL
+	if apiURL, err = url.Parse(settings.APIURL); err != nil {
+		return
+	}
+	apiURL.Path = strings.TrimSuffix(apiURL.Path, "/") + "/nodes/" + url.PathEscape(node) + "/qemu/" + strconv.Itoa(vmid) + "/agent/exec-status"
+	var query url.Values = apiURL.Query()
+	query.Set("pid", strconv.Itoa(pid))
+	apiURL.RawQuery = query.Encode()
+	var timeout <-chan time.Time = time.After(time.Duration(timeoutSeconds) * time.Second)
+	var ticker *time.Ticker = time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		var request *http.Request
+		if request, err = http.NewRequestWithContext(ctx, http.MethodGet, apiURL.String(), nil); err != nil {
+			return
+		}
+		request.Header.Set("Authorization", "PVEAPIToken="+settings.APITokenID+"="+settings.APITokenSecret)
+		var response *http.Response
+		if response, err = client.Do(request); err != nil {
+			return
+		}
+		var payload struct {
+			Data struct {
+				Exited   int    `json:"exited"`
+				ExitCode int    `json:"exitcode"`
+				OutData  string `json:"out-data"`
+				ErrData  string `json:"err-data"`
+			} `json:"data"`
+		}
+		if response.StatusCode != http.StatusOK {
+			response.Body.Close()
+			err = fmt.Errorf("Proxmox guest-agent exec status returned HTTP %d", response.StatusCode)
+			return
+		}
+		if err = json.NewDecoder(response.Body).Decode(&payload); err != nil {
+			response.Body.Close()
+			return
+		}
+		response.Body.Close()
+		if payload.Data.Exited != 0 {
+			status.ExitCode = payload.Data.ExitCode
+			status.OutData = payload.Data.OutData
+			status.ErrData = payload.Data.ErrData
+			return
+		}
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+			return
+		case <-timeout:
+			err = fmt.Errorf("guest command did not exit within %d seconds", timeoutSeconds)
+			return
+		case <-ticker.C:
+		}
+	}
+}
 
 // GuestArtifactExitError reports the guest entrypoint's non-zero exit status.
 type GuestArtifactExitError struct {
@@ -228,8 +306,8 @@ func (driver *apiGuestArtifactDriver) Execute(ctx context.Context, request Guest
 		defer cancel()
 		var cleanupPID int
 		if cleanupPID, cleanupErr = vm.AgentExec(cleanupContext, guestAgentCommand("/usr/bin/rm", "-rf", "--", workDirectory), ""); cleanupErr == nil {
-			var cleanupStatus *pve.AgentExecStatus
-			if cleanupStatus, cleanupErr = vm.WaitForAgentExecExit(cleanupContext, cleanupPID, 10); cleanupErr == nil && cleanupStatus.ExitCode != 0 {
+			var cleanupStatus guestAgentExecStatus
+			if cleanupStatus, cleanupErr = waitForGuestExecExit(cleanupContext, driver.settings, request.Node, vmid, cleanupPID, 10); cleanupErr == nil && cleanupStatus.ExitCode != 0 {
 				cleanupErr = errors.New("guest did not remove its temporary artifact workspace")
 			}
 		}
@@ -244,8 +322,8 @@ func (driver *apiGuestArtifactDriver) Execute(ctx context.Context, request Guest
 	if mkdirPID, err = vm.AgentExec(ctx, guestAgentCommand("/usr/bin/mkdir", "-m", "0700", "--", workDirectory), ""); err != nil {
 		return
 	}
-	var mkdirStatus *pve.AgentExecStatus
-	if mkdirStatus, err = vm.WaitForAgentExecExit(ctx, mkdirPID, 10); err != nil || mkdirStatus.ExitCode != 0 {
+	var mkdirStatus guestAgentExecStatus
+	if mkdirStatus, err = waitForGuestExecExit(ctx, driver.settings, request.Node, vmid, mkdirPID, 10); err != nil || mkdirStatus.ExitCode != 0 {
 		if err == nil {
 			err = errors.New("guest could not create its temporary artifact workspace")
 		}
@@ -282,8 +360,8 @@ func (driver *apiGuestArtifactDriver) Execute(ctx context.Context, request Guest
 	if pid, err = vm.AgentExec(ctx, guestAgentCommand("/usr/bin/bash", scriptPath, workDirectory, request.Entrypoint), ""); err != nil {
 		return
 	}
-	var status *pve.AgentExecStatus
-	if status, err = vm.WaitForAgentExecExit(ctx, pid, 300); err != nil {
+	var status guestAgentExecStatus
+	if status, err = waitForGuestExecExit(ctx, driver.settings, request.Node, vmid, pid, 300); err != nil {
 		return
 	}
 	if status.ExitCode != 0 {
@@ -296,7 +374,7 @@ func (driver *apiGuestArtifactDriver) Execute(ctx context.Context, request Guest
 }
 
 func guestArtifactScript() (script string) {
-	script = "#!/usr/bin/bash\nset -eu\nwork=$1\nentrypoint=$2\nroot=\"$work/root\"\ncleanup() { /usr/bin/rm -rf -- \"$work\"; }\ntrap cleanup EXIT\ntrap 'cleanup; exit 129' HUP\ntrap 'cleanup; exit 130' INT\ntrap 'cleanup; exit 143' TERM\n/usr/bin/install -d -m 0700 -- \"$root\"\ntab=$(printf '\\t')\nwhile IFS=\"$tab\" read -r index mode expected_digest relative; do\n    [ -n \"$index\" ] || continue\n    target=\"$root/$relative\"\n    case \"$target\" in \"$root\"/*) ;; *) echo 'unsafe artifact path' >&2; exit 1 ;; esac\n    /usr/bin/install -d -m 0755 -- \"$(/usr/bin/dirname -- \"$target\")\"\n    : > \"$target\"\n    for part in \"$work\"/part-\"$index\"-*; do\n        [ -f \"$part\" ] || continue\n        /usr/bin/cat -- \"$part\" >> \"$target\"\n    done\n    actual_digest=$(/usr/bin/sha256sum -- \"$target\")\n    actual_digest=${actual_digest%% *}\n    [ \"$actual_digest\" = \"$expected_digest\" ] || { echo 'artifact file integrity check failed' >&2; exit 1; }\n    /usr/bin/chmod \"$mode\" -- \"$target\"\ndone < \"$work/manifest\"\ncd \"$root\"\n/usr/bin/bash \"$root/$entrypoint\"\n"
+	script = "#!/usr/bin/bash\nset -eu\nwork=$1\nentrypoint=$2\nroot=\"$work/root\"\ncleanup() { cd /; /usr/bin/rm -rf -- \"$work\"; }\ntrap cleanup EXIT\ntrap 'cleanup; exit 129' HUP\ntrap 'cleanup; exit 130' INT\ntrap 'cleanup; exit 143' TERM\n/usr/bin/install -d -m 0700 -- \"$root\"\ntab=$(printf '\\t')\nwhile IFS=\"$tab\" read -r index mode expected_digest relative; do\n    [ -n \"$index\" ] || continue\n    target=\"$root/$relative\"\n    case \"$target\" in \"$root\"/*) ;; *) echo 'unsafe artifact path' >&2; exit 1 ;; esac\n    /usr/bin/install -d -m 0755 -- \"$(/usr/bin/dirname -- \"$target\")\"\n    : > \"$target\"\n    for part in \"$work\"/part-\"$index\"-*; do\n        [ -f \"$part\" ] || continue\n        /usr/bin/cat -- \"$part\" >> \"$target\"\n    done\n    actual_digest=$(/usr/bin/sha256sum -- \"$target\")\n    actual_digest=${actual_digest%% *}\n    [ \"$actual_digest\" = \"$expected_digest\" ] || { echo 'artifact file integrity check failed' >&2; exit 1; }\n    /usr/bin/chmod \"$mode\" -- \"$target\"\ndone < \"$work/manifest\"\ncd \"$root\"\n/usr/bin/bash \"$root/$entrypoint\"\n"
 	return
 }
 

@@ -102,7 +102,7 @@ func TestGuestArtifactDriverTransfersFilesAndAlwaysCleansWorkspace(t *testing.T)
 			if request.URL.Query().Get("pid") == strconv.Itoa(runnerPID) {
 				exitCode = runExitCode
 			}
-			writePVEData(response, map[string]any{"exited": 1, "exitcode": exitCode})
+			writePVEData(response, map[string]any{"exited": 1, "exitcode": exitCode, "err-truncated": 0, "out-truncated": 0, "out-data": "", "err-data": ""})
 		default:
 			t.Errorf("unexpected fake PVE request: %s %s", request.Method, request.URL.String())
 			writePVEData(response, nil)
@@ -131,6 +131,9 @@ func TestGuestArtifactDriverTransfersFilesAndAlwaysCleansWorkspace(t *testing.T)
 	}
 	if !strings.Contains(string(decodeAgentWriteContent(t, writes[1])), "entrypoint.sh") || !strings.Contains(string(decodeAgentWriteContent(t, writes[2])), "trap cleanup EXIT") {
 		t.Fatal("guest delivery did not include an entrypoint manifest and self-cleaning runner")
+	}
+	if !strings.Contains(string(decodeAgentWriteContent(t, writes[2])), "cleanup() { cd /;") {
+		t.Fatal("guest runner must leave its temporary working directory before removing it")
 	}
 	if !strings.Contains(commands[1][6], "/run/organesson-artifact-") || !strings.Contains(commands[0][8], "/run/organesson-artifact-") {
 		t.Fatalf("guest temporary workspace was not isolated under /run: %#v", commands)

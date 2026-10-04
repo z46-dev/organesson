@@ -28,6 +28,7 @@ type (
 		Address             string                     `json:"ipv4_address,omitempty"`
 		Gateway             string                     `json:"ipv4_gateway,omitempty"`
 		DNS                 []string                   `json:"ipv4_dns,omitempty"`
+		NeverDefault        bool                       `json:"ipv4_never_default,omitempty"`
 	}
 
 	apiGuestNetworkDriver struct {
@@ -125,7 +126,7 @@ func (driver *apiGuestNetworkDriver) execute(ctx context.Context, request GuestN
 		var cleanupPID int
 		var cleanupErr error
 		if cleanupPID, cleanupErr = vm.AgentExec(ctx, guestAgentCommand("/usr/bin/rm", "-f", path), ""); cleanupErr == nil {
-			_, cleanupErr = vm.WaitForAgentExecExit(ctx, cleanupPID, 10)
+			_, cleanupErr = waitForGuestExecExit(ctx, driver.settings, vm.Node, vmid, cleanupPID, 10)
 		}
 		if err == nil && cleanupErr != nil {
 			err = cleanupErr
@@ -135,8 +136,8 @@ func (driver *apiGuestNetworkDriver) execute(ctx context.Context, request GuestN
 	if pid, err = vm.AgentExec(ctx, guestAgentCommand("/usr/bin/bash", path), ""); err != nil {
 		return
 	}
-	var status *pve.AgentExecStatus
-	if status, err = vm.WaitForAgentExecExit(ctx, pid, 60); err != nil {
+	var status guestAgentExecStatus
+	if status, err = waitForGuestExecExit(ctx, driver.settings, vm.Node, vmid, pid, 60); err != nil {
 		return
 	}
 	if status.ExitCode != 0 {
@@ -241,7 +242,11 @@ func guestNetworkScript(request GuestNetworkRequest, remove bool) (script string
 			gateway = request.Gateway
 			dns = strings.Join(request.DNS, ",")
 		}
-		var options string = "ipv4.method " + shellQuote(nmcliMethod) + " ipv4.addresses " + shellQuote(address) + " ipv4.gateway " + shellQuote(gateway) + " ipv4.dns " + shellQuote(dns)
+		var neverDefault string = "no"
+		if request.NeverDefault {
+			neverDefault = "yes"
+		}
+		var options string = "ipv4.method " + shellQuote(nmcliMethod) + " ipv4.addresses " + shellQuote(address) + " ipv4.gateway " + shellQuote(gateway) + " ipv4.dns " + shellQuote(dns) + " ipv4.never-default " + neverDefault
 		operation = "if nmcli -t -f NAME connection show | /usr/bin/grep -Fxq \"$connection\"; then\n    nmcli connection modify \"$connection\" " + options + "\nelse\n    nmcli connection add type ethernet ifname \"$interface\" con-name \"$connection\" connection.autoconnect yes ethernet.mac-address " + shellQuote(request.Placement.MAC) + " " + options + "\nfi\nnmcli connection up \"$connection\""
 	}
 	script = "#!/usr/bin/bash\nset -eu\ntrap 'rm -f \"$0\"' EXIT\nmac=" + shellQuote(strings.ToLower(request.Placement.MAC)) + "\nconnection=" + shellQuote(connection) + "\ninterface=\nfor address_file in /sys/class/net/*/address; do\n    [ -r \"$address_file\" ] || continue\n    if [ \"$(tr '[:upper:]' '[:lower:]' < \"$address_file\")\" = \"$mac\" ]; then\n        interface=${address_file%/address}\n        interface=${interface##*/}\n        break\n    fi\ndone\n[ -n \"$interface\" ] || { echo 'managed NIC MAC was not found' >&2; exit 1; }\n" + operation + "\n"
@@ -258,6 +263,11 @@ func guestNetworkReadScript(request GuestNetworkRequest) (script string) {
 	} else {
 		checks = "actual_address=$(nmcli -g ipv4.addresses connection show \"$connection\")\nactual_gateway=$(nmcli -g ipv4.gateway connection show \"$connection\")\nactual_dns=$(nmcli -g ipv4.dns connection show \"$connection\")\n[ -z \"$actual_address$actual_gateway$actual_dns\" ] || { echo 'guest DHCP profile contains static IPv4 values' >&2; exit 1; }\n"
 	}
+	var expectedNeverDefault string = "no"
+	if request.NeverDefault {
+		expectedNeverDefault = "yes"
+	}
+	checks += "actual_never_default=$(nmcli -g ipv4.never-default connection show \"$connection\")\n[ \"$actual_never_default\" = " + expectedNeverDefault + " ] || { echo 'guest IPv4 route preference drift detected' >&2; exit 1; }\n"
 	script = "#!/usr/bin/bash\nset -eu\ntrap 'rm -f \"$0\"' EXIT\nconnection=" + shellQuote(connection) + "\nactual_method=$(nmcli -g ipv4.method connection show \"$connection\" 2>/dev/null)\n[ \"$actual_method\" = " + shellQuote(expectedMethod) + " ] || { echo 'guest IPv4 method drift detected' >&2; exit 1; }\n" + checks
 	return
 }

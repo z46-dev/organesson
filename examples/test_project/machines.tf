@@ -1,64 +1,57 @@
-# Enable one real VM lifecycle check without cloning the entire classroom topology.
-resource "organesson_virtual_machine" "internet_fedora" {
-  for_each = local.students
+resource "organesson_virtual_machine" "student" {
+    for_each = local.student_machines
 
-  boot_disk_gib     = 64
-  cpu_cores         = 2
-  logical_group_id  = organesson_logical_group.student_lab[each.key].id
-  memory_mib        = 4096
-  name              = "internet-fedora"
-  pool              = "organesson"
-  provisioning_mode = var.proxmox_test_deployment || (var.proxmox_lifecycle_smoke && each.key == "charlie") ? "proxmox" : "simulated"
-  storage           = "laas"
-  template          = "og-template-fedora-server-latest"
+    boot_disk_gib     = 32
+    cpu_cores         = 2
+    logical_group_id  = organesson_logical_group.student_lab[each.value.student].id
+    memory_mib        = 4096
+    name              = each.value.role
+    pool              = "organesson"
+    provisioning_mode = var.proxmox_test_deployment ? "proxmox" : "simulated"
+    storage           = "laas"
+    template          = "og-template-fedora-server-latest"
 }
 
-# This Fedora VM joins both its student's private link and the shared DHCP subnet.
-resource "organesson_virtual_machine" "lan_fedora" {
-  for_each = local.students
+resource "organesson_virtual_machine" "shared_router" {
+    count = var.proxmox_test_deployment ? 1 : 0
 
-  boot_disk_gib     = 64
-  cpu_cores         = 2
-  logical_group_id  = organesson_logical_group.student_lab[each.key].id
-  memory_mib        = 4096
-  name              = "lan-fedora"
-  pool              = "organesson"
-  provisioning_mode = var.proxmox_test_deployment ? "proxmox" : "simulated"
-  storage           = "laas"
-  template          = "og-template-fedora-server-latest"
+    boot_disk_gib     = 16
+    cpu_cores         = 1
+    logical_group_id  = organesson_logical_group.network_services.id
+    memory_mib        = 2048
+    name              = "shared-router"
+    pool              = "organesson"
+    provisioning_mode = "proxmox"
+    storage           = "laas"
+    template          = "og-template-debian-router-13-latest"
 }
 
-resource "organesson_virtual_disk" "internet_fedora_data" {
-  for_each = local.students
+resource "organesson_virtual_machine" "private_router" {
+    for_each = var.proxmox_test_deployment ? local.students : toset([])
 
-  name               = "data"
-  size_gib           = 500
-  storage_class      = "fast"
-  virtual_machine_id = organesson_virtual_machine.internet_fedora[each.key].id
+    boot_disk_gib     = 16
+    cpu_cores         = 1
+    logical_group_id  = organesson_logical_group.student_lab[each.key].id
+    memory_mib        = 2048
+    name              = "private-router"
+    pool              = "organesson"
+    provisioning_mode = "proxmox"
+    storage           = "laas"
+    template          = "og-template-debian-router-13-latest"
 }
 
 resource "organesson_artifact" "first_time_setup" {
-  deployment_id    = organesson_deployment.class_lab.id
-  entrypoint       = "entrypoint.sh"
-  source_directory = "artifacts/first-time-setup"
+    deployment_id    = organesson_deployment.class_lab.id
+    entrypoint       = "entrypoint.sh"
+    source_directory = "artifacts/first-time-setup"
 }
 
-resource "organesson_guest_setup" "internet_fedora" {
-  for_each = local.proxmox_internet_vms
+resource "organesson_guest_setup" "student" {
+    for_each = var.proxmox_test_deployment ? local.student_machines : {}
 
-  artifact_id        = organesson_artifact.first_time_setup.id
-  entrypoint         = organesson_artifact.first_time_setup.entrypoint
-  sha256             = organesson_artifact.first_time_setup.sha256
-  source_directory   = organesson_artifact.first_time_setup.source_directory
-  virtual_machine_id = organesson_virtual_machine.internet_fedora[each.key].id
-}
-
-resource "organesson_guest_setup" "lan_fedora" {
-  for_each = var.proxmox_test_deployment ? local.students : toset([])
-
-  artifact_id        = organesson_artifact.first_time_setup.id
-  entrypoint         = organesson_artifact.first_time_setup.entrypoint
-  sha256             = organesson_artifact.first_time_setup.sha256
-  source_directory   = organesson_artifact.first_time_setup.source_directory
-  virtual_machine_id = organesson_virtual_machine.lan_fedora[each.key].id
+    artifact_id        = organesson_artifact.first_time_setup.id
+    entrypoint         = organesson_artifact.first_time_setup.entrypoint
+    sha256             = organesson_artifact.first_time_setup.sha256
+    source_directory   = organesson_artifact.first_time_setup.source_directory
+    virtual_machine_id = organesson_virtual_machine.student[each.key].id
 }

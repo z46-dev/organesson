@@ -85,6 +85,33 @@ func TestPackageArtifactRejectsUnsafeSourcesAndEntrypoints(t *testing.T) {
 	}
 }
 
+func TestPackageArtifactIncludesGeneratedFilesInDigest(t *testing.T) {
+	var sourceDirectory string = t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceDirectory, "entrypoint.sh"), []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	var first artifactPackage
+	var err error
+	if first, err = packageArtifactWithFiles(sourceDirectory, "entrypoint.sh", map[string]string{"router.conf": "DHCP_START=192.168.100.100\n"}); err != nil {
+		t.Fatal(err)
+	}
+	var second artifactPackage
+	if second, err = packageArtifactWithFiles(sourceDirectory, "entrypoint.sh", map[string]string{"router.conf": "DHCP_START=192.168.100.101\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if first.SHA256 == second.SHA256 || first.FileCount != 2 {
+		t.Fatalf("generated content was not represented in the package manifest: first=%#v second=%#v", first, second)
+	}
+	for _, generatedFiles := range []map[string]string{
+		{"../outside": "unsafe"},
+		{"entrypoint.sh": "overwrite"},
+	} {
+		if _, err = packageArtifactWithFiles(sourceDirectory, "entrypoint.sh", generatedFiles); err == nil {
+			t.Fatalf("unsafe generated files were accepted: %#v", generatedFiles)
+		}
+	}
+}
+
 func TestPackageArtifactEnforcesFileAndSizeLimits(t *testing.T) {
 	var sourceDirectory string = t.TempDir()
 	for index := 0; index <= maxArtifactFiles; index++ {

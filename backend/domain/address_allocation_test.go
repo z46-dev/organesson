@@ -178,3 +178,74 @@ func TestAddressPoolRequestsPersistAndUniquelyAllocate(t *testing.T) {
 		t.Fatalf("ungranted account must not allocate deployment addresses, got %v", err)
 	}
 }
+
+func TestManagedNetworkAddressAllocationStaysInsideDeclaredRange(t *testing.T) {
+	var addresses []string
+	var err error
+	if addresses, err = allocateManagedNetworkAddresses(proxmox.AddressPool{Prefix: "192.168.2.0/24"}, "192.168.2.2", "192.168.2.10", 3, []string{"192.168.2.2", "192.168.2.3"}); err != nil {
+		t.Fatalf("allocate managed-network addresses: %v", err)
+	}
+	if len(addresses) != 3 || addresses[0] != "192.168.2.4" || addresses[1] != "192.168.2.5" || addresses[2] != "192.168.2.6" {
+		t.Fatalf("unexpected managed-network allocation: %v", addresses)
+	}
+	if _, err = allocateManagedNetworkAddresses(proxmox.AddressPool{Prefix: "192.168.2.0/24"}, "192.168.2.2", "192.168.2.3", 2, []string{"192.168.2.2", "192.168.2.3"}); err == nil {
+		t.Fatal("expected exhausted range to fail")
+	}
+}
+
+func TestManagedNetworkAddressPoolRequestsReserveUniqueHosts(t *testing.T) {
+	var store *db.Store
+	var err error
+	if store, err = db.Open(filepath.Join(t.TempDir(), "organesson.db"), golog.New(), false); err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+	var service *Service = New(store)
+	var admin *db.Account
+	if admin, _, err = store.InitialAdministrator(); err != nil {
+		t.Fatalf("get administrator: %v", err)
+	}
+	var deployment *db.Deployment
+	if deployment, err = service.CreateDeployment(admin.ID, "managed-address-test", "managed address range test"); err != nil {
+		t.Fatalf("create deployment: %v", err)
+	}
+	var networkOwner *db.OwnershipNode = &db.OwnershipNode{
+		DeploymentID: deployment.ID, ParentID: deployment.RootNodeID, Kind: db.OwnershipNodeKindResource,
+		Name: "private-network", CreatedAt: time.Now().UTC(),
+	}
+	if err = store.OwnershipNodes.Insert(networkOwner); err != nil {
+		t.Fatalf("insert network ownership: %v", err)
+	}
+	var networkConfiguration []byte
+	if networkConfiguration, err = json.Marshal(ManagedNetworkConfiguration{
+		Request: proxmox.SDNNetworkRequest{Name: "private", Mode: "managed", Subnet: "192.168.2.0/24", Gateway: "192.168.2.1"},
+	}); err != nil {
+		t.Fatalf("encode network configuration: %v", err)
+	}
+	var network *db.ManagedResource = &db.ManagedResource{
+		DeploymentID: deployment.ID, OwnershipID: networkOwner.ID, Kind: "virtual_network", Name: "private",
+		PowerState: "ready", ConfigurationJSON: string(networkConfiguration), CreatedAt: time.Now().UTC(),
+	}
+	if err = store.ManagedResources.Insert(network); err != nil {
+		t.Fatalf("insert managed network: %v", err)
+	}
+	var request AddressPoolRequest = AddressPoolRequest{
+		DeploymentID: deployment.ID, LogicalNetworkID: network.ID, Name: "student-addresses",
+		AddressFamily: "ipv4", AddressCount: 3, RangeStart: "192.168.2.2", RangeEnd: "192.168.2.10",
+	}
+	var allocation AddressPoolRequest
+	if _, allocation, err = service.ReserveAddressPoolRequest(admin.ID, request); err != nil {
+		t.Fatalf("reserve student addresses: %v", err)
+	}
+	if len(allocation.Addresses) != 3 || allocation.Addresses[0] != "192.168.2.2" || allocation.Addresses[2] != "192.168.2.4" || allocation.Prefix != "192.168.2.0/24" || allocation.Gateway != "192.168.2.1" {
+		t.Fatalf("unexpected managed address allocation: %#v", allocation)
+	}
+	request.Name = "second-student-addresses"
+	var next AddressPoolRequest
+	if _, next, err = service.ReserveAddressPoolRequest(admin.ID, request); err != nil {
+		t.Fatalf("reserve next student addresses: %v", err)
+	}
+	if next.Addresses[0] != "192.168.2.5" {
+		t.Fatalf("managed address request reused a reserved address: %v", next.Addresses)
+	}
+}

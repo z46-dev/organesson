@@ -25,6 +25,10 @@ func TestGuestNetworkScriptsAreValidAndNICScoped(t *testing.T) {
 	if !strings.Contains(guestNetworkScript(request, false), "trap 'rm -f \"$0\"' EXIT") {
 		t.Fatal("ephemeral guest setup script must remove itself after execution")
 	}
+	request.NeverDefault = true
+	if !strings.Contains(guestNetworkScript(request, false), "ipv4.never-default yes") || !strings.Contains(guestNetworkReadScript(request), "guest IPv4 route preference drift detected") {
+		t.Fatal("guest setup does not preserve and verify the non-default-route preference")
+	}
 }
 
 func TestValidateGuestNetworkRequest(t *testing.T) {
