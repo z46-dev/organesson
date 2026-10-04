@@ -125,6 +125,10 @@ func TestVMDriverRequiresOwnershipMarkerBeforePowerOrDelete(t *testing.T) {
 	var fakePVE *httptest.Server
 	fakePVE = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/resources":
+			writePVEData(response, []map[string]any{{"type": "qemu", "vmid": 901, "node": "pve1", "name": "managed-vm", "status": vmState}})
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/status":
+			writePVEData(response, []any{})
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve1/status":
 			writePVEData(response, map[string]any{"node": "pve1", "status": "online"})
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve1/qemu/901/status/current":
@@ -201,6 +205,38 @@ func TestVMDriverRequiresOwnershipMarkerBeforePowerOrDelete(t *testing.T) {
 	vmDescription = "Unrelated VM"
 	if _, err = driver.Read(ctx, "pve1", "901", "og-owned"); err == nil {
 		t.Fatal("refresh must reject a VM whose ownership marker changed")
+	}
+}
+
+func TestVMReadUsesCurrentClusterNodeAfterMigration(t *testing.T) {
+	var fakePVE *httptest.Server = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/status":
+			writePVEData(response, []any{})
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/resources":
+			writePVEData(response, []map[string]any{{"type": "qemu", "vmid": 902, "node": "tungsten", "name": "moved-vm", "status": "running"}})
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/tungsten/status":
+			writePVEData(response, map[string]any{"node": "tungsten", "status": "online"})
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/tungsten/qemu/902/status/current":
+			writePVEData(response, map[string]any{"vmid": 902, "name": "moved-vm", "status": "running"})
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/tungsten/qemu/902/config":
+			writePVEData(response, map[string]any{"name": "moved-vm", "description": "Organesson managed resource og-migrated"})
+		default:
+			t.Errorf("unexpected migrated-VM lookup: %s %s", request.Method, request.URL.String())
+			writePVEData(response, nil)
+		}
+	}))
+	defer fakePVE.Close()
+	var driver *apiVMDriver = &apiVMDriver{settings: config.ProxmoxConfiguration{
+		APIURL: fakePVE.URL + "/api2/json", APITokenID: "test!organesson", APITokenSecret: "secret", InsecureSkipVerify: true,
+	}}
+	var placement VMPlacement
+	var err error
+	if placement, err = driver.Read(context.Background(), "osmium", "902", "og-migrated"); err != nil {
+		t.Fatalf("read migrated VM using stale node hint: %v", err)
+	}
+	if placement.Node != "tungsten" || placement.PowerState != "running" {
+		t.Fatalf("cluster placement was not refreshed after migration: %#v", placement)
 	}
 }
 

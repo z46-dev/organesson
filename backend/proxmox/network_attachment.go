@@ -82,16 +82,13 @@ func (driver *apiNetworkAttachmentDriver) Attach(ctx context.Context, request Ne
 	if client, err = newAPIClient(driver.settings); err != nil {
 		return
 	}
-	var node *pve.Node
-	if node, err = client.Node(ctx, request.Node); err != nil {
-		return
-	}
 	var vmid int
 	if vmid, err = parseVMID(request.VMID); err != nil {
 		return
 	}
+	var node *pve.Node
 	var vm *pve.VirtualMachine
-	if vm, err = node.VirtualMachine(ctx, vmid); err != nil {
+	if node, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, request.VMOperationKey); err != nil {
@@ -140,16 +137,13 @@ func (driver *apiNetworkAttachmentDriver) Read(ctx context.Context, request Netw
 	if client, err = newAPIClient(driver.settings); err != nil {
 		return
 	}
-	var node *pve.Node
-	if node, err = client.Node(ctx, request.Node); err != nil {
-		return
-	}
 	var vmid int
 	if vmid, err = parseVMID(request.VMID); err != nil {
 		return
 	}
+	var node *pve.Node
 	var vm *pve.VirtualMachine
-	if vm, err = node.VirtualMachine(ctx, vmid); err != nil {
+	if node, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, request.VMOperationKey); err != nil {
@@ -181,16 +175,12 @@ func (driver *apiNetworkAttachmentDriver) Detach(ctx context.Context, request Ne
 	if client, err = newAPIClient(driver.settings); err != nil {
 		return
 	}
-	var node *pve.Node
-	if node, err = client.Node(ctx, request.Node); err != nil {
-		return
-	}
 	var vmid int
 	if vmid, err = parseVMID(request.VMID); err != nil {
 		return
 	}
 	var vm *pve.VirtualMachine
-	if vm, err = node.VirtualMachine(ctx, vmid); err != nil {
+	if _, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, request.VMOperationKey); err != nil {
@@ -242,7 +232,7 @@ func verifyAttachmentTarget(ctx context.Context, client *pve.Client, node *pve.N
 				continue
 			}
 			var expected SDNNetworkPlacement = namesForSDNNetwork(request.NetworkOperationKey)
-			if vnet.Alias != "organesson:"+request.NetworkOperationKey || vnet.Zone != expected.Zone || vnet.Name != expected.VNet {
+			if vnet.Alias != "organesson:"+request.NetworkOperationKey || vnet.Name != expected.VNet {
 				err = errors.New("target Proxmox SDN VNet is not owned by the referenced Organesson network")
 				return
 			}

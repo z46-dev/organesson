@@ -75,11 +75,7 @@ func (driver *apiVMSnapshotDriver) managedVM(ctx context.Context, nodeName strin
 	if client, err = newAPIClient(driver.settings); err != nil {
 		return
 	}
-	var node *pve.Node
-	if node, err = client.Node(ctx, nodeName); err != nil {
-		return
-	}
-	if vm, err = node.VirtualMachine(ctx, vmid); err != nil {
+	if _, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
 		return
 	}
 	err = verifyManagedVM(vm, operationKey)

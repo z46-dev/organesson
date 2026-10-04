@@ -34,7 +34,7 @@ func TestAddressPoolRequestsPersistAndUniquelyAllocate(t *testing.T) {
 		Networks: []proxmox.PolicyNetwork{{
 			Name: "cyber.lab", Kind: "bridge", PVEName: "vmbr0",
 			AddressPools: []proxmox.AddressPool{{
-				Name: "classroom", Prefix: "10.0.0.0/8", AllocationPrefix: "10.192.0.0/12", Start: "10.192.0.10", End: "10.192.0.20",
+				Name: "classroom", Prefix: "10.0.0.0/8", AllocationPrefix: "10.192.0.8/29",
 				Gateway: "10.0.0.1", DNS: []string{"10.0.0.2"},
 			}},
 		}},
@@ -63,7 +63,7 @@ func TestAddressPoolRequestsPersistAndUniquelyAllocate(t *testing.T) {
 	if first, allocation, err = service.ReserveAddressPoolRequest(admin.ID, request); err != nil {
 		t.Fatalf("reserve first request: %v", err)
 	}
-	if len(allocation.Addresses) != 2 || allocation.Addresses[0] != "10.192.0.10" || allocation.Addresses[1] != "10.192.0.11" {
+	if len(allocation.Addresses) != 2 || allocation.Addresses[0] != "10.192.0.9" || allocation.Addresses[1] != "10.192.0.10" {
 		t.Fatalf("unexpected first allocation: %v", allocation.Addresses)
 	}
 	if allocation.Prefix != "10.0.0.0/8" || allocation.Gateway != "10.0.0.1" || len(allocation.DNS) != 1 || allocation.DNS[0] != "10.0.0.2" {
@@ -82,7 +82,7 @@ func TestAddressPoolRequestsPersistAndUniquelyAllocate(t *testing.T) {
 	if _, second, err = service.ReserveAddressPoolRequest(admin.ID, request); err != nil {
 		t.Fatalf("reserve second request: %v", err)
 	}
-	if second.Addresses[0] != "10.192.0.12" {
+	if second.Addresses[0] != "10.192.0.11" {
 		t.Fatalf("second request reused an allocated address: %v", second.Addresses)
 	}
 	var vmOwner *db.OwnershipNode = &db.OwnershipNode{
@@ -166,7 +166,7 @@ func TestAddressPoolRequestsPersistAndUniquelyAllocate(t *testing.T) {
 	if _, released, err = service.ReserveAddressPoolRequest(admin.ID, request); err != nil {
 		t.Fatalf("reuse released address: %v", err)
 	}
-	if released.Addresses[0] != "10.192.0.10" {
+	if released.Addresses[0] != "10.192.0.9" {
 		t.Fatalf("expected deleted reservation to release address, got %v", released.Addresses)
 	}
 	var unauthorized *db.Account = &db.Account{DisplayName: "Unauthorized", CreatedAt: time.Now().UTC()}

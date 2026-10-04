@@ -98,16 +98,13 @@ func (driver *apiGuestNetworkDriver) execute(ctx context.Context, request GuestN
 	if client, err = newAPIClient(driver.settings); err != nil {
 		return
 	}
-	var node *pve.Node
-	if node, err = client.Node(ctx, request.Node); err != nil {
-		return
-	}
 	var vmid int
 	if vmid, err = parseVMID(request.VMID); err != nil {
 		return
 	}
+	var node *pve.Node
 	var vm *pve.VirtualMachine
-	if vm, err = node.VirtualMachine(ctx, vmid); err != nil {
+	if node, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, request.VMOperationKey); err != nil {

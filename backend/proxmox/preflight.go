@@ -57,11 +57,11 @@ type (
 		ReadResourceInventory(context.Context) (ResourceInventory, error)
 	}
 
-	// SDNNetworkDriver owns isolated Proxmox Simple-zone networks.
+	// SDNNetworkDriver owns Organesson VNets and their optional subnets.
 	SDNNetworkDriver interface {
 		Create(context.Context, SDNNetworkRequest) (SDNNetworkPlacement, error)
 		Read(context.Context, SDNNetworkRequest, SDNNetworkPlacement) error
-		Delete(context.Context, string, string) error
+		Delete(context.Context, string, string, string) error
 	}
 
 	// SDNNetworkIPAMReader reads address records associated with one SDN VNet.

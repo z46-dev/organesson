@@ -359,6 +359,7 @@ func createNetworkHandler(services common.Services) (handler fiber.Handler) {
 		if resource, err = services.Domain.ReadySDNNetwork(actorID, resource.ID, placement); err != nil {
 			return common.DomainError(ctx, err)
 		}
+		configuration.Placement = placement
 		err = ctx.Status(fiber.StatusCreated).JSON(fiber.Map{"resource": resource, "configuration": configuration})
 		return
 	}
@@ -425,7 +426,7 @@ func deleteNetworkHandler(services common.Services) (handler fiber.Handler) {
 		if services.Proxmox == nil || !services.Proxmox.Configured() {
 			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; the network record was retained."})
 		}
-		if err = services.Proxmox.DeleteSDNNetwork(ctx, resource.ExternalID, configuration.Request.OperationKey); err != nil {
+		if err = services.Proxmox.DeleteSDNNetwork(ctx, resource.ExternalID, configuration.Request.OperationKey, configuration.Request.VNetSourceZone); err != nil {
 			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm network deletion; the Organesson record was retained."})
 		}
 		if err = services.Domain.DeleteSDNNetworkRecord(actorID, resourceID); err != nil {
@@ -726,7 +727,8 @@ func getDeployment(services common.Services) (handler fiber.Handler) {
 				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not refresh deployment VM state from Proxmox."})
 			}
 			resource.PowerState = placement.PowerState
-			if _, err = services.Domain.RecordLivePowerState(accountID, resource.ID, placement.PowerState); err != nil {
+			resource.ExternalNode = placement.Node
+			if _, err = services.Domain.RecordLiveVMPlacement(accountID, resource.ID, placement); err != nil {
 				return common.DomainError(ctx, err)
 			}
 		}
@@ -873,7 +875,7 @@ func setVirtualMachinePower(services common.Services) (handler fiber.Handler) {
 			if placement, err = services.Proxmox.PowerVM(ctx, managed.ExternalNode, managed.ExternalID, managed.OperationKey, request.Action); err != nil {
 				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm the requested power action."})
 			}
-			if resource, err = services.Domain.RecordLivePowerState(accountID, resourceID, placement.PowerState); err != nil {
+			if resource, err = services.Domain.RecordLiveVMPlacement(accountID, resourceID, placement); err != nil {
 				return common.DomainError(ctx, err)
 			}
 		} else if managed.OperationKey != "" {
@@ -937,7 +939,7 @@ func getVirtualMachine(services common.Services) (handler fiber.Handler) {
 			if liveCPU, err = services.Proxmox.ReadVM(ctx, resource.ExternalNode, resource.ExternalID, resource.OperationKey); err != nil {
 				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not refresh this VM from Proxmox."})
 			}
-			if resource, err = services.Domain.RecordLivePowerState(actorID, resourceID, liveCPU.PowerState); err != nil {
+			if resource, err = services.Domain.RecordLiveVMPlacement(actorID, resourceID, liveCPU); err != nil {
 				return common.DomainError(ctx, err)
 			}
 		}

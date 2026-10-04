@@ -23,6 +23,10 @@ func TestConsoleUsesServerSideTokenAndShortLivedTicket(t *testing.T) {
 			t.Errorf("missing server-side Proxmox API token")
 		}
 		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/status":
+			writePVEData(response, []any{})
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/resources":
+			writePVEData(response, []map[string]any{{"type": "qemu", "vmid": 900, "node": "pve1", "name": "console-vm", "status": "running"}})
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve1/status":
 			writePVEData(response, map[string]any{"node": "pve1", "status": "online"})
 		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/qemu/900/status/current"):

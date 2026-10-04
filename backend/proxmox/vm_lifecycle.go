@@ -13,6 +13,8 @@ import (
 	"github.com/z46-dev/organesson/backend/config"
 )
 
+var errClusterVMNotFound = errors.New("Proxmox VM is missing from the cluster inventory")
+
 type (
 	// VMDriver owns Proxmox operations for Organesson-managed QEMU VMs.
 	VMDriver interface {
@@ -304,18 +306,15 @@ func (driver *apiVMDriver) Read(ctx context.Context, nodeName string, id string,
 	if client, err = newAPIClient(driver.settings); err != nil {
 		return
 	}
-	var node *pve.Node
-	if node, err = client.Node(ctx, nodeName); err != nil {
-		return
-	}
+	var actualNode string
 	var vm *pve.VirtualMachine
-	if vm, err = node.VirtualMachine(ctx, vmid); err != nil {
+	if _, vm, actualNode, err = locateManagedVM(ctx, client, vmid); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, operationKey); err != nil {
 		return
 	}
-	placement = placementFor(vm, vmid, nodeName)
+	placement = placementFor(vm, vmid, actualNode)
 	return
 }
 
@@ -330,11 +329,8 @@ func (driver *apiVMDriver) Power(ctx context.Context, nodeName string, id string
 	if client, err = newAPIClient(driver.settings); err != nil {
 		return
 	}
-	var node *pve.Node
-	if node, err = client.Node(ctx, nodeName); err != nil {
-		return
-	}
-	if vm, err = node.VirtualMachine(ctx, vmid); err != nil {
+	var actualNode string
+	if _, vm, actualNode, err = locateManagedVM(ctx, client, vmid); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, operationKey); err != nil {
@@ -346,14 +342,14 @@ func (driver *apiVMDriver) Power(ctx context.Context, nodeName string, id string
 		if vm.IsStopped() {
 			task, err = vm.Start(ctx)
 		} else {
-			placement = placementFor(vm, vmid, nodeName)
+			placement = placementFor(vm, vmid, actualNode)
 			return
 		}
 	case "stop":
 		if !vm.IsStopped() {
 			task, err = vm.Shutdown(ctx)
 		} else {
-			placement = placementFor(vm, vmid, nodeName)
+			placement = placementFor(vm, vmid, actualNode)
 			return
 		}
 	case "restart":
@@ -368,7 +364,7 @@ func (driver *apiVMDriver) Power(ctx context.Context, nodeName string, id string
 	if err = waitTask(ctx, client, task); err != nil {
 		return
 	}
-	placement, err = driver.Read(ctx, nodeName, id, operationKey)
+	placement, err = driver.Read(ctx, actualNode, id, operationKey)
 	return
 }
 
@@ -383,14 +379,11 @@ func (driver *apiVMDriver) Delete(ctx context.Context, nodeName string, id strin
 		return
 	}
 	var node *pve.Node
-	if node, err = client.Node(ctx, nodeName); err != nil {
-		return
-	}
 	var vm *pve.VirtualMachine
-	if vm, err = node.VirtualMachine(ctx, vmid); err != nil {
-		if pve.IsNotFound(err) {
-			err = nil
-		}
+	if node, vm, _, err = locateManagedVM(ctx, client, vmid); errors.Is(err, errClusterVMNotFound) {
+		err = nil
+		return
+	} else if err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, operationKey); err != nil {
@@ -417,6 +410,34 @@ func (driver *apiVMDriver) Delete(ctx context.Context, nodeName string, id strin
 		return
 	}
 	err = waitTask(ctx, client, task)
+	return
+}
+
+// locateManagedVM follows Proxmox cluster placement so a migrated VM remains addressable.
+func locateManagedVM(ctx context.Context, client *pve.Client, vmid int) (node *pve.Node, vm *pve.VirtualMachine, nodeName string, err error) {
+	var cluster *pve.Cluster
+	if cluster, err = client.Cluster(ctx); err != nil {
+		return
+	}
+	var resources pve.ClusterResources
+	if resources, err = cluster.Resources(ctx, "vm"); err != nil {
+		return
+	}
+	for _, resource := range resources {
+		if resource == nil || resource.Type != "qemu" || resource.VMID != uint64(vmid) || resource.Node == "" {
+			continue
+		}
+		nodeName = resource.Node
+		break
+	}
+	if nodeName == "" {
+		err = errClusterVMNotFound
+		return
+	}
+	if node, err = client.Node(ctx, nodeName); err != nil {
+		return
+	}
+	vm, err = node.VirtualMachine(ctx, vmid)
 	return
 }
 

@@ -212,7 +212,7 @@ func networkOperations() (operations remoteResourceOperations) {
 		_ = data.Set("power_state", result.Resource.PowerState)
 		_ = data.Set("proxmox_vnet", result.Resource.ExternalID)
 		_ = data.Set("proxmox_zone", result.Resource.ExternalNode)
-		_ = data.Set("summary", fmt.Sprintf("created isolated Proxmox SDN VNet %q in Simple zone %q", result.Resource.ExternalID, result.Resource.ExternalNode))
+		_ = data.Set("summary", fmt.Sprintf("created isolated Proxmox SDN VNet %q in zone %q", result.Resource.ExternalID, result.Resource.ExternalNode))
 		return
 	}
 	operations.Read = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {

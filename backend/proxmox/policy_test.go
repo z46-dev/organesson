@@ -9,27 +9,67 @@ func TestValidateResourcePolicyRequiresPoolAndStorage(t *testing.T) {
 	}
 }
 
+func TestValidateResourcePolicyRejectsNegativeScopedLimits(t *testing.T) {
+	var policy ResourcePolicy = ResourcePolicy{
+		ResourcePools:    []string{"students"},
+		Storages:         []string{"laas"},
+		DeploymentLimits: DeploymentLimits{MaxResources: -1},
+		VMLimits:         VMLimits{VirtualCPUs: -1},
+	}
+	if result := ValidateResourcePolicy(policy, nil); result.Valid {
+		t.Fatal("negative deployment and VM limits were accepted")
+	}
+}
+
 func TestValidateResourcePolicyChecksPVEInventoryAndAddressRanges(t *testing.T) {
 	var policy ResourcePolicy = ResourcePolicy{
 		ResourcePools: []string{"students"},
 		Storages:      []string{"local-lvm"},
 		Networks: []PolicyNetwork{{
 			Name: "student-lan", Kind: "vnet", PVEName: "vnet-students",
-			AddressPools: []AddressPool{{Name: "lab", Prefix: "192.0.2.0/24", Start: "192.0.2.10", End: "192.0.2.20", Gateway: "192.0.2.1", DNS: []string{"192.0.2.2"}}},
+			AddressPools: []AddressPool{{Name: "lab", Prefix: "192.0.2.0/24", AllocationPrefix: "192.0.2.0/27", Gateway: "192.0.2.1", DNS: []string{"192.0.2.2"}}},
 		}},
 	}
-	var inventory ResourceInventory = ResourceInventory{Pools: []string{"students"}, Storages: []string{"local-lvm"}, VNets: []string{"vnet-students"}}
+	var inventory ResourceInventory = ResourceInventory{
+		Pools: []string{"students"}, Storages: []string{"local-lvm"}, VNets: []string{"vnet-students"},
+		VNetSubnets: map[string][]PolicySubnet{"vnet-students": {{Prefix: "192.0.2.0/24", Gateway: "192.0.2.1"}}},
+	}
 	if result := ValidateResourcePolicy(policy, &inventory); !result.Valid {
 		t.Fatalf("valid policy rejected: %#v", result.Issues)
 	}
-	policy.Networks[0].AddressPools[0].End = "192.0.3.20"
+	policy.Networks[0].AddressPools[0].AllocationPrefix = "192.0.3.0/27"
 	if result := ValidateResourcePolicy(policy, &inventory); result.Valid {
 		t.Fatal("address range outside its prefix was accepted")
 	}
-	policy.Networks[0].AddressPools[0].End = "192.0.2.20"
+	policy.Networks[0].AddressPools[0].AllocationPrefix = "192.0.2.0/27"
 	policy.Storages[0] = "missing-storage"
 	if result := ValidateResourcePolicy(policy, &inventory); result.Valid {
 		t.Fatal("storage missing from inventory was accepted")
+	}
+}
+
+func TestValidateResourcePolicyAllowsCreatedVNetAndConstrainsItsAddressPools(t *testing.T) {
+	var policy ResourcePolicy = ResourcePolicy{
+		ResourcePools:  []string{"students"},
+		Storages:       []string{"laas"},
+		VNetSourceZone: "ogvxlan",
+		Networks: []PolicyNetwork{{
+			Name: "student-lan", Kind: "vnet", TargetMode: "create", Subnets: []PolicySubnet{{Prefix: "192.0.2.0/24", Gateway: "192.0.2.1", DHCPEnabled: true}},
+			AddressPools: []AddressPool{{Name: "students", Prefix: "192.0.2.0/24", AllocationPrefix: "192.0.2.0/27"}},
+		}},
+	}
+	var inventory ResourceInventory = ResourceInventory{Pools: []string{"students"}, Storages: []string{"laas"}, VNetSources: []string{"ogvxlan"}}
+	if result := ValidateResourcePolicy(policy, &inventory); !result.Valid {
+		t.Fatalf("valid created VNet policy rejected: %#v", result.Issues)
+	}
+	policy.Networks[0].AddressPools[0].Prefix = "192.0.3.0/24"
+	if result := ValidateResourcePolicy(policy, &inventory); result.Valid {
+		t.Fatal("address pool outside created VNet subnet was accepted")
+	}
+	policy.Networks[0].AddressPools[0].Prefix = "192.0.2.0/24"
+	policy.VNetSourceZone = "missing-zone"
+	if result := ValidateResourcePolicy(policy, &inventory); result.Valid {
+		t.Fatal("unavailable VNet source zone was accepted")
 	}
 }
 
@@ -59,7 +99,7 @@ func TestResourcePolicyHashIsStableAndChangesWithPolicy(t *testing.T) {
 
 func TestAllocateAddressesPreservesConfiguredNetworkSemantics(t *testing.T) {
 	var pool AddressPool = AddressPool{
-		Name: "cyber-lab", Prefix: "10.0.0.0/8", AllocationPrefix: "10.192.0.0/12", Start: "10.192.0.1", End: "10.192.0.6",
+		Name: "cyber-lab", Prefix: "10.0.0.0/8", AllocationPrefix: "10.192.0.0/29",
 		Gateway: "10.0.0.1", DNS: []string{"10.0.0.2"},
 	}
 	var addresses []string
@@ -77,8 +117,7 @@ func TestAllocateAddressesPreservesConfiguredNetworkSemantics(t *testing.T) {
 
 func TestAddressPoolRequiresAllocationSubnetInsideGuestNetwork(t *testing.T) {
 	if err := validateAddressPool(AddressPool{
-		Name: "invalid", Prefix: "10.0.0.0/8", AllocationPrefix: "172.16.0.0/12",
-		Start: "172.16.0.10", End: "172.16.0.20", Gateway: "10.0.0.1",
+		Name: "invalid", Prefix: "10.0.0.0/8", AllocationPrefix: "172.16.0.0/12", Gateway: "10.0.0.1",
 	}); err == nil {
 		t.Fatal("allocation subnet outside the configured guest network was accepted")
 	}
@@ -86,9 +125,23 @@ func TestAddressPoolRequiresAllocationSubnetInsideGuestNetwork(t *testing.T) {
 
 func TestAllocateAddressesRejectsExhaustedPool(t *testing.T) {
 	var _, err = AllocateAddresses(AddressPool{
-		Name: "tiny", Prefix: "192.0.2.0/29", Start: "192.0.2.1", End: "192.0.2.2",
-	}, 2, []string{"192.0.2.1"})
+		Name: "tiny", Prefix: "192.0.2.0/29",
+	}, 2, []string{"192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4", "192.0.2.5", "192.0.2.6"})
 	if err == nil {
 		t.Fatal("expected an exhausted address pool to fail")
+	}
+}
+
+func TestAllocateAddressesExcludesIPv4NetworkAndBroadcastAddresses(t *testing.T) {
+	var addresses []string
+	var err error
+	if addresses, err = AllocateAddresses(AddressPool{Name: "small", Prefix: "192.0.2.0/29"}, 6, nil); err != nil {
+		t.Fatalf("allocate all usable IPv4 addresses: %v", err)
+	}
+	if len(addresses) != 6 || addresses[0] != "192.0.2.1" || addresses[5] != "192.0.2.6" {
+		t.Fatalf("unexpected usable IPv4 range: %v", addresses)
+	}
+	if _, err = AllocateAddresses(AddressPool{Name: "small", Prefix: "192.0.2.0/29"}, 7, nil); err == nil {
+		t.Fatal("IPv4 network and broadcast addresses were allocated")
 	}
 }

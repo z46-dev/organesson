@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	pve "github.com/luthermonson/go-proxmox"
 	"github.com/z46-dev/organesson/backend/config"
 )
 
@@ -71,7 +72,7 @@ func (driver *testSDNNetworkDriver) Read(_ context.Context, _ SDNNetworkRequest,
 	return
 }
 
-func (driver *testSDNNetworkDriver) Delete(_ context.Context, _ string, _ string) (err error) {
+func (driver *testSDNNetworkDriver) Delete(_ context.Context, _ string, _ string, _ string) (err error) {
 	driver.deleted = true
 	return
 }
@@ -87,7 +88,7 @@ func TestServiceSDNNetworkLifecycleUsesDriver(t *testing.T) {
 	if placement.VNet != driver.placement.VNet {
 		t.Fatalf("unexpected placement: %#v", placement)
 	}
-	if err = service.DeleteSDNNetwork(context.Background(), placement.VNet, "test"); err != nil || !driver.deleted {
+	if err = service.DeleteSDNNetwork(context.Background(), placement.VNet, "test", ""); err != nil || !driver.deleted {
 		t.Fatalf("delete SDN network: deleted=%t err=%v", driver.deleted, err)
 	}
 }
@@ -219,10 +220,45 @@ func TestAPISDNNetworkDriverCreatesOnlyIsolatedSimpleZoneAndDeletesIt(t *testing
 		t.Fatal("SDN zone DHCP drift was not detected")
 	}
 	zones[placement.Zone]["dhcp"] = "dnsmasq"
-	if err = driver.Delete(context.Background(), placement.VNet, request.OperationKey); err != nil {
+	if err = driver.Delete(context.Background(), placement.VNet, request.OperationKey, ""); err != nil {
 		t.Fatalf("delete isolated SDN network: %v", err)
 	}
 	if len(zones) != 0 || len(vnets) != 0 || len(subnets[placement.VNet]) != 0 {
 		t.Fatalf("SDN destroy left resources behind: zones=%#v vnets=%#v subnets=%#v", zones, vnets, subnets)
+	}
+	var importedZone map[string]any = map[string]any{"zone": "ogvxlan", "type": "vxlan", "peers": "osmium,tungsten"}
+	zones["ogvxlan"] = importedZone
+	request = SDNNetworkRequest{Name: "l2-smoke", Mode: "unmanaged-layer-2", EgressPolicy: "isolated", OperationKey: "og-l2-smoke", VNetSourceZone: "ogvxlan"}
+	if placement, err = driver.Create(context.Background(), request); err != nil {
+		t.Fatalf("create VNet in imported VXLAN source: %v", err)
+	}
+	if placement.Tag == 0 || len(zones) != 1 || zones["ogvxlan"]["type"] != "vxlan" || vnets[placement.VNet]["zone"] != "ogvxlan" || uint32(vnets[placement.VNet]["tag"].(float64)) != placement.Tag {
+		t.Fatalf("imported VXLAN source was changed or VNet was not attached: zones=%#v vnets=%#v", zones, vnets)
+	}
+	if err = driver.Read(context.Background(), request, placement); err != nil {
+		t.Fatalf("read VNet in imported VXLAN source: %v", err)
+	}
+	if err = driver.Delete(context.Background(), placement.VNet, request.OperationKey, "ogvxlan"); err != nil {
+		t.Fatalf("delete VNet from imported VXLAN source: %v", err)
+	}
+	if len(zones) != 1 || zones["ogvxlan"]["type"] != "vxlan" || len(vnets) != 0 {
+		t.Fatalf("deleting Organesson VNet affected imported zone: zones=%#v vnets=%#v", zones, vnets)
+	}
+}
+
+func TestAllocateVXLANVNIIsDeterministicAndAvoidsZoneCollisions(t *testing.T) {
+	var existing []*pve.VNet = []*pve.VNet{{Name: "other", Zone: "ogvxlan", Tag: 42}, {Name: "elsewhere", Zone: "other-zone", Tag: 99}}
+	var first uint32
+	var second uint32
+	var err error
+	if first, err = allocateVXLANVNI("same-operation", "ogvxlan", existing); err != nil {
+		t.Fatal(err)
+	}
+	existing = append(existing, &pve.VNet{Name: "collision", Zone: "ogvxlan", Tag: first})
+	if second, err = allocateVXLANVNI("same-operation", "ogvxlan", existing); err != nil {
+		t.Fatal(err)
+	}
+	if second == first || second == 0 || second > maxVXLANVNI {
+		t.Fatalf("allocator did not select a valid unused VNI: first=%d second=%d", first, second)
 	}
 }

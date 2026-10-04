@@ -3,6 +3,7 @@ package proxmox
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,22 +14,26 @@ import (
 	"github.com/z46-dev/organesson/backend/config"
 )
 
+const maxVXLANVNI uint32 = 16777215
+
 type (
-	// SDNNetworkRequest describes an isolated Proxmox SDN Simple-zone network.
+	// SDNNetworkRequest describes an isolated Proxmox SDN VNet and optional subnet.
 	SDNNetworkRequest struct {
-		Name         string `json:"name"`
-		Mode         string `json:"mode"`
-		Subnet       string `json:"subnet,omitempty"`
-		Gateway      string `json:"gateway,omitempty"`
-		DHCPEnabled  bool   `json:"dhcp_enabled"`
-		EgressPolicy string `json:"egress_policy"`
-		OperationKey string `json:"operation_key"`
+		Name           string `json:"name"`
+		Mode           string `json:"mode"`
+		Subnet         string `json:"subnet,omitempty"`
+		Gateway        string `json:"gateway,omitempty"`
+		DHCPEnabled    bool   `json:"dhcp_enabled"`
+		EgressPolicy   string `json:"egress_policy"`
+		OperationKey   string `json:"operation_key"`
+		VNetSourceZone string `json:"vnet_source_zone,omitempty"`
 	}
 
 	// SDNNetworkPlacement identifies the Organesson-owned PVE SDN configuration.
 	SDNNetworkPlacement struct {
 		Zone string `json:"zone"`
 		VNet string `json:"vnet"`
+		Tag  uint32 `json:"tag,omitempty"`
 	}
 
 	apiSDNNetworkDriver struct {
@@ -89,23 +94,23 @@ func (service *Service) ReadSDNNetworkIPAM(ctx context.Context, request SDNNetwo
 }
 
 // DeleteSDNNetwork removes a network only when its VNet ownership marker matches.
-func (service *Service) DeleteSDNNetwork(ctx context.Context, vnet string, operationKey string) (err error) {
+func (service *Service) DeleteSDNNetwork(ctx context.Context, vnet string, operationKey string, sourceZone string) (err error) {
 	if service == nil || service.sdnNetworkDriver == nil || !service.Configured() {
 		err = ErrNotConfigured
 		return
 	}
 	service.lifecycleLock.Lock()
 	defer service.lifecycleLock.Unlock()
-	err = service.sdnNetworkDriver.Delete(ctx, vnet, operationKey)
+	err = service.sdnNetworkDriver.Delete(ctx, vnet, operationKey, sourceZone)
 	return
 }
 
-// Create idempotently creates an Organesson Simple zone, VNet, and optional subnet.
+// Create idempotently creates an Organesson VNet and optional subnet, using a shared source zone when configured.
 func (driver *apiSDNNetworkDriver) Create(ctx context.Context, request SDNNetworkRequest) (placement SDNNetworkPlacement, err error) {
 	if err = validateSDNNetworkRequest(request); err != nil {
 		return
 	}
-	placement = namesForSDNNetwork(request.OperationKey)
+	placement = namesForSDNNetwork(request.OperationKey, request.VNetSourceZone)
 	var marker string = "organesson:" + request.OperationKey
 	var client *pve.Client
 	if client, err = newAPIClient(driver.settings); err != nil {
@@ -126,7 +131,12 @@ func (driver *apiSDNNetworkDriver) Create(ctx context.Context, request SDNNetwor
 			break
 		}
 	}
-	if existingZone != nil && (existingZone.Type != "simple" || existingZone.IPAM != "pve") {
+	if request.VNetSourceZone != "" {
+		if existingZone == nil || existingZone.Type != "vxlan" {
+			err = fmt.Errorf("configured Proxmox VNet source zone %q is missing or is not VXLAN", placement.Zone)
+			return
+		}
+	} else if existingZone != nil && (existingZone.Type != "simple" || existingZone.IPAM != "pve") {
 		err = fmt.Errorf("Proxmox SDN zone %q exists but is not the expected Simple zone with PVE IPAM", placement.Zone)
 		return
 	}
@@ -145,8 +155,19 @@ func (driver *apiSDNNetworkDriver) Create(ctx context.Context, request SDNNetwor
 		err = fmt.Errorf("Proxmox VNet %q exists but is not owned by this Organesson resource", placement.VNet)
 		return
 	}
+	if request.VNetSourceZone != "" {
+		if existingVNet != nil {
+			placement.Tag = existingVNet.Tag
+			if placement.Tag == 0 || placement.Tag > maxVXLANVNI {
+				err = fmt.Errorf("existing Organesson VNet %q has no valid VXLAN VNI", placement.VNet)
+				return
+			}
+		} else if placement.Tag, err = allocateVXLANVNI(request.OperationKey, placement.Zone, vnets); err != nil {
+			return
+		}
+	}
 	var changed bool
-	if existingZone == nil {
+	if request.VNetSourceZone == "" && existingZone == nil {
 		var zoneOptions *pve.SDNZoneOptions = &pve.SDNZoneOptions{Name: placement.Zone, Type: "simple", IPAM: "pve"}
 		if request.DHCPEnabled {
 			zoneOptions.DHCP = "dnsmasq"
@@ -155,7 +176,7 @@ func (driver *apiSDNNetworkDriver) Create(ctx context.Context, request SDNNetwor
 			return
 		}
 		changed = true
-	} else {
+	} else if request.VNetSourceZone == "" {
 		var expectedDHCP string
 		if request.DHCPEnabled {
 			expectedDHCP = "dnsmasq"
@@ -166,7 +187,7 @@ func (driver *apiSDNNetworkDriver) Create(ctx context.Context, request SDNNetwor
 		}
 	}
 	if existingVNet == nil {
-		if err = cluster.NewSDNVNet(ctx, &pve.VNetOptions{Name: placement.VNet, Zone: placement.Zone, Alias: marker, Type: "vnet"}); err != nil {
+		if err = cluster.NewSDNVNet(ctx, &pve.VNetOptions{Name: placement.VNet, Zone: placement.Zone, Alias: marker, Tag: placement.Tag, Type: "vnet"}); err != nil {
 			return
 		}
 		changed = true
@@ -212,8 +233,8 @@ func (driver *apiSDNNetworkDriver) Read(ctx context.Context, request SDNNetworkR
 	if err = validateSDNNetworkRequest(request); err != nil {
 		return
 	}
-	var expected SDNNetworkPlacement = namesForSDNNetwork(request.OperationKey)
-	if placement != expected {
+	var expected SDNNetworkPlacement = namesForSDNNetwork(request.OperationKey, request.VNetSourceZone)
+	if placement.Zone != expected.Zone || placement.VNet != expected.VNet {
 		err = errors.New("stored Proxmox SDN placement does not match its operation key")
 		return
 	}
@@ -233,6 +254,14 @@ func (driver *apiSDNNetworkDriver) Read(ctx context.Context, request SDNNetworkR
 	for _, zone := range zones {
 		if zone == nil || zone.Name != expected.Zone {
 			continue
+		}
+		if request.VNetSourceZone != "" {
+			if zone.Type != "vxlan" {
+				err = errors.New("configured Proxmox VNet source zone is no longer a VXLAN zone")
+				return
+			}
+			zoneFound = true
+			break
 		}
 		if zone.Type != "simple" || zone.IPAM != "pve" {
 			err = errors.New("Proxmox SDN zone no longer matches the Organesson isolated-network configuration")
@@ -262,7 +291,7 @@ func (driver *apiSDNNetworkDriver) Read(ctx context.Context, request SDNNetworkR
 		if vnet == nil || vnet.Name != expected.VNet {
 			continue
 		}
-		if vnet.Alias != "organesson:"+request.OperationKey || vnet.Zone != expected.Zone {
+		if vnet.Alias != "organesson:"+request.OperationKey || vnet.Zone != expected.Zone || request.VNetSourceZone != "" && (vnet.Tag == 0 || placement.Tag != 0 && vnet.Tag != placement.Tag) {
 			err = errors.New("Proxmox VNet ownership marker or zone does not match the Organesson resource")
 			return
 		}
@@ -308,8 +337,8 @@ func (driver *apiSDNNetworkDriver) ReadIPAM(ctx context.Context, request SDNNetw
 		state = "unavailable"
 		return
 	}
-	var expected SDNNetworkPlacement = namesForSDNNetwork(request.OperationKey)
-	if placement != expected {
+	var expected SDNNetworkPlacement = namesForSDNNetwork(request.OperationKey, request.VNetSourceZone)
+	if placement.Zone != expected.Zone || placement.VNet != expected.VNet {
 		state = "unavailable"
 		err = errors.New("stored Proxmox SDN placement does not match its operation key")
 		return
@@ -374,9 +403,9 @@ func ipamString(value any) (result string) {
 	return
 }
 
-// Delete removes the marked VNet, its subnet, and its dedicated Simple zone.
-func (driver *apiSDNNetworkDriver) Delete(ctx context.Context, vnetName string, operationKey string) (err error) {
-	var expected SDNNetworkPlacement = namesForSDNNetwork(operationKey)
+// Delete removes the marked VNet and its subnet, and removes a dedicated Simple zone only when Organesson created it.
+func (driver *apiSDNNetworkDriver) Delete(ctx context.Context, vnetName string, operationKey string, sourceZone string) (err error) {
+	var expected SDNNetworkPlacement = namesForSDNNetwork(operationKey, sourceZone)
 	if vnetName != expected.VNet || operationKey == "" {
 		err = errors.New("Proxmox VNet identifier does not match its Organesson operation key")
 		return
@@ -423,6 +452,17 @@ func (driver *apiSDNNetworkDriver) Delete(ctx context.Context, vnetName string, 
 		if err = cluster.DeleteSDNVNet(ctx, expected.VNet); err != nil {
 			return
 		}
+	}
+	if sourceZone != "" {
+		if !owned {
+			return
+		}
+		var task *pve.Task
+		if task, err = cluster.SDNApply(ctx); err != nil {
+			return
+		}
+		err = waitTask(ctx, client, task)
+		return
 	}
 	var zones []*pve.SDNZone
 	if zones, err = cluster.SDNZones(ctx); err != nil {
@@ -492,15 +532,39 @@ func ValidateSDNNetworkRequest(request SDNNetworkRequest) (err error) {
 }
 
 // namesForSDNNetwork generates short, deterministic PVE identifiers in Organesson's namespace.
-func namesForSDNNetwork(operationKey string) (placement SDNNetworkPlacement) {
+func namesForSDNNetwork(operationKey string, sourceZones ...string) (placement SDNNetworkPlacement) {
 	var digest [sha256.Size]byte = sha256.Sum256([]byte(operationKey))
 	var suffix string = hex.EncodeToString(digest[:])[:6]
 	placement = SDNNetworkPlacement{Zone: "oz" + suffix, VNet: "on" + suffix}
+	if len(sourceZones) > 0 && sourceZones[0] != "" {
+		placement.Zone = sourceZones[0]
+	}
+	return
+}
+
+// allocateVXLANVNI finds a deterministic free VNI among VNets in the selected VXLAN zone.
+func allocateVXLANVNI(operationKey string, zone string, vnets []*pve.VNet) (tag uint32, err error) {
+	var digest [sha256.Size]byte = sha256.Sum256([]byte("organesson-vni:" + operationKey))
+	var candidate uint32 = binary.BigEndian.Uint32(digest[:4])%maxVXLANVNI + 1
+	var used = make(map[uint32]bool)
+	for _, vnet := range vnets {
+		if vnet != nil && vnet.Zone == zone && vnet.Tag > 0 && vnet.Tag <= maxVXLANVNI {
+			used[vnet.Tag] = true
+		}
+	}
+	for range maxVXLANVNI {
+		if !used[candidate] {
+			tag = candidate
+			return
+		}
+		candidate = candidate%maxVXLANVNI + 1
+	}
+	err = fmt.Errorf("no VXLAN VNIs remain available in zone %q", zone)
 	return
 }
 
 // SDNNetworkNames returns the deterministic Proxmox identifiers reserved for an operation key.
-func SDNNetworkNames(operationKey string) (placement SDNNetworkPlacement) {
-	placement = namesForSDNNetwork(operationKey)
+func SDNNetworkNames(operationKey string, sourceZones ...string) (placement SDNNetworkPlacement) {
+	placement = namesForSDNNetwork(operationKey, sourceZones...)
 	return
 }

@@ -117,7 +117,7 @@ func resourceNetwork() (resource *schema.Resource) {
 		"name":         {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The virtual network name."},
 		"power_state":  {Type: schema.TypeString, Computed: true, Description: "Proxmox SDN provisioning state."},
 		"proxmox_vnet": {Type: schema.TypeString, Computed: true, Description: "The Organesson-owned Proxmox SDN VNet identifier."},
-		"proxmox_zone": {Type: schema.TypeString, Computed: true, Description: "The Organesson-owned Proxmox SDN Simple zone identifier."},
+		"proxmox_zone": {Type: schema.TypeString, Computed: true, Description: "The Proxmox SDN zone containing this VNet."},
 		"summary":      summarySchema(),
 	}, networkOperations())
 

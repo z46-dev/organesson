@@ -219,23 +219,24 @@ func (service *Service) RecordProxmoxVMPlacement(actorID int, resourceID int, pl
 	return
 }
 
-// RecordLivePowerState mirrors a Proxmox power state after an authorized API operation.
-func (service *Service) RecordLivePowerState(actorID int, resourceID int, state string) (resource *db.ManagedResource, err error) {
+// RecordLiveVMPlacement mirrors Proxmox's current node and power state after a live refresh.
+func (service *Service) RecordLiveVMPlacement(actorID int, resourceID int, placement proxmox.VMPlacement) (resource *db.ManagedResource, err error) {
 	if resource, err = service.store.ManagedResources.Select(resourceID); err != nil {
 		return
 	}
-	if resource == nil || resource.Kind != "virtual_machine" || resource.ExternalID == "" {
+	if resource == nil || resource.Kind != "virtual_machine" || resource.ExternalID == "" || placement.VMID != resource.ExternalID || placement.Node == "" {
 		err = ErrNotFound
 		return
 	}
-	if resource.PowerState == state {
+	if resource.PowerState == placement.PowerState && resource.ExternalNode == placement.Node {
 		return
 	}
-	resource.PowerState = state
+	resource.PowerState = placement.PowerState
+	resource.ExternalNode = placement.Node
 	if err = service.store.ManagedResources.Update(resource); err != nil {
 		return
 	}
-	err = service.writeAudit(actorID, "vm.power.state_synchronized", fmt.Sprintf("resource:%d", resourceID), "succeeded", map[string]string{"state": state})
+	err = service.writeAudit(actorID, "vm.live_placement_synchronized", fmt.Sprintf("resource:%d", resourceID), "succeeded", map[string]string{"node": placement.Node, "state": placement.PowerState})
 	return
 }
 

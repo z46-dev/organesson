@@ -14,7 +14,7 @@ type Props = {
 
 // Groups platform-wide configuration and credential management away from deployments.
 export function AdminPage({ request, onError, onNotice }: Props) {
-    const [section, setSection] = useState<"capacity" | "resources" | "networks" | "templates" | "authentication" | "users" | "access">("capacity");
+    const [section, setSection] = useState<"capacity" | "networks" | "templates" | "authentication" | "users" | "access">("capacity");
     const [token, setToken] = useState("");
     const [tokenId, setTokenId] = useState<number | null>(null);
     const [busy, setBusy] = useState(false);
@@ -67,8 +67,7 @@ export function AdminPage({ request, onError, onNotice }: Props) {
             <div className="admin-settings-layout">
                 <nav className="admin-settings-sidebar" aria-label="Administration settings">
                     <p className="eyebrow">Settings</p>
-                    <button type="button" aria-current={section === "capacity" ? "page" : undefined} onClick={() => setSection("capacity")}>Capacity</button>
-                    <button type="button" aria-current={section === "resources" ? "page" : undefined} onClick={() => setSection("resources")}>PVE resources</button>
+                    <button type="button" aria-current={section === "capacity" ? "page" : undefined} onClick={() => setSection("capacity")}>Quotas & placement</button>
                     <button type="button" aria-current={section === "networks" ? "page" : undefined} onClick={() => setSection("networks")}>Networks</button>
                     <button type="button" aria-current={section === "templates" ? "page" : undefined} onClick={() => setSection("templates")}>Source VMs</button>
                     <button type="button" aria-current={section === "authentication" ? "page" : undefined} onClick={() => setSection("authentication")}>Authentication</button>
@@ -76,7 +75,7 @@ export function AdminPage({ request, onError, onNotice }: Props) {
                     <button type="button" aria-current={section === "access" ? "page" : undefined} onClick={() => setSection("access")}>Provider access</button>
                 </nav>
                 <div className="admin-settings-content">
-                    {(section === "capacity" || section === "resources" || section === "networks") && <ProxmoxResourcePolicy request={request} section={section} onError={onError} onNotice={onNotice} />}
+                    {(section === "capacity" || section === "networks") && <ProxmoxResourcePolicy request={request} section={section} onError={onError} onNotice={onNotice} />}
                     {section === "templates" && <TemplateCatalog request={request} onError={onError} onNotice={onNotice} />}
                     {section === "authentication" && <AuthenticationSettings request={request} onError={onError} onNotice={onNotice} />}
                     {section === "users" && <UserDirectory request={request} onError={onError} onNotice={onNotice} />}

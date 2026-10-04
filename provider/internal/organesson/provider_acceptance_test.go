@@ -137,9 +137,9 @@ func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {
 	}
 	var addressPolicy proxmox.ResourcePolicy = proxmox.ResourcePolicy{
 		ResourcePools: []string{"students"}, Storages: []string{"local-lvm"},
-		AllowIsolatedSDNNetworks: true,
+		DeploymentLimits: proxmox.DeploymentLimits{MaxSDNNetworks: 1},
 		Networks: []proxmox.PolicyNetwork{{Name: "cyber.lab", Kind: "bridge", PVEName: "vmbr0", AddressPools: []proxmox.AddressPool{{
-			Name: "test-pool", Prefix: "10.0.0.0/8", Start: "10.0.0.100", End: "10.0.0.110", Gateway: "10.0.0.1", DNS: []string{"10.0.0.2"},
+			Name: "test-pool", Prefix: "10.0.0.0/8", AllocationPrefix: "10.192.0.0/29", Gateway: "10.0.0.1", DNS: []string{"10.0.0.2"},
 		}}}},
 	}
 	var addressPolicyJSON []byte
@@ -300,7 +300,7 @@ func TestProviderProxmoxVMCreateRefreshDelete(t *testing.T) {
 		ResourcePools: []string{"class-labs"},
 		Storages:      []string{"local-lvm"},
 		Networks: []proxmox.PolicyNetwork{{Name: "cyber.lab", Kind: "bridge", PVEName: "vmbr0", AddressPools: []proxmox.AddressPool{{
-			Name: "cyber-lab", Prefix: "10.0.0.0/8", Start: "10.0.0.100", End: "10.0.0.110", Gateway: "10.0.0.1", DNS: []string{"10.0.0.2"},
+			Name: "cyber-lab", Prefix: "10.0.0.0/8", AllocationPrefix: "10.192.0.0/29", Gateway: "10.0.0.1", DNS: []string{"10.0.0.2"},
 		}}}},
 	}
 	var policyJSON []byte
@@ -483,7 +483,7 @@ func (driver *acceptanceSDNNetworkDriver) Read(_ context.Context, _ proxmox.SDNN
 	return
 }
 
-func (driver *acceptanceSDNNetworkDriver) Delete(_ context.Context, _ string, _ string) (err error) {
+func (driver *acceptanceSDNNetworkDriver) Delete(_ context.Context, _ string, _ string, _ string) (err error) {
 	driver.deleted = true
 	return
 }

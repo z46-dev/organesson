@@ -33,9 +33,11 @@ func (service *Service) DialVMConsole(ctx context.Context, node string, id strin
 		err = ErrNotConfigured
 		return
 	}
-	if _, err = service.consoleVM(ctx, node, id, operationKey); err != nil {
+	var vm *pve.VirtualMachine
+	if vm, err = service.consoleVM(ctx, node, id, operationKey); err != nil {
 		return
 	}
+	node = vm.Node
 	var ticketResponse vncProxyResponse
 	var apiURL *url.URL
 	if apiURL, err = url.Parse(service.settings.APIURL); err != nil {
@@ -113,11 +115,7 @@ func (service *Service) consoleVM(ctx context.Context, node string, id string, o
 	if client, err = newAPIClient(service.settings); err != nil {
 		return
 	}
-	var pveNode *pve.Node
-	if pveNode, err = client.Node(ctx, node); err != nil {
-		return
-	}
-	if vm, err = pveNode.VirtualMachine(ctx, vmid); err != nil {
+	if _, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
 		return
 	}
 	err = verifyManagedVM(vm, operationKey)

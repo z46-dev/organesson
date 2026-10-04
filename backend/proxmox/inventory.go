@@ -2,6 +2,7 @@ package proxmox
 
 import (
 	"context"
+	"regexp"
 	"sort"
 
 	pve "github.com/luthermonson/go-proxmox"
@@ -11,6 +12,8 @@ import (
 type apiResourceInventory struct {
 	settings config.ProxmoxConfiguration
 }
+
+var organessonVNetName = regexp.MustCompile(`^on[0-9a-f]{6}$`)
 
 // ResourceInventory reads available resource pools, storages, bridges, and SDN VNets from PVE.
 func (service *Service) ResourceInventory(ctx context.Context) (inventory ResourceInventory, err error) {
@@ -79,15 +82,41 @@ func (reader *apiResourceInventory) ReadResourceInventory(ctx context.Context) (
 	if cluster, err = client.Cluster(ctx); err != nil {
 		return
 	}
+	var zones []*pve.SDNZone
+	if zones, err = cluster.SDNZones(ctx); err != nil {
+		return
+	}
+	for _, zone := range zones {
+		if zone != nil && zone.Name != "" && zone.Type == "vxlan" {
+			inventory.VNetSources = append(inventory.VNetSources, zone.Name)
+		}
+	}
 	var vnets []*pve.VNet
 	if vnets, err = cluster.SDNVNets(ctx); err != nil {
 		return
 	}
 	for _, vnet := range vnets {
-		if vnet != nil && vnet.Name != "" {
+		if vnet != nil && vnet.Name != "" && !organessonVNetName.MatchString(vnet.Name) {
 			inventory.VNets = append(inventory.VNets, vnet.Name)
+			var subnets []*pve.VNetSubnet
+			if subnets, err = cluster.SDNSubnets(ctx, vnet.Name); err != nil {
+				return
+			}
+			for _, subnet := range subnets {
+				if subnet != nil && subnet.CIDR != "" {
+					if inventory.VNetSubnets == nil {
+						inventory.VNetSubnets = make(map[string][]PolicySubnet)
+					}
+					inventory.VNetSubnets[vnet.Name] = append(inventory.VNetSubnets[vnet.Name], PolicySubnet{
+						Prefix:      subnet.CIDR,
+						Gateway:     subnet.Gateway,
+						DHCPEnabled: len(subnet.DhcpRange) > 0,
+					})
+				}
+			}
 		}
 	}
 	sort.Strings(inventory.VNets)
+	sort.Strings(inventory.VNetSources)
 	return
 }

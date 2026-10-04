@@ -17,6 +17,10 @@ func TestManagedSnapshotDriverWaitsForTasksAndRejectsUnmanagedNames(t *testing.T
 	var fakePVE *httptest.Server
 	fakePVE = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/status":
+			writePVEData(response, []any{})
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/resources":
+			writePVEData(response, []map[string]any{{"type": "qemu", "vmid": 900, "node": "pve1", "name": "managed-vm", "status": "stopped"}})
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve1/status":
 			writePVEData(response, map[string]any{"node": "pve1", "status": "online"})
 		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/qemu/900/status/current"):

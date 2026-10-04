@@ -37,11 +37,16 @@ func (service *Service) ReserveSDNNetwork(actorID int, deploymentID int, parentN
 	}
 	var keyDigest [sha256.Size]byte = sha256.Sum256([]byte(fmt.Sprintf("%d:%d:%s", deploymentID, parentNodeID, request.Name)))
 	request.OperationKey = "og-network-" + hex.EncodeToString(keyDigest[:16])
+	var policy proxmox.ResourcePolicy
+	if err = service.validatedProxmoxPolicy(&policy); err != nil {
+		return
+	}
+	request.VNetSourceZone = policy.VNetSourceZone
 	if err = proxmox.ValidateSDNNetworkRequest(request); err != nil {
 		err = fmt.Errorf("%w: %v", ErrInvalidInput, err)
 		return
 	}
-	var placement proxmox.SDNNetworkPlacement = proxmox.SDNNetworkNames(request.OperationKey)
+	var placement proxmox.SDNNetworkPlacement = proxmox.SDNNetworkNames(request.OperationKey, request.VNetSourceZone)
 	var configuration ManagedNetworkConfiguration = ManagedNetworkConfiguration{Request: request, Placement: placement}
 	var encoded []byte
 	if encoded, err = json.Marshal(configuration); err != nil {
@@ -55,19 +60,30 @@ func (service *Service) ReserveSDNNetwork(actorID int, deploymentID int, parentN
 		if current.OperationKey != request.OperationKey {
 			continue
 		}
-		if current.Kind != "virtual_network" || current.ConfigurationJSON != string(encoded) {
+		var existingConfiguration ManagedNetworkConfiguration
+		if err = json.Unmarshal([]byte(current.ConfigurationJSON), &existingConfiguration); err != nil {
+			return
+		}
+		if current.Kind != "virtual_network" || existingConfiguration.Request != request {
 			err = fmt.Errorf("%w: network %q already exists with different settings", ErrInvalidInput, request.Name)
 			return
 		}
 		resource = current
 		return
 	}
-	var policy proxmox.ResourcePolicy
-	if err = service.validatedProxmoxPolicy(&policy); err != nil {
-		return
+	var deploymentNetworks int
+	var globalNetworks int
+	for _, current := range resources {
+		if current.Kind != "virtual_network" {
+			continue
+		}
+		globalNetworks++
+		if current.DeploymentID == deploymentID {
+			deploymentNetworks++
+		}
 	}
-	if !policy.AllowIsolatedSDNNetworks {
-		err = fmt.Errorf("%w: platform policy does not allow isolated Proxmox SDN networks", ErrInvalidInput)
+	if policy.DeploymentLimits.MaxSDNNetworks > 0 && deploymentNetworks >= policy.DeploymentLimits.MaxSDNNetworks || policy.Limits.MaxSDNNetworks > 0 && globalNetworks >= policy.Limits.MaxSDNNetworks {
+		err = fmt.Errorf("%w: isolated Proxmox SDN network quota has been reached", ErrInvalidInput)
 		return
 	}
 	var node *db.OwnershipNode = &db.OwnershipNode{
@@ -109,11 +125,23 @@ func (service *Service) ReadySDNNetwork(actorID int, resourceID int, placement p
 		err = ErrNotFound
 		return
 	}
-	var expected proxmox.SDNNetworkPlacement = proxmox.SDNNetworkNames(resource.OperationKey)
-	if placement != expected || resource.ExternalID != expected.VNet || resource.ExternalNode != expected.Zone {
+	var configuration ManagedNetworkConfiguration
+	if err = json.Unmarshal([]byte(resource.ConfigurationJSON), &configuration); err != nil {
+		return
+	}
+	var expected proxmox.SDNNetworkPlacement = proxmox.SDNNetworkNames(resource.OperationKey, configuration.Request.VNetSourceZone)
+	if placement.Zone != expected.Zone || placement.VNet != expected.VNet || resource.ExternalID != expected.VNet || resource.ExternalNode != expected.Zone ||
+		configuration.Request.VNetSourceZone == "" && placement.Tag != 0 ||
+		configuration.Request.VNetSourceZone != "" && (placement.Tag == 0 || placement.Tag > 16777215) {
 		err = fmt.Errorf("%w: Proxmox SDN placement does not match the reserved resource", ErrInvalidInput)
 		return
 	}
+	configuration.Placement = placement
+	var encoded []byte
+	if encoded, err = json.Marshal(configuration); err != nil {
+		return
+	}
+	resource.ConfigurationJSON = string(encoded)
 	resource.PowerState = "ready"
 	if err = service.store.ManagedResources.Update(resource); err != nil {
 		return

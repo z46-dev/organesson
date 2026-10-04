@@ -94,11 +94,15 @@ func (service *Service) ReserveAddressPoolRequest(actorID int, request AddressPo
 		}
 		for index := range network.AddressPools {
 			var pool proxmox.AddressPool = network.AddressPools[index]
-			var start netip.Addr
-			if start, err = netip.ParseAddr(pool.Start); err != nil {
+			var allocationPrefix string = pool.AllocationPrefix
+			if allocationPrefix == "" {
+				allocationPrefix = pool.Prefix
+			}
+			var prefix netip.Prefix
+			if prefix, err = netip.ParsePrefix(allocationPrefix); err != nil {
 				return
 			}
-			if (request.AddressFamily == "ipv4") != start.Is4() {
+			if (request.AddressFamily == "ipv4") != prefix.Addr().Is4() {
 				continue
 			}
 			if selectedPool != nil {
