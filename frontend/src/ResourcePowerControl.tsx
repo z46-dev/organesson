@@ -1,3 +1,4 @@
+import { ChevronDown } from "lucide-react";
 import type { Resource } from "./types";
 
 type Props = {
@@ -5,26 +6,38 @@ type Props = {
     onPower: (resource: Resource, action: "start" | "stop" | "restart") => void;
 };
 
-// Renders power controls only when the API confirms permission and a known VM state.
+// Renders a VM state pill with actions allowed for its current power state.
 export function ResourcePowerControl({ resource, onPower }: Props) {
-    if (resource.kind !== "virtual_machine" || !resource.can_power_control || (resource.power_state !== "running" && resource.power_state !== "stopped")) {
+    if (resource.kind !== "virtual_machine") {
         return null;
     }
 
-    function runPowerAction(action: "start" | "stop" | "restart") {
+    function runPowerAction(action: "start" | "stop" | "restart", event: React.MouseEvent<HTMLButtonElement>) {
         if (action === "restart" && !window.confirm(`Restart ${resource.name}?`)) {
             return;
         }
+        event.currentTarget.closest("details")?.removeAttribute("open");
         onPower(resource, action);
     }
 
+    const hasActions = resource.can_power_control && (resource.power_state === "running" || resource.power_state === "stopped");
+    const stateClass = `power-state${resource.power_state === "running" ? " is-running" : ""}`;
+
+    if (!hasActions) {
+        return <span className={stateClass}>{resource.power_state}</span>;
+    }
+
     return (
-        <div className="resource-controls">
-            <div><strong>Power</strong></div>
-            {resource.power_state === "stopped" ? <button className="primary-action" type="button" data-action="start" onClick={() => runPowerAction("start")}>Start</button> : <>
-                <button className="secondary-action" type="button" data-action="stop" onClick={() => runPowerAction("stop")}>Graceful shutdown</button>
-                <button className="secondary-action" type="button" data-action="restart" onClick={() => runPowerAction("restart")}>Restart</button>
-            </>}
-        </div>
+        <details className="vm-power-menu">
+            <summary className={`${stateClass} has-actions`} aria-label={`Power state ${resource.power_state}; open power actions`}>
+                {resource.power_state}<ChevronDown size={13} aria-hidden="true" />
+            </summary>
+            <div className="vm-power-actions">
+                {resource.power_state === "stopped" ? <button type="button" data-action="start" onClick={(event) => runPowerAction("start", event)}>Start</button> : <>
+                    <button type="button" data-action="stop" onClick={(event) => runPowerAction("stop", event)}>Graceful shutdown</button>
+                    <button type="button" data-action="restart" onClick={(event) => runPowerAction("restart", event)}>Restart</button>
+                </>}
+            </div>
+        </details>
     );
 }

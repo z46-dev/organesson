@@ -1,9 +1,12 @@
 package v1
 
 import (
+	"encoding/json"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/z46-dev/organesson/backend/app/api/common"
 	"github.com/z46-dev/organesson/backend/db"
+	"github.com/z46-dev/organesson/backend/proxmox"
 )
 
 type createVMSnapshotRequest struct {
@@ -25,7 +28,29 @@ func listVMSnapshots(services common.Services) (handler fiber.Handler) {
 		if snapshots, _, err = services.Domain.ListVMSnapshots(actorID, resourceID); err != nil {
 			return common.DomainError(ctx, err)
 		}
-		err = ctx.JSON(fiber.Map{"snapshots": snapshots})
+		var allSnapshots []*db.ManagedVMSnapshot
+		if allSnapshots, err = services.Store.ManagedVMSnapshots.SelectAll(); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		var usedGiB int64
+		for _, snapshot := range allSnapshots {
+			if snapshot.State == "creating" || snapshot.State == "ready" || snapshot.State == "deleting" {
+				usedGiB += int64(snapshot.ReservedGiB)
+			}
+		}
+		var snapshotCapacity = fiber.Map{"used_gib": usedGiB, "limit_gib": int64(0), "validated": false}
+		var policyRecord *db.ProxmoxResourcePolicy
+		if policyRecord, err = services.Store.ProxmoxResourcePolicies.Select(1); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if policyRecord != nil {
+			var policy proxmox.ResourcePolicy
+			if err = json.Unmarshal([]byte(policyRecord.ConfigurationJSON), &policy); err != nil {
+				return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Stored Proxmox resource policy is invalid."})
+			}
+			snapshotCapacity = fiber.Map{"used_gib": usedGiB, "limit_gib": policy.Limits.SnapshotStorageGiB, "validated": policyRecord.ValidatedAt != nil}
+		}
+		err = ctx.JSON(fiber.Map{"snapshots": snapshots, "snapshot_capacity": snapshotCapacity})
 		return
 	}
 	return

@@ -4,7 +4,9 @@ declare module "@novnc/novnc" {
         scaleViewport: boolean;
         resizeSession: boolean;
         focusOnClick: boolean;
+        focus(options?: FocusOptions): void;
         disconnect(): void;
+        sendCtrlAltDel(): void;
         sendCredentials(credentials: { password?: string }): void;
         addEventListener(type: string, listener: (event: Event) => void): void;
     }

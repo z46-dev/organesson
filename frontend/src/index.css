@@ -62,6 +62,7 @@ button:disabled {
     justify-content: space-between;
     width: 100%;
     height: 62px;
+    box-sizing: border-box;
     margin: 0;
     padding: 0 24px;
     border-bottom: 1px solid var(--theme-border);
@@ -485,6 +486,7 @@ button:disabled {
 
 .dashboard-main {
     height: calc(100vh - 62px);
+    box-sizing: border-box;
     min-height: 0;
     max-width: none;
     overflow: hidden;
@@ -843,6 +845,13 @@ h2 {
     overflow-y: auto;
 }
 
+.workspace-content.has-vm-console {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 10px;
+    overflow: hidden;
+}
+
 .workspace-empty {
     display: grid;
     min-height: 0;
@@ -870,6 +879,38 @@ h2 {
 
 .resource-detail {
     padding: 21px;
+}
+
+.vm-summary-panel {
+    min-height: 0;
+    overflow: hidden;
+    padding: 10px 16px;
+}
+
+.vm-summary-panel .resource-detail-heading {
+    padding-bottom: 8px;
+}
+
+.vm-summary-panel .vm-details-grid {
+    padding-top: 6px;
+}
+
+.vm-summary-panel .address-properties-table th,
+.vm-summary-panel .address-properties-table td {
+    padding-top: 5px;
+    padding-bottom: 5px;
+}
+
+.vm-summary-panel .snapshot-list {
+    max-height: 190px;
+}
+
+.vm-console-view {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    padding: 7px 10px;
 }
 
 .access-panel {
@@ -1022,6 +1063,7 @@ h2 {
 .power-state {
     display: inline-flex;
     align-items: center;
+    gap: 5px;
     padding: 4px 8px;
     border: 1px solid #e4e8e4;
     border-radius: 999px;
@@ -1036,6 +1078,55 @@ h2 {
     border-color: #d5e6d9;
     background: #f1f8f2;
     color: #2d6a47;
+}
+
+.vm-power-menu {
+    position: relative;
+    flex: 0 0 auto;
+}
+
+.vm-power-menu summary {
+    list-style: none;
+}
+
+.vm-power-menu summary::-webkit-details-marker {
+    display: none;
+}
+
+.vm-power-menu summary.has-actions {
+    cursor: pointer;
+}
+
+.vm-power-menu summary.has-actions:hover {
+    border-color: #b9c9bf;
+}
+
+.vm-power-actions {
+    position: absolute;
+    z-index: 4;
+    top: calc(100% + 6px);
+    right: 0;
+    display: grid;
+    min-width: 170px;
+    padding: 4px;
+    border: 1px solid var(--theme-border);
+    border-radius: 7px;
+    background: var(--theme-surface);
+    box-shadow: 0 8px 24px #17201c1f;
+}
+
+.vm-power-actions button {
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--theme-text);
+    font-size: 12px;
+    text-align: left;
+}
+
+.vm-power-actions button:hover {
+    background: var(--theme-hover);
 }
 
 .resource-detail-heading {
@@ -1266,66 +1357,97 @@ h2 {
     color: #8d392d;
 }
 
-.resource-controls {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding-top: 16px;
-    border-top: 1px solid #edf0ed;
-}
-
 .vm-snapshot-panel {
-    margin-top: 18px;
-    padding-top: 16px;
-    border-top: 1px solid #edf0ed;
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: column;
+    padding: 0;
 }
 
-.resource-tools-heading,
+.snapshot-heading,
 .snapshot-list li,
 .console-toolbar,
 .console-toolbar-actions,
-.snapshot-actions,
-.console-launch-row {
+.snapshot-actions {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
 }
 
-.resource-tools-heading h3,
-.console-toolbar h1 {
+.snapshot-heading h4 {
     margin: 0;
     font-size: 16px;
 }
 
-.snapshot-create-form {
-    display: flex;
-    align-items: end;
-    gap: 10px;
-    margin: 14px 0;
+.snapshot-heading h4 {
+    font-size: 14px;
 }
 
-.snapshot-create-form label {
-    flex: 1;
+.snapshot-add-button {
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
 }
 
 .snapshot-list {
     display: grid;
+    align-content: start;
     gap: 8px;
+    max-height: 270px;
+    overflow-y: auto;
     margin: 0;
     padding: 0;
     list-style: none;
 }
 
 .snapshot-list li {
-    padding: 10px 0;
+    min-height: 38px;
+    padding: 8px 6px;
     border-top: 1px solid #edf0ed;
+    border-radius: 4px;
+}
+
+.snapshot-list li:hover {
+    background: var(--theme-surface-soft);
 }
 
 .snapshot-list li > div:first-child {
     display: grid;
     gap: 4px;
+}
+
+.snapshot-summary {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.snapshot-title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.snapshot-title strong {
+    overflow: hidden;
+    color: var(--theme-text);
+    font-size: 12px;
+    font-weight: 560;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.snapshot-actions {
+    flex: 0 0 auto;
+    gap: 4px;
+}
+
+.snapshot-actions .icon-button {
+    width: 28px;
+    height: 28px;
+    padding: 0;
 }
 
 .snapshot-list small,
@@ -1334,13 +1456,129 @@ h2 {
     font-size: 11px;
 }
 
-.console-launch-row {
-    justify-content: flex-start;
-    margin-top: 16px;
-    padding-top: 16px;
-    border-top: 1px solid #edf0ed;
-    color: #52645a;
-    font-size: 13px;
+.snapshot-capacity {
+    display: grid;
+    gap: 7px;
+    margin: 12px 0 4px;
+    color: var(--theme-muted);
+    font-size: 11px;
+}
+
+.snapshot-capacity > div:first-child {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.snapshot-capacity strong {
+    color: var(--theme-text);
+    font-weight: 600;
+}
+
+.snapshot-capacity small {
+    color: var(--theme-muted);
+}
+
+.snapshot-capacity-track {
+    height: 5px;
+    overflow: hidden;
+    border-radius: 99px;
+    background: var(--theme-hover);
+}
+
+.snapshot-capacity-track span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--theme-accent);
+}
+
+.vm-details-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    padding-top: 14px;
+}
+
+.vm-details-grid.has-snapshots {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 0.9fr);
+}
+
+.vm-specs-panel {
+    min-width: 0;
+}
+
+.vm-specs-panel .address-properties-table th {
+    width: 150px;
+}
+
+.vm-snapshot-panel .snapshot-list {
+    flex: 0 1 auto;
+}
+
+.snapshot-dialog {
+    position: fixed;
+    inset: 0;
+    width: min(420px, calc(100vw - 32px));
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px);
+    margin: auto;
+    padding: 0;
+    border: 1px solid var(--theme-border);
+    border-radius: 10px;
+    background: var(--theme-surface);
+    color: var(--theme-text);
+    box-shadow: 0 18px 60px #10191540;
+}
+
+.snapshot-dialog::backdrop {
+    background: #12191670;
+}
+
+.snapshot-dialog form {
+    display: grid;
+    gap: 16px;
+    padding: 20px;
+}
+
+.snapshot-dialog header,
+.snapshot-dialog footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.snapshot-dialog h3 {
+    margin: 0;
+    font-size: 16px;
+}
+
+.snapshot-dialog label {
+    display: grid;
+    gap: 7px;
+    color: var(--theme-muted);
+    font-size: 12px;
+}
+
+.snapshot-dialog input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 9px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: 6px;
+    background: var(--theme-surface);
+    color: var(--theme-text);
+}
+
+.snapshot-dialog p {
+    margin: -5px 0 0;
+    color: var(--theme-muted);
+    font-size: 11px;
+}
+
+.snapshot-dialog footer {
+    justify-content: flex-end;
 }
 
 .console-page {
@@ -1350,27 +1588,102 @@ h2 {
     gap: 14px;
 }
 
+.console-page.is-detached {
+    width: 100%;
+    min-width: 0;
+    height: 100dvh;
+    min-height: 0;
+    gap: 0;
+}
+
+.console-only-main {
+    display: flex;
+    width: 100%;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0;
+}
+
+.vm-console-panel {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: column;
+    margin-top: 18px;
+    padding-top: 15px;
+    border-top: 1px solid var(--theme-border-soft);
+}
+
+.vm-console-view .vm-console-panel:not(.is-detached) {
+    height: 100%;
+    flex: 1 1 auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+.vm-console-panel.is-detached {
+    height: 100%;
+    box-sizing: border-box;
+    min-height: 0;
+    flex: 1 1 auto;
+    margin: 0;
+    padding: 10px;
+    border: 0;
+}
+
 .console-toolbar {
     flex: 0 0 auto;
+    min-height: 28px;
+}
+
+.console-title {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: 9px;
+}
+
+.console-title h4 {
+    overflow: hidden;
+    margin: 0;
+    color: var(--theme-text);
+    font-size: 14px;
+    font-weight: 620;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.console-title span {
+    color: var(--theme-muted);
+    font-size: 11px;
 }
 
 .console-toolbar-actions {
     justify-content: flex-end;
-}
-
-.console-status {
-    display: inline-flex;
-    align-items: center;
     gap: 7px;
-    color: #68776e;
-    font-size: 12px;
 }
 
-.console-status i {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #d6a64b;
+.console-control {
+    min-height: 30px;
+    padding: 6px 9px;
+    font-size: 11px;
+}
+
+.console-connect-control {
+    min-height: 26px;
+    padding: 4px 8px;
+}
+
+.console-connect-control:disabled {
+    cursor: not-allowed;
+}
+
+.console-icon-control {
+    width: 30px;
+    height: 30px;
+    padding: 0;
 }
 
 .console-screen-wrap,
@@ -1386,15 +1699,47 @@ h2 {
     background: #101412;
 }
 
+.vm-console-view .vm-console-panel:not(.is-detached) .console-screen-wrap {
+    height: auto;
+    min-height: 0;
+    flex: 1 1 auto;
+    margin-top: 5px;
+}
+
+.vm-console-panel.is-detached .console-screen-wrap {
+    min-height: 0;
+    flex: 1 1 auto;
+    margin-top: 8px;
+}
+
 .console-screen {
     width: 100%;
     height: 100%;
+    min-width: 0;
+    min-height: 0;
 }
 
 .console-screen canvas {
-    width: 100% !important;
-    height: 100% !important;
-    object-fit: contain;
+    max-width: 100%;
+    max-height: 100%;
+}
+
+.console-error-overlay {
+    position: absolute;
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    background: #101412dd;
+    color: #f0d4ce;
+    font-size: 12px;
+}
+
+.console-key-hint {
+    color: currentColor;
+    font-size: 8px;
+    font-weight: 650;
+    line-height: 0.9;
 }
 
 .console-placeholder {
@@ -1402,27 +1747,20 @@ h2 {
     font-size: 13px;
 }
 
-.console-hint {
+.visually-hidden {
     position: absolute;
-    right: 12px;
-    bottom: 10px;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    color: #b8c1bb;
-    font-size: 10px;
-    pointer-events: none;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    clip-path: inset(50%);
 }
 
-.resource-controls strong {
-    color: #344239;
-    font-size: 12px;
-}
-
-.resource-controls p {
-    margin: 4px 0 0;
-    color: #526157;
-    font-size: 11px;
+@media (max-width: 640px) {
+    .console-control {
+        padding: 6px;
+    }
 }
 
 .icon-button {
@@ -1699,9 +2037,13 @@ h2 {
         gap: 13px;
     }
 
-    .resource-controls {
-        align-items: flex-start;
-        flex-direction: column;
+    .vm-details-grid.has-snapshots {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .vm-snapshot-panel {
+        padding: 14px 0 0;
+        border-top: 0;
     }
 
 

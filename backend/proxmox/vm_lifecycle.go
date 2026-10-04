@@ -41,6 +41,9 @@ type (
 		Node       string `json:"node"`
 		Name       string `json:"name"`
 		PowerState string `json:"power_state"`
+		Sockets    int    `json:"sockets"`
+		Cores      int    `json:"cores"`
+		CPUModel   string `json:"cpu_model"`
 	}
 
 	apiVMDriver struct {
@@ -525,6 +528,15 @@ func parseVMID(value string) (vmid int, err error) {
 
 func placementFor(vm *pve.VirtualMachine, vmid int, node string) (placement VMPlacement) {
 	placement = VMPlacement{VMID: strconv.Itoa(vmid), Node: node, Name: vm.Name, PowerState: vm.Status}
+	if vm.VirtualMachineConfig != nil {
+		if vm.VirtualMachineConfig.Sockets != nil {
+			placement.Sockets = *vm.VirtualMachineConfig.Sockets
+		}
+		if vm.VirtualMachineConfig.Cores != nil {
+			placement.Cores = *vm.VirtualMachineConfig.Cores
+		}
+		placement.CPUModel = vm.VirtualMachineConfig.CPU
+	}
 	return
 }
 

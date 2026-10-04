@@ -5,6 +5,7 @@ import type { Deployment, DeploymentAccess, DeploymentDetail, Resource } from ".
 import { ResourcePowerControl } from "./ResourcePowerControl";
 import { DeploymentAccessPanel } from "./DeploymentAccessPanel";
 import { VMSnapshotPanel } from "./VMSnapshotPanel";
+import { VMConsolePanel } from "./VMConsolePanel";
 
 type WorkspaceSection = "resources" | "users" | "groups";
 type AddressPoolDetails = {
@@ -22,9 +23,24 @@ type AddressPoolDetails = {
 };
 type ResourceLiveState = "verified" | "missing" | "unknown" | "unavailable";
 type SDNIPAMEntry = { ip: string; mac?: string; hostname?: string; subnet?: string; vmid?: string };
+type VMSpecification = { template_alias: string; sockets: number; cores: number; architecture: string; cpu_model: string; memory_mib: number; boot_disk_gib: number; pool: string; storage: string };
 type NetworkDetails = { request: { mode: string; subnet?: string; gateway?: string; dhcp_enabled: boolean; egress_policy: string }; placement: { zone: string; vnet: string } };
 type AttachmentDetails = { request: { node: string; vmid: string; bridge: string }; placement: { device: string; mac: string }; addresses: string[]; environment_network?: string; logical_network_id?: number; address_pool_request_id?: number; requested_address_count?: number; address_prefix?: string; address_gateway?: string; address_dns?: string[]; guest_network?: { ipv4_method: string; ipv4_address?: string; ipv4_gateway?: string; ipv4_dns?: string[] } };
-type SelectedResourceDetails = { allocation?: AddressPoolDetails; configuration?: NetworkDetails | AttachmentDetails; live_state?: ResourceLiveState; ipam_state?: "available" | "unconfigured" | "unavailable"; ipam_entries?: SDNIPAMEntry[] };
+type SelectedResourceDetails = { allocation?: AddressPoolDetails; configuration?: NetworkDetails | AttachmentDetails; specification?: VMSpecification; live_state?: ResourceLiveState; ipam_state?: "available" | "unconfigured" | "unavailable"; ipam_entries?: SDNIPAMEntry[] };
+
+function formatCPUSpecification(specification?: VMSpecification) {
+    if (!specification) {
+        return "—";
+    }
+
+    const socketCount = specification.sockets || 1;
+    const coreCount = specification.cores || 0;
+    const sockets = `${socketCount} ${socketCount === 1 ? "socket" : "sockets"}`;
+    const cores = `${coreCount} ${coreCount === 1 ? "core" : "cores"}/socket`;
+    const architecture = specification.architecture || "Unknown architecture";
+    const model = specification.cpu_model || "Default";
+    return `${sockets} · ${cores} · ${architecture} · ${model}`;
+}
 
 type Props = {
     request: ApiRequest;
@@ -110,7 +126,7 @@ export function Dashboard({ request, onError }: Props) {
 
     useEffect(() => {
         const resource = selectedDeployment?.resources.find((item) => item.id === selectedResourceID);
-        if (!resource || (resource.kind !== "virtual_network" && resource.kind !== "address_pool_request" && resource.kind !== "network_attachment")) {
+        if (!resource || (resource.kind !== "virtual_machine" && resource.kind !== "virtual_network" && resource.kind !== "address_pool_request" && resource.kind !== "network_attachment")) {
             setSelectedResourceDetails(null);
             setResourceDetailsLoading(false);
             setResourceDetailsError("");
@@ -121,8 +137,8 @@ export function Dashboard({ request, onError }: Props) {
         setSelectedResourceDetails(null);
         setResourceDetailsError("");
         setResourceDetailsLoading(true);
-        const path = resource.kind === "virtual_network" ? `/networks/${resource.id}` : resource.kind === "network_attachment" ? `/network-attachments/${resource.id}` : `/address-pool-requests/${resource.id}`;
-        request<{ configuration?: NetworkDetails | AttachmentDetails; allocation?: AddressPoolDetails; live_state?: ResourceLiveState }>(path)
+        const path = resource.kind === "virtual_machine" ? `/virtual-machines/${resource.id}` : resource.kind === "virtual_network" ? `/networks/${resource.id}` : resource.kind === "network_attachment" ? `/network-attachments/${resource.id}` : `/address-pool-requests/${resource.id}`;
+        request<{ configuration?: NetworkDetails | AttachmentDetails; allocation?: AddressPoolDetails; specification?: VMSpecification; live_state?: ResourceLiveState }>(path)
             .then((result) => active && setSelectedResourceDetails(result))
             .catch((requestError: Error) => {
                 if (active) {
@@ -302,7 +318,7 @@ export function Dashboard({ request, onError }: Props) {
                     )}
                 </aside>
 
-                <main className="workspace-content">
+                <main className={`workspace-content${selectedResource?.kind === "virtual_machine" && selectedResource.can_console_control ? " has-vm-console" : ""}`}>
                     {selectedDeploymentID === null ? (
                         <div className="workspace-empty" aria-label={loadingDeployments ? "Loading workspace" : "No selection"}>
                             {loadingDeployments ? <p>Loading…</p> : <Boxes size={26} />}
@@ -319,22 +335,31 @@ export function Dashboard({ request, onError }: Props) {
                                 onSelectUser={selectUser}
                                 onSelectGroup={selectGroup}
                             /> : selectedSection !== "resources" ? <div className="workspace-empty panel" role="status"><p>Loading access…</p></div> : selectedResource ? (
-                                <section className="resource-detail panel" aria-labelledby="resource-detail-heading">
+                                <>
+                                <section className={`resource-detail panel${selectedResource.kind === "virtual_machine" ? " vm-summary-panel" : ""}`} aria-labelledby="resource-detail-heading">
                                     <div className="resource-detail-heading">
                                         <div className="resource-detail-icon">{selectedResource.kind === "virtual_machine" ? <Server size={19} /> : <Network size={19} />}</div>
                                         <div><p className="eyebrow">{selectedResource.kind.replaceAll("_", " ")}</p><h3 id="resource-detail-heading">{selectedResource.name}</h3></div>
-                                        {selectedResource.kind !== "address_pool_request" && selectedResource.kind !== "virtual_network" && <span className={`power-state${selectedResource.power_state === "running" ? " is-running" : ""}`}>{selectedResource.power_state}</span>}
+                                        {selectedResource.kind === "virtual_machine" ? <ResourcePowerControl resource={selectedResource} onPower={changePower} /> : selectedResource.kind !== "address_pool_request" && selectedResource.kind !== "virtual_network" && <span className={`power-state${selectedResource.power_state === "running" ? " is-running" : ""}`}>{selectedResource.power_state}</span>}
                                     </div>
-                                    {selectedResource.kind !== "address_pool_request" && selectedResource.kind !== "virtual_network" && <dl className="resource-facts">
+                                    {selectedResource.kind !== "address_pool_request" && selectedResource.kind !== "virtual_network" && selectedResource.kind !== "virtual_machine" && <dl className="resource-facts">
                                         <div><dt>Resource ID</dt><dd>{selectedResource.id}</dd></div>
                                         <div><dt>Type</dt><dd>{selectedResource.kind.replaceAll("_", " ")}</dd></div>
                                         <div><dt>{selectedResource.kind === "virtual_machine" ? "Power state" : "Status"}</dt><dd>{selectedResource.power_state}</dd></div>
                                     </dl>}
-                                    {selectedResource.kind === "virtual_machine" ? <>
-                                        <ResourcePowerControl resource={selectedResource} onPower={changePower} />
-                                        {selectedResource.can_snapshot_control && <VMSnapshotPanel resourceID={selectedResource.id} request={request} onError={onError} />}
-                                        {selectedResource.can_console_control && <div className="console-launch-row"><span>Console</span><a className="primary-action" href={`/console/${selectedResource.id}`}>Open console</a><a className="quiet-button" href={`/console/${selectedResource.id}`} target="_blank" rel="noreferrer">Pop out</a></div>}
-                                    </> : null}
+                                    {selectedResource.kind === "virtual_machine" && <section className={`vm-details-grid${selectedResource.can_snapshot_control ? " has-snapshots" : ""}`}>
+                                        <section className="vm-specs-panel" aria-label="Virtual machine specifications">
+                                            <table className="address-properties-table"><tbody>
+                                                <tr><th scope="row">Proxmox VMID</th><td>{selectedResource.external_id || "—"}</td></tr>
+                                                <tr><th scope="row">Node</th><td>{selectedResource.external_node || "—"}</td></tr>
+                                                <tr><th scope="row">Template</th><td>{selectedResourceDetails?.specification?.template_alias || "—"}</td></tr>
+                                                <tr><th scope="row">CPU</th><td>{formatCPUSpecification(selectedResourceDetails?.specification)}</td></tr>
+                                                <tr><th scope="row">Memory</th><td>{selectedResourceDetails?.specification?.memory_mib ? `${(selectedResourceDetails.specification.memory_mib / 1024).toLocaleString()} GiB` : "—"}</td></tr>
+                                                <tr><th scope="row">Boot disk</th><td>{selectedResourceDetails?.specification?.boot_disk_gib ? `${selectedResourceDetails.specification.boot_disk_gib} GiB` : "—"}</td></tr>
+                                            </tbody></table>
+                                        </section>
+                                        {selectedResource.can_snapshot_control && <VMSnapshotPanel resourceID={selectedResource.id} reservedGiB={selectedResourceDetails?.specification?.boot_disk_gib} request={request} onError={onError} />}
+                                    </section>}
                                     {resourceDetailsLoading && <p className="resource-detail-loading" role="status">Loading resource details…</p>}
                                     {resourceDetailsError && <p className="resource-detail-error" role="alert">{resourceDetailsError}</p>}
                                     {selectedResource.kind === "virtual_network" && selectedResourceDetails?.configuration && "mode" in selectedResourceDetails.configuration.request && "vnet" in selectedResourceDetails.configuration.placement && <section className="typed-resource-details" aria-label="Virtual network details">
@@ -405,6 +430,10 @@ export function Dashboard({ request, onError }: Props) {
                                         </section>
                                     </section>}
                                 </section>
+                                {selectedResource.kind === "virtual_machine" && selectedResource.can_console_control && <section className="vm-console-view panel" aria-label={`${selectedResource.name} console`}>
+                                    <VMConsolePanel resourceID={selectedResource.id} resourceName={selectedResource.name} allowed={selectedResource.can_console_control} powerState={selectedResource.power_state} />
+                                </section>}
+                                </>
                             ) : (
                                 <div className="workspace-empty" aria-label="No selection"><Boxes size={26} /></div>
                             )}

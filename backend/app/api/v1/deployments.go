@@ -929,15 +929,15 @@ func getVirtualMachine(services common.Services) (handler fiber.Handler) {
 		if resource, err = services.Domain.GetVirtualMachine(actorID, resourceID); err != nil {
 			return common.DomainError(ctx, err)
 		}
+		var liveCPU proxmox.VMPlacement
 		if resource.ExternalID != "" {
 			if services.Proxmox == nil {
 				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; live VM state cannot be refreshed."})
 			}
-			var placement proxmox.VMPlacement
-			if placement, err = services.Proxmox.ReadVM(ctx, resource.ExternalNode, resource.ExternalID, resource.OperationKey); err != nil {
+			if liveCPU, err = services.Proxmox.ReadVM(ctx, resource.ExternalNode, resource.ExternalID, resource.OperationKey); err != nil {
 				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not refresh this VM from Proxmox."})
 			}
-			if resource, err = services.Domain.RecordLivePowerState(actorID, resourceID, placement.PowerState); err != nil {
+			if resource, err = services.Domain.RecordLivePowerState(actorID, resourceID, liveCPU.PowerState); err != nil {
 				return common.DomainError(ctx, err)
 			}
 		}
@@ -945,10 +945,54 @@ func getVirtualMachine(services common.Services) (handler fiber.Handler) {
 		if canConsoleControl, err = services.Domain.Can(actorID, db.PermissionVMConsole, resource.OwnershipID); err != nil {
 			return common.DomainError(ctx, err)
 		}
+		var specification proxmox.VMCloneRequest
+		if resource.ConfigurationJSON != "" {
+			if err = json.Unmarshal([]byte(resource.ConfigurationJSON), &specification); err != nil {
+				return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Stored VM configuration is invalid."})
+			}
+		}
+		var architecture string
+		if specification.TemplateAlias != "" {
+			var aliases []*db.VMTemplateAlias
+			if aliases, err = services.Store.VMTemplateAliases.SelectAll(); err != nil {
+				return common.DomainError(ctx, err)
+			}
+			var templates []*db.VMTemplate
+			if templates, err = services.Store.VMTemplates.SelectAll(); err != nil {
+				return common.DomainError(ctx, err)
+			}
+			for _, alias := range aliases {
+				if alias.Alias == specification.TemplateAlias {
+					for _, template := range templates {
+						if template.ID == alias.VMTemplateID {
+							architecture = template.Architecture
+						}
+					}
+				}
+			}
+		}
+		var sockets int = liveCPU.Sockets
+		var cores int = liveCPU.Cores
+		if sockets < 1 {
+			sockets = 1
+		}
+		if cores < 1 {
+			cores = specification.Cores
+		}
 		err = ctx.JSON(fiber.Map{"resource": struct {
 			*db.ManagedResource
 			CanConsoleControl bool `json:"can_console_control"`
-		}{resource, canConsoleControl}})
+		}{resource, canConsoleControl}, "specification": fiber.Map{
+			"template_alias": specification.TemplateAlias,
+			"sockets":        sockets,
+			"cores":          cores,
+			"architecture":   architecture,
+			"cpu_model":      liveCPU.CPUModel,
+			"memory_mib":     specification.MemoryMiB,
+			"boot_disk_gib":  specification.BootDiskGiB,
+			"pool":           specification.Pool,
+			"storage":        specification.Storage,
+		}})
 		return
 	}
 	return

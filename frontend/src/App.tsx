@@ -134,10 +134,11 @@ export function App() {
 
     const account = status?.authenticated ? status.account : undefined;
     const route = resolveRoute(pathname, account?.platform_administrator === true);
+    const detachedConsole = route === "console" && new URLSearchParams(window.location.search).get("detached") === "1";
 
     return (
-        <div className="app-shell">
-            <header className="site-header">
+        <div className={`app-shell${detachedConsole ? " is-console-popup" : ""}`}>
+            {!detachedConsole && <header className="site-header">
                 <a className="wordmark" href="/" aria-label="Organesson home" onClick={(event) => handleNavigation(event, "/")}>
                     <img className="wordmark-mark" src="/organesson-mark.svg" alt="" />
                     <span>organesson</span>
@@ -158,13 +159,13 @@ export function App() {
                         </details>
                     </div>
                 ) : <span className="environment-label">Proxmox resource management</span>}
-            </header>
+            </header>}
 
-            <main className={`main-content${account && route === "dashboard" ? " dashboard-main" : account && route === "admin" ? " admin-main" : ""}`}>
+            <main className={`main-content${detachedConsole ? " console-only-main" : account && route === "dashboard" ? " dashboard-main" : account && route === "admin" ? " admin-main" : ""}`}>
                 {!status ? <section className="auth-card"><p className="eyebrow">Connecting</p><h1>Loading Organesson…</h1></section> : account ? (
                     route === "dashboard" ? <Dashboard request={apiRequest} onError={onError} />
                         : route === "admin" ? <AdminPage request={apiRequest} onError={onError} onNotice={onNotice} />
-                            : route === "console" ? <VMConsolePage resourceID={Number(pathname.split("/").filter(Boolean)[1])} request={apiRequest} onError={onError} />
+                            : route === "console" ? <VMConsolePage resourceID={Number(pathname.split("/").filter(Boolean)[1])} request={apiRequest} onError={onError} detached={detachedConsole} />
                             : route === "forbidden" ? <section className="panel route-message"><p className="eyebrow">Platform administration</p><h1>Access restricted.</h1><p>Your account is not a platform administrator. Deployment roles do not grant platform-wide administration.</p><a className="primary-action" href="/" onClick={(event) => handleNavigation(event, "/")}>Return to dashboard</a></section>
                                 : <section className="panel route-message"><p className="eyebrow">Not found</p><h1>That page doesn’t exist.</h1><a className="primary-action" href="/" onClick={(event) => handleNavigation(event, "/")}>Return to dashboard</a></section>
                 ) : (
@@ -188,7 +189,7 @@ export function App() {
                     </section>
                 )}
             </main>
-            <ToastViewport toasts={toasts} onDismiss={dismissToast} />
+            {!detachedConsole && <ToastViewport toasts={toasts} onDismiss={dismissToast} />}
         </div>
     );
 }

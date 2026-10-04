@@ -5,20 +5,24 @@ export type ApiRequest = <T>(path: string, method?: string, body?: unknown) => P
 // Makes an API request and includes the session-bound CSRF token for mutations.
 export async function apiRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
     const headers = new Headers({ Accept: "application/json" });
+    const requestMethod = method.toUpperCase();
     const options: RequestInit = {
-        method,
+        method: requestMethod,
         credentials: "same-origin",
         headers
     };
 
-    if (body !== undefined) {
-        headers.set("Content-Type", "application/json");
+    if (requestMethod !== "GET" && requestMethod !== "HEAD" && requestMethod !== "OPTIONS") {
         const csrfResponse = await fetch(`${apiRoot}/auth/csrf`, { credentials: "same-origin" });
         if (!csrfResponse.ok) {
             throw new Error("Could not initialize browser security. Refresh and try again.");
         }
         const csrfResult = await csrfResponse.json() as { csrf_token: string };
         headers.set("X-Csrf-Token", csrfResult.csrf_token);
+    }
+
+    if (body !== undefined) {
+        headers.set("Content-Type", "application/json");
         options.body = JSON.stringify(body);
     }
 
