@@ -22,7 +22,9 @@ resource "organesson_virtual_machine" "lan_fedora" {
   logical_group_id  = organesson_logical_group.student_lab[each.key].id
   memory_mib        = 4096
   name              = "lan-fedora"
+  pool              = "organesson"
   provisioning_mode = var.proxmox_test_deployment ? "proxmox" : "simulated"
+  storage           = "laas"
   template          = "og-template-fedora-server-latest"
 }
 

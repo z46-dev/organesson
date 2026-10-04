@@ -79,3 +79,6 @@ reference/
 *.tfstate.*
 crash.log
 tofu.rc
+
+# VM Images
+*qemu*.vma.zst

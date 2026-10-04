@@ -26,6 +26,8 @@ Each source VM is one catalog record with one or more unique aliases. The record
 | Windows 11 workstation | Run `og-prep-windows11.ps1` with `og-prep-windows-common.ps1` beside it | Use the appropriate UEFI/TPM configuration. The script uses Windows Update, installs the signed guest-agent MSI from the attached VirtIO ISO, and runs Sysprep. |
 | Windows Server 2025 | Run `og-prep-windows-server2025.ps1` with `og-prep-windows-common.ps1` beside it | The script uses Windows Update, installs the signed guest-agent MSI from the attached VirtIO ISO, and runs Sysprep. |
 
+For a Debian 13 router source VM with NetworkManager, `nftables`, DHCP/DNS, clone-time address handling, and a clone acceptance checklist, see [Debian 13 router source VM](debian-router-source-vm.md).
+
 ## Updating a source
 
 Temporarily mark the source unavailable for new provisioning. Boot it on the maintenance network and run its prep script. For Linux, remove the downloaded script after success and shut the source down without rebooting; the script has already cleared its clone identity. For Windows, the successful script removes both downloaded prep files and invokes Sysprep to shut down. Test a disposable clone again before making the source available. Update a `latest` mapping only after validation; keep version-pinned source mappings separate.
