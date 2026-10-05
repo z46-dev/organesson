@@ -26,8 +26,9 @@ type AddressPoolDetails = {
 };
 type ResourceLiveState = "verified" | "missing" | "unknown" | "unavailable";
 type ObservedRouterAddress = { address: string; mac?: string; hostname?: string; source?: string; last_seen?: string; lease_expires_at?: string; virtual_machine_id?: number; virtual_machine_name?: string };
-type StaticNetworkAddress = { address: string; network_attachment_id: number; network_attachment: string; virtual_machine_id?: number; virtual_machine?: string };
-type RouterPollingDetails = { state: "not_configured" | "available" | "unavailable"; router_vmid?: number; last_polled_at?: string; observed_addresses: ObservedRouterAddress[]; static_addresses: StaticNetworkAddress[] };
+type StaticNetworkAddress = { address: string; mac?: string; network_attachment_id: number; network_attachment: string; virtual_machine_id?: number; virtual_machine?: string };
+type RouterPollingDetails = { state: "not_configured" | "available" | "unavailable"; router_vmid?: number; last_polled_at?: string; dhcp_range_start?: string; dhcp_range_end?: string; egress?: { interface: string; mac?: string; bridge?: string; addresses?: string[]; gateway?: string }; observed_addresses: ObservedRouterAddress[]; static_addresses: StaticNetworkAddress[] };
+type NetworkAddressRow = { address: string; mac?: string; virtual_machine_id?: number; virtual_machine_name?: string; lease_expires_at?: string; is_dhcp: boolean };
 type VMSpecification = { template_alias: string; sockets: number; cores: number; architecture: string; cpu_model: string; memory_mib: number; boot_disk_gib: number; pool: string; storage: string };
 type NetworkDetails = { request: { mode: string; subnet?: string; gateway?: string; dhcp_enabled: boolean; egress_policy: string; router_vmid?: number }; placement: { zone: string; vnet: string } };
 type AttachmentDetails = { request: { node: string; vmid: string; bridge: string }; placement: { device: string; mac: string }; addresses: string[]; environment_network?: string; logical_network_id?: number; address_pool_request_id?: number; requested_address_count?: number; address_prefix?: string; address_gateway?: string; address_dns?: string[]; guest_network?: { ipv4_method: string; ipv4_address?: string; ipv4_gateway?: string; ipv4_dns?: string[] } };
@@ -45,6 +46,47 @@ function formatCPUSpecification(specification?: VMSpecification) {
     const architecture = specification.architecture || "Unknown architecture";
     const model = specification.cpu_model || "Default";
     return `${sockets} · ${cores} · ${architecture} · ${model}`;
+}
+
+function networkAddressRows(polling?: RouterPollingDetails) {
+    const rows = new Map<string, NetworkAddressRow>();
+
+    for (const entry of polling?.static_addresses ?? []) {
+        const address = entry.address.split("/")[0] ?? entry.address;
+        rows.set(address, {
+            address,
+            mac: entry.mac,
+            virtual_machine_id: entry.virtual_machine_id,
+            virtual_machine_name: entry.virtual_machine,
+            is_dhcp: false
+        });
+    }
+
+    for (const entry of polling?.observed_addresses ?? []) {
+        const address = entry.address.split("/")[0] ?? entry.address;
+        const current = rows.get(address);
+        rows.set(address, {
+            address,
+            mac: entry.mac || current?.mac,
+            virtual_machine_id: entry.virtual_machine_id || current?.virtual_machine_id,
+            virtual_machine_name: entry.virtual_machine_name || current?.virtual_machine_name,
+            lease_expires_at: current && !current.is_dhcp ? undefined : entry.lease_expires_at,
+            is_dhcp: current && !current.is_dhcp ? false : entry.source?.includes("lease") ?? false
+        });
+    }
+
+    return [...rows.values()].sort((left, right) => {
+        const leftOctets = left.address.split(".").map(Number);
+        const rightOctets = right.address.split(".").map(Number);
+        for (let index = 0; index < 4; index += 1) {
+            const leftOctet = leftOctets[index] ?? 0;
+            const rightOctet = rightOctets[index] ?? 0;
+            if (leftOctet !== rightOctet) {
+                return leftOctet - rightOctet;
+            }
+        }
+        return 0;
+    });
 }
 
 type Props = {
@@ -203,6 +245,7 @@ export function Dashboard({ request, onError }: Props) {
     }
 
     const selectedResource = selectedDeployment?.resources.find((resource) => resource.id === selectedResourceID);
+    const selectedNetworkAddresses = networkAddressRows(selectedResourceDetails?.router_polling);
     const selectedAddressAllocation = selectedResourceDetails?.allocation;
     const selectedAddressSource = selectedAddressAllocation?.environment_network || selectedDeployment?.resources.find((resource) => resource.id === selectedAddressAllocation?.logical_network_id)?.name || `Resource ${selectedAddressAllocation?.logical_network_id ?? "—"}`;
     const selectedAddressPool = selectedAddressAllocation?.logical_network_id
@@ -248,12 +291,26 @@ export function Dashboard({ request, onError }: Props) {
     }
 
     function renderOwnershipNodes(parentNodeID: number): React.ReactNode {
-        return selectedDeployment?.ownership_nodes
+        const ownershipNodes = selectedDeployment?.ownership_nodes
             .filter((node) => node.parent_id === parentNodeID)
-            .sort((left, right) => Number(left.kind !== 2) - Number(right.kind !== 2))
-            .map((node) => {
+            .map((node) => ({
+                node,
+                resource: node.kind === 2 ? selectedDeployment.resources.find((item) => item.ownership_id === node.id) : undefined
+            })) ?? [];
+        const sortedOwnershipNodes = ownershipNodes.sort((left, right) => {
+            const leftOrder = left.node.kind !== 2 ? 0 : left.resource?.kind === "virtual_machine" ? 1 : 2;
+            const rightOrder = right.node.kind !== 2 ? 0 : right.resource?.kind === "virtual_machine" ? 1 : 2;
+            if (leftOrder !== rightOrder) {
+                return leftOrder - rightOrder;
+            }
+
+            const leftName = left.resource?.name ?? left.node.name;
+            const rightName = right.resource?.name ?? right.node.name;
+            return leftName.localeCompare(rightName, undefined, { numeric: true, sensitivity: "base" });
+        });
+
+        return sortedOwnershipNodes.map(({ node, resource }) => {
             if (node.kind === 2) {
-                const resource = selectedDeployment.resources.find((item) => item.ownership_id === node.id);
                 if (!resource) {
                     return null;
                 }
@@ -367,7 +424,7 @@ export function Dashboard({ request, onError }: Props) {
                                 onSelectGroup={selectGroup}
                             /> : selectedSection !== "resources" ? <div className="workspace-empty panel" role="status"><p>Loading access…</p></div> : selectedResource ? (
                                 <>
-                                <section className={`resource-detail panel${selectedResource.kind === "virtual_machine" ? " vm-summary-panel" : ""}`} aria-labelledby="resource-detail-heading">
+                                <section className={`resource-detail panel${selectedResource.kind === "virtual_machine" ? " vm-summary-panel" : ""}${selectedResource.kind === "virtual_network" && selectedResourceDetails?.configuration && "mode" in selectedResourceDetails.configuration.request && selectedResourceDetails.configuration.request.mode === "managed" ? " managed-network-panel" : ""}`} aria-labelledby="resource-detail-heading">
                                     <div className="resource-detail-heading">
                                         <div className="resource-detail-icon">{selectedResource.kind === "virtual_machine" ? <Server size={19} /> : <Network size={19} />}</div>
                                         <div><p className="eyebrow">{selectedResource.kind.replaceAll("_", " ")}</p><h3 id="resource-detail-heading">{selectedResource.name}</h3></div>
@@ -394,45 +451,47 @@ export function Dashboard({ request, onError }: Props) {
                                     {resourceDetailsLoading && <p className="resource-detail-loading" role="status">Loading resource details…</p>}
                                     {resourceDetailsError && <p className="resource-detail-error" role="alert">{resourceDetailsError}</p>}
                                     {selectedResource.kind === "virtual_network" && selectedResourceDetails?.configuration && "mode" in selectedResourceDetails.configuration.request && "vnet" in selectedResourceDetails.configuration.placement && <section className="typed-resource-details" aria-label="Virtual network details">
-                                        <table className="address-properties-table"><tbody>
-                                            <tr><th scope="row">Network mode</th><td>{selectedResourceDetails.configuration.request.mode === "managed" ? "Managed IPv4" : "Unmanaged Layer 2"}</td></tr>
-                                            {selectedResourceDetails.configuration.request.mode === "managed" && <>
-                                                <tr><th scope="row">Subnet</th><td>{selectedResourceDetails.configuration.request.subnet || "—"}</td></tr>
-                                                <tr><th scope="row">Gateway</th><td>{selectedResourceDetails.configuration.request.gateway || "—"}</td></tr>
-                                                <tr><th scope="row">DHCP</th><td>{selectedResourceDetails.configuration.request.dhcp_enabled ? "Enabled" : "Disabled"}</td></tr>
-                                            </>}
-                                            <tr><th scope="row">Egress</th><td>{selectedResourceDetails.configuration.request.egress_policy}</td></tr>
-                                            <tr><th scope="row">Proxmox VNet</th><td>{selectedResourceDetails.configuration.placement.vnet}</td></tr>
-                                            <tr><th scope="row">SDN zone</th><td>{selectedResourceDetails.configuration.placement.zone}</td></tr>
-                                            <tr><th scope="row">Proxmox state</th><td>{selectedResourceDetails.live_state ?? "unavailable"}</td></tr>
-                                            {selectedResourceDetails.configuration.request.router_vmid ? <tr><th scope="row">Router VM</th><td>{selectedResourceDetails.configuration.request.router_vmid}</td></tr> : null}
-                                        </tbody></table>
+                                        <div className="network-property-columns">
+                                            <table className="address-properties-table network-properties-table"><tbody>
+                                                <tr><th scope="row">Network mode</th><td>{selectedResourceDetails.configuration.request.mode === "managed" ? "Managed IPv4" : "Unmanaged Layer 2"}</td></tr>
+                                                {selectedResourceDetails.configuration.request.mode === "managed" && <>
+                                                    <tr><th scope="row">Subnet</th><td>{selectedResourceDetails.configuration.request.subnet || "—"}</td></tr>
+                                                    <tr><th scope="row">Gateway</th><td>{selectedResourceDetails.configuration.request.gateway || "—"}</td></tr>
+                                                </>}
+                                                <tr><th scope="row">Proxmox VNet</th><td>{selectedResourceDetails.configuration.placement.vnet}</td></tr>
+                                                <tr><th scope="row">SDN zone</th><td>{selectedResourceDetails.configuration.placement.zone}</td></tr>
+                                            </tbody></table>
+                                            <table className="address-properties-table network-properties-table"><tbody>
+                                                {selectedResourceDetails.configuration.request.mode === "managed" && <tr><th scope="row">DHCP</th><td><div className="network-dhcp-value"><span>{selectedResourceDetails.configuration.request.dhcp_enabled ? "Enabled" : "Disabled"}</span>{selectedResourceDetails.configuration.request.dhcp_enabled && selectedResourceDetails.router_polling?.dhcp_range_start && selectedResourceDetails.router_polling.dhcp_range_end ? <code>{selectedResourceDetails.router_polling.dhcp_range_start}–{selectedResourceDetails.router_polling.dhcp_range_end}</code> : null}</div></td></tr>}
+                                                <tr><th scope="row">Egress</th><td>{selectedResourceDetails.router_polling?.egress ? <table className="network-egress-table"><tbody>
+                                                    <tr><th scope="row">SDN policy</th><td>{selectedResourceDetails.configuration.request.egress_policy === "isolated" ? "Isolated" : selectedResourceDetails.configuration.request.egress_policy}</td></tr>
+                                                        <tr><th scope="row">NAT uplink</th><td>{[selectedResourceDetails.router_polling.egress.bridge, selectedResourceDetails.router_polling.egress.interface].filter(Boolean).join(" · ") || "Router interface"}</td></tr>
+                                                        {selectedResourceDetails.router_polling.egress.addresses?.length ? <tr><th scope="row">Address</th><td>{selectedResourceDetails.router_polling.egress.addresses.map((address) => <code key={address}>{address}</code>)}</td></tr> : null}
+                                                        {selectedResourceDetails.router_polling.egress.gateway ? <tr><th scope="row">Gateway</th><td><code>{selectedResourceDetails.router_polling.egress.gateway}</code></td></tr> : null}
+                                                </tbody></table> : selectedResourceDetails.configuration.request.egress_policy === "isolated" ? "Isolated" : selectedResourceDetails.configuration.request.egress_policy}</td></tr>
+                                                <tr><th scope="row">Proxmox state</th><td>{selectedResourceDetails.live_state ?? "unavailable"}</td></tr>
+                                                {selectedResourceDetails.configuration.request.router_vmid ? <tr><th scope="row">Router VM</th><td>{selectedResourceDetails.configuration.request.router_vmid}</td></tr> : null}
+                                            </tbody></table>
+                                        </div>
                                         {selectedResourceDetails.configuration.request.mode === "managed" && <section className="address-usage-section router-polling-section" aria-label="Router polling and configured static addresses">
                                             <div className="router-polling-heading"><h4><Router size={15} />Router Polling</h4><span className="router-polling-as-of">{selectedResourceDetails.router_polling?.state === "available" && selectedResourceDetails.router_polling.last_polled_at ? `As of ${new Date(selectedResourceDetails.router_polling.last_polled_at).toLocaleTimeString()}` : selectedResourceDetails.router_polling?.state === "unavailable" ? "Unavailable" : "Not configured"}</span></div>
                                             {selectedResourceDetails.router_polling?.state === "unavailable" ? <p className="router-polling-note">The configured router could not be queried.</p> : null}
-                                            {selectedResourceDetails.router_polling?.observed_addresses.length ? <div className="address-usage-scroll router-observed-addresses"><table className="address-usage-table"><thead><tr><th scope="col">Observed address</th><th scope="col">MAC</th><th scope="col">Name / source</th><th scope="col">Lease</th></tr></thead><tbody>
-                                                {selectedResourceDetails.router_polling.observed_addresses.map((entry) => {
-                                                    const guest = selectedDeployment?.resources.find((item) => item.id === entry.virtual_machine_id);
-                                                    return <tr key={`${entry.address}-${entry.mac ?? ""}`}>
-                                                        <td><code>{entry.address}</code></td>
-                                                        <td>{entry.mac || "—"}</td>
-                                                        <td>{guest ? <><button className="inline-link" type="button" onClick={() => { setSelectedSection("resources"); setSelectedResourceID(guest.id); }}>{entry.virtual_machine_name || guest.name} ({guest.id})</button>{entry.hostname ? ` · ${entry.hostname}` : ""}</> : entry.hostname || entry.source || "—"}</td>
-                                                        <td>{entry.lease_expires_at ? new Date(entry.lease_expires_at).toLocaleString() : entry.last_seen ? `Seen ${new Date(entry.last_seen).toLocaleString()}` : "—"}</td>
-                                                    </tr>;
-                                                })}
-                                            </tbody></table></div> : null}
-                                            <div className="router-static-addresses">
-                                                <h5>Organesson static addresses</h5>
-                                                {selectedResourceDetails.router_polling?.static_addresses.length ? <div className="address-usage-scroll"><table className="address-usage-table"><thead><tr><th scope="col">Address</th><th scope="col">Interface</th><th scope="col">VM</th></tr></thead><tbody>
-                                                    {selectedResourceDetails.router_polling.static_addresses.map((entry) => {
-                                                        const guest = selectedDeployment?.resources.find((item) => item.id === entry.virtual_machine_id);
-                                                        return <tr key={`${entry.network_attachment_id}-${entry.address}`}>
-                                                            <td><code>{entry.address}</code></td>
-                                                            <td>{entry.network_attachment} <span className="muted-resource-id">({entry.network_attachment_id})</span></td>
-                                                            <td>{guest ? <button className="inline-link" type="button" onClick={() => setSelectedResourceID(guest.id)}>{guest.name} ({guest.id})</button> : entry.virtual_machine ? `${entry.virtual_machine} (${entry.virtual_machine_id})` : "—"}</td>
-                                                        </tr>;
-                                                    })}
-                                                </tbody></table></div> : <p className="router-polling-empty">No Organesson-configured static addresses on this network.</p>}
+                                            <div className="address-usage-scroll router-addresses">
+                                                <table className="address-usage-table">
+                                                    <thead><tr><th scope="col">Address</th><th scope="col">MAC</th><th scope="col">VM</th><th scope="col">Lease</th></tr></thead>
+                                                    <tbody>
+                                                        {selectedNetworkAddresses.length ? selectedNetworkAddresses.map((entry) => {
+                                                            const guest = selectedDeployment?.resources.find((item) => item.id === entry.virtual_machine_id);
+                                                            const virtualMachineName = entry.virtual_machine_name || guest?.name;
+                                                            return <tr key={entry.address}>
+                                                                <td><code>{entry.address}</code></td>
+                                                                <td>{entry.mac || "—"}</td>
+                                                                <td>{guest ? <button className="inline-link" type="button" onClick={() => { setSelectedSection("resources"); setSelectedResourceID(guest.id); }}>{virtualMachineName || guest.name} ({guest.id})</button> : virtualMachineName ? `${virtualMachineName}${entry.virtual_machine_id ? ` (${entry.virtual_machine_id})` : ""}` : "—"}</td>
+                                                                <td>{entry.is_dhcp && entry.lease_expires_at ? new Date(entry.lease_expires_at).toLocaleString() : entry.is_dhcp ? "Active" : "—"}</td>
+                                                            </tr>;
+                                                        }) : <tr><td colSpan={4} className="router-polling-empty">No addresses reported or configured.</td></tr>}
+                                                    </tbody>
+                                                </table>
                                             </div>
                                         </section>}
                                     </section>}

@@ -25,12 +25,6 @@ resource "organesson_user_group" "teaching_staff" {
     members       = toset(["alice@organesson", "bob@organesson"])
 }
 
-resource "organesson_logical_group" "network_services" {
-    deployment_id = organesson_deployment.class_lab.id
-    name          = "network-services"
-    owner         = organesson_user_group.teaching_staff.id
-}
-
 resource "organesson_logical_group" "student_lab" {
     for_each = local.students
 

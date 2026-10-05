@@ -45,12 +45,19 @@ func TestInheritedGroupGrantsScopeViewsAndVMOperations(t *testing.T) {
 		t.Fatalf("create deployment: %v", err)
 	}
 	var studentOwner *db.OwnershipNode
-	if studentOwner, err = service.CreateLogicalGroup(admin.ID, deployment.ID, *deployment.RootNodeID, "student-lab"); err != nil {
+	if studentOwner, err = service.CreateLogicalGroup(admin.ID, deployment.ID, *deployment.RootNodeID, "student-lab", false); err != nil {
 		t.Fatalf("create student ownership group: %v", err)
 	}
 	var otherOwner *db.OwnershipNode
-	if otherOwner, err = service.CreateLogicalGroup(admin.ID, deployment.ID, *deployment.RootNodeID, "other-lab"); err != nil {
+	if otherOwner, err = service.CreateLogicalGroup(admin.ID, deployment.ID, *deployment.RootNodeID, "other-lab", false); err != nil {
 		t.Fatalf("create other ownership group: %v", err)
+	}
+	var internalOwner *db.OwnershipNode
+	if internalOwner, err = service.CreateLogicalGroup(admin.ID, deployment.ID, *deployment.RootNodeID, "network-router-implementation", true); err != nil {
+		t.Fatalf("create internal ownership group: %v", err)
+	}
+	if _, err = service.CreateLogicalGroup(student.ID, deployment.ID, *deployment.RootNodeID, "student-internal", true); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("non-administrator created an internal ownership group: %v", err)
 	}
 	var studentVM, otherVM *db.ManagedResource
 	if studentVM, err = service.CreateVirtualMachine(admin.ID, deployment.ID, studentOwner.ID, "student-fedora"); err != nil {
@@ -58,6 +65,10 @@ func TestInheritedGroupGrantsScopeViewsAndVMOperations(t *testing.T) {
 	}
 	if otherVM, err = service.CreateVirtualMachine(admin.ID, deployment.ID, otherOwner.ID, "other-fedora"); err != nil {
 		t.Fatalf("create other VM: %v", err)
+	}
+	var routerVM *db.ManagedResource
+	if routerVM, err = service.CreateVirtualMachine(admin.ID, deployment.ID, internalOwner.ID, "private-router"); err != nil {
+		t.Fatalf("create internal router VM: %v", err)
 	}
 
 	var accessGroup *db.UserGroup
@@ -82,6 +93,9 @@ func TestInheritedGroupGrantsScopeViewsAndVMOperations(t *testing.T) {
 	if _, err = service.CreatePermissionGrant(admin.ID, db.GrantSubjectKindAccount, deploymentViewer.ID, db.PermissionDeploymentView, *deployment.RootNodeID); err != nil {
 		t.Fatalf("grant deployment view: %v", err)
 	}
+	if _, err = service.CreatePermissionGrant(admin.ID, db.GrantSubjectKindAccount, deploymentViewer.ID, db.PermissionResourceView, *deployment.RootNodeID); err != nil {
+		t.Fatalf("grant deployment-wide resource view: %v", err)
+	}
 
 	var allowed bool
 	if allowed, err = service.Can(student.ID, db.PermissionResourcePower, studentVM.OwnershipID); err != nil || !allowed {
@@ -90,6 +104,9 @@ func TestInheritedGroupGrantsScopeViewsAndVMOperations(t *testing.T) {
 	if allowed, err = service.Can(student.ID, db.PermissionResourcePower, otherVM.OwnershipID); err != nil || allowed {
 		t.Fatalf("student should not access another lab: allowed=%t err=%v", allowed, err)
 	}
+	if allowed, err = service.Can(student.ID, db.PermissionResourceView, routerVM.OwnershipID); err != nil || allowed {
+		t.Fatalf("deployment-wide view must not expose internal router: allowed=%t err=%v", allowed, err)
+	}
 	if err = service.Require(outsider.ID, db.PermissionResourcePower, studentVM.OwnershipID); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("ungranted account should be denied: %v", err)
 	}
@@ -97,6 +114,11 @@ func TestInheritedGroupGrantsScopeViewsAndVMOperations(t *testing.T) {
 	var summary *DeploymentSummary
 	if summary, err = service.GetDeployment(student.ID, deployment.ID); err != nil {
 		t.Fatalf("student deployment view: %v", err)
+	}
+	for _, resource := range summary.Resources {
+		if resource.ID == routerVM.ID {
+			t.Fatal("internal router VM appeared in the student deployment summary")
+		}
 	}
 	if len(summary.Resources) != 1 || summary.Resources[0].ID != studentVM.ID {
 		t.Fatalf("deployment view should only include granted resource: %#v", summary.Resources)
@@ -156,6 +178,9 @@ func TestInheritedGroupGrantsScopeViewsAndVMOperations(t *testing.T) {
 	}
 	if len(staticAddresses) != 2 {
 		t.Fatalf("deployment viewer should see both addresses and VM links: %#v", staticAddresses)
+	}
+	if staticAddresses[0].MAC == "" || staticAddresses[1].MAC == "" {
+		t.Fatalf("static address records must identify their NIC MACs: %#v", staticAddresses)
 	}
 	var observed []proxmox.SDNRouterObservedAddress = []proxmox.SDNRouterObservedAddress{
 		{Address: "192.168.100.10", MAC: "02:00:00:00:00:10"},
@@ -237,6 +262,26 @@ func TestInheritedGroupGrantsScopeViewsAndVMOperations(t *testing.T) {
 	}
 	if len(events) < 5 {
 		t.Fatalf("expected audited resource and power operations, got %d events", len(events))
+	}
+	if summary, err = service.GetDeployment(deployment.CreatedByID, deployment.ID); err != nil {
+		t.Fatalf("administrator deployment view: %v", err)
+	}
+	var adminCanSeeRouter bool
+	for _, resource := range summary.Resources {
+		if resource.ID == routerVM.ID {
+			adminCanSeeRouter = true
+		}
+	}
+	if !adminCanSeeRouter {
+		t.Fatal("platform administrator should see the internal router VM")
+	}
+	if summary, err = service.GetDeployment(deploymentViewer.ID, deployment.ID); err != nil {
+		t.Fatalf("deployment-wide viewer summary: %v", err)
+	}
+	for _, resource := range summary.Resources {
+		if resource.ID == routerVM.ID {
+			t.Fatal("deployment-wide resource view exposed the internal router VM")
+		}
 	}
 }
 

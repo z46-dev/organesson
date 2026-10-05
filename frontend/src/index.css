@@ -1434,6 +1434,22 @@ h2 {
     padding: 21px;
 }
 
+.managed-network-panel {
+    container-type: inline-size;
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.managed-network-panel .typed-resource-details {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+}
+
 .vm-summary-panel {
     min-height: 0;
     overflow: hidden;
@@ -1751,6 +1767,79 @@ h2 {
     text-align: left;
 }
 
+.network-property-columns {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 0 16px;
+}
+
+.network-properties-table {
+    table-layout: fixed;
+}
+
+.network-properties-table th {
+    width: 38%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.network-properties-table td {
+    width: 62%;
+    overflow-wrap: anywhere;
+}
+
+.network-dhcp-value {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 9px;
+}
+
+.network-dhcp-value code,
+.network-egress-table code {
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+
+.network-egress-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: auto;
+}
+
+.network-egress-table th,
+.network-egress-table td {
+    padding: 3px 5px;
+    border-bottom: 1px solid var(--theme-border-soft);
+    font-size: 10px;
+    vertical-align: top;
+}
+
+.network-egress-table tr:last-child th,
+.network-egress-table tr:last-child td {
+    border-bottom: 0;
+}
+
+.network-egress-table th {
+    width: 78px;
+    color: var(--theme-muted);
+    font-weight: 550;
+    white-space: nowrap;
+}
+
+.network-egress-table td {
+    width: auto;
+    color: var(--theme-text);
+}
+
+@container (max-width: 760px) {
+    .network-property-columns {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0;
+    }
+}
+
 .address-properties-table th,
 .address-properties-table td,
 .address-usage-table th,
@@ -1817,6 +1906,14 @@ h2 {
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+    margin-bottom: 14px;
+}
+
+.router-polling-section {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
 }
 
 .router-polling-heading h4 {
@@ -1824,6 +1921,12 @@ h2 {
     align-items: center;
     gap: 7px;
     margin: 0;
+}
+
+.router-addresses {
+    min-height: 0;
+    flex: 1;
+    max-height: none;
 }
 
 .router-polling-as-of {
@@ -1836,26 +1939,6 @@ h2 {
     margin: 8px 0 0;
     color: var(--theme-muted);
     font-size: 12px;
-}
-
-.router-observed-addresses {
-    margin-top: 10px;
-}
-
-.router-static-addresses {
-    margin-top: 16px;
-}
-
-.router-static-addresses h5 {
-    margin: 0 0 8px;
-    color: var(--theme-muted);
-    font-size: 11px;
-    font-weight: 620;
-}
-
-.muted-resource-id {
-    color: var(--theme-muted);
-    white-space: nowrap;
 }
 
 .resource-live-state {
@@ -2472,6 +2555,11 @@ h2 {
 }
 
 @media (max-width: 800px) {
+    .network-property-columns {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0;
+    }
+
     .workspace-layout,
     .auth-layout {
         grid-template-columns: 1fr;

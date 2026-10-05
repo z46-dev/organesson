@@ -15,6 +15,8 @@ import (
 )
 
 const routerLeaseFile = "/var/lib/misc/dnsmasq.leases"
+const routerDHCPConfigFile = "/etc/dnsmasq.d/organesson-router.conf"
+const routerFirewallConfigFile = "/etc/nftables.conf"
 
 type (
 	apiSDNRouterPoller struct {
@@ -110,6 +112,13 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 		err = fmt.Errorf("router VM %d has no interface on managed VNet %q", request.RouterVMID, placement.VNet)
 		return
 	}
+	var bridgeByMAC map[string]string = make(map[string]string)
+	for _, value := range vm.VirtualMachineConfig.Nets {
+		var options map[string]string = networkOptionMap(value)
+		if options["macaddr"] != "" {
+			bridgeByMAC[strings.ToLower(options["macaddr"])] = options["bridge"]
+		}
+	}
 	var interfaces []*pve.AgentNetworkIface
 	if interfaces, err = vm.AgentGetNetworkIFaces(ctx); err != nil {
 		return
@@ -125,7 +134,44 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 		err = errors.New("QEMU Guest Agent did not report the configured router LAN interface")
 		return
 	}
+	var dhcpConfig *pve.AgentFileRead
+	if dhcpConfig, err = vm.AgentFileRead(ctx, routerDHCPConfigFile); err == nil && dhcpConfig != nil && !bool(dhcpConfig.Truncated) {
+		result.DHCPRangeStart, result.DHCPRangeEnd = parseRouterDHCPRange(dhcpConfig.Content)
+	} else {
+		err = nil
+	}
+	var firewallConfig *pve.AgentFileRead
+	if firewallConfig, err = vm.AgentFileRead(ctx, routerFirewallConfigFile); err == nil && firewallConfig != nil && !bool(firewallConfig.Truncated) {
+		var egressInterface string = parseRouterEgressInterface(firewallConfig.Content)
+		for _, iface := range interfaces {
+			if iface == nil || iface.Name != egressInterface {
+				continue
+			}
+			result.Egress = &SDNRouterEgress{
+				Interface: iface.Name, MAC: strings.ToLower(iface.HardwareAddress), Bridge: bridgeByMAC[strings.ToLower(iface.HardwareAddress)],
+				Addresses: routerInterfaceIPv4Addresses(iface),
+			}
+			var gatewayPID int
+			if gatewayPID, err = vm.AgentExec(ctx, []string{"ip", "-4", "route", "show", "default", "dev", iface.Name}, ""); err == nil {
+				var gatewayResult guestAgentExecStatus
+				if gatewayResult, err = waitForGuestExecExit(ctx, driver.settings, vm.Node, request.RouterVMID, gatewayPID, 15); err == nil && gatewayResult.ExitCode == 0 {
+					result.Egress.Gateway = parseRouterDefaultGateway(gatewayResult.OutData)
+				}
+			}
+			err = nil
+			break
+		}
+	} else {
+		err = nil
+	}
 	var observed map[string]SDNRouterObservedAddress = make(map[string]SDNRouterObservedAddress)
+	for _, iface := range interfaces {
+		if iface == nil || iface.Name != lanInterface {
+			continue
+		}
+		mergeRouterInterfaceAddresses(observed, iface, request.Subnet)
+		break
+	}
 	var leaseFile *pve.AgentFileRead
 	if leaseFile, err = vm.AgentFileRead(ctx, routerLeaseFile); err == nil && leaseFile != nil && !bool(leaseFile.Truncated) {
 		mergeRouterLeases(observed, leaseFile.Content, request.Subnet)
@@ -152,6 +198,90 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 	result.State = "available"
 	result.LastPolledAt = time.Now().UTC()
 	return
+}
+
+// parseRouterDHCPRange extracts the configured start and end hosts from dnsmasq settings.
+func parseRouterDHCPRange(content string) (start string, end string) {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "dhcp-range=") {
+			continue
+		}
+		var fields []string = strings.Split(strings.TrimPrefix(line, "dhcp-range="), ",")
+		if len(fields) >= 2 {
+			start = strings.TrimSpace(fields[0])
+			end = strings.TrimSpace(fields[1])
+		}
+		return
+	}
+	return
+}
+
+// parseRouterEgressInterface finds the NAT uplink named by the router's nftables configuration.
+func parseRouterEgressInterface(content string) (name string) {
+	for _, line := range strings.Split(content, "\n") {
+		var fields []string = strings.Fields(line)
+		for index, field := range fields {
+			if field == "oifname" && index+1 < len(fields) && strings.Contains(line, "masquerade") {
+				name = strings.Trim(fields[index+1], "\"'")
+				return
+			}
+		}
+	}
+	return
+}
+
+// routerInterfaceIPv4Addresses returns usable IPv4 CIDRs reported by QEMU Guest Agent.
+func routerInterfaceIPv4Addresses(iface *pve.AgentNetworkIface) (addresses []string) {
+	if iface == nil {
+		return
+	}
+	for _, address := range iface.IPAddresses {
+		if address == nil || address.IPAddressType != "ipv4" {
+			continue
+		}
+		addresses = append(addresses, fmt.Sprintf("%s/%d", address.IPAddress, address.Prefix))
+	}
+	return
+}
+
+// parseRouterDefaultGateway extracts the default route's next hop for one egress NIC.
+func parseRouterDefaultGateway(content string) (gateway string) {
+	for _, line := range strings.Split(content, "\n") {
+		var fields []string = strings.Fields(line)
+		for index, field := range fields {
+			if field == "via" && index+1 < len(fields) {
+				gateway = fields[index+1]
+				return
+			}
+		}
+	}
+	return
+}
+
+// mergeRouterInterfaceAddresses includes the router's own configured LAN addresses and MAC.
+func mergeRouterInterfaceAddresses(observed map[string]SDNRouterObservedAddress, iface *pve.AgentNetworkIface, subnet string) {
+	var prefix netip.Prefix
+	if iface == nil {
+		return
+	}
+	if prefix, _ = netip.ParsePrefix(subnet); !prefix.IsValid() {
+		return
+	}
+	for _, ip := range iface.IPAddresses {
+		if ip == nil {
+			continue
+		}
+		var address netip.Addr
+		if address, _ = netip.ParseAddr(ip.IPAddress); !address.IsValid() || !prefix.Contains(address) {
+			continue
+		}
+		var entry SDNRouterObservedAddress = observed[address.String()]
+		entry.Address = address.String()
+		entry.MAC = strings.ToLower(iface.HardwareAddress)
+		entry.Source = mergeRouterSource(entry.Source, "interface")
+		observed[entry.Address] = entry
+	}
 }
 
 // mergeRouterLeases parses dnsmasq's standard lease-file records within the managed subnet.
@@ -203,12 +333,17 @@ func mergeRouterNeighbors(observed map[string]SDNRouterObservedAddress, content 
 			continue
 		}
 		var entry SDNRouterObservedAddress = observed[address.String()]
-		entry.Address = address.String()
+		var hasMAC bool
 		for index, field := range fields {
 			if field == "lladdr" && index+1 < len(fields) {
 				entry.MAC = strings.ToLower(fields[index+1])
+				hasMAC = true
 			}
 		}
+		if !hasMAC && entry.MAC == "" {
+			continue
+		}
+		entry.Address = address.String()
 		entry.Source = mergeRouterSource(entry.Source, "neighbor")
 		observed[entry.Address] = entry
 	}

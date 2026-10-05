@@ -212,6 +212,7 @@ const (
 	OwnershipNodeKindDeployment OwnershipNodeKind = iota
 	OwnershipNodeKindGroup
 	OwnershipNodeKindResource
+	OwnershipNodeKindInternal
 )
 
 const (

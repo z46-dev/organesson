@@ -67,7 +67,19 @@ type (
 		State             string                     `json:"state"`
 		RouterVMID        int                        `json:"router_vmid,omitempty"`
 		LastPolledAt      time.Time                  `json:"last_polled_at,omitempty"`
+		DHCPRangeStart    string                     `json:"dhcp_range_start,omitempty"`
+		DHCPRangeEnd      string                     `json:"dhcp_range_end,omitempty"`
+		Egress            *SDNRouterEgress           `json:"egress,omitempty"`
 		ObservedAddresses []SDNRouterObservedAddress `json:"observed_addresses"`
+	}
+
+	// SDNRouterEgress describes the router's configured NAT uplink as observed in the guest.
+	SDNRouterEgress struct {
+		Interface string   `json:"interface"`
+		MAC       string   `json:"mac,omitempty"`
+		Bridge    string   `json:"bridge,omitempty"`
+		Addresses []string `json:"addresses,omitempty"`
+		Gateway   string   `json:"gateway,omitempty"`
 	}
 
 	SDNRouterPoller interface {

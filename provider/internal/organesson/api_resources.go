@@ -204,7 +204,7 @@ func addressPoolRequestOperations() (operations remoteResourceOperations) {
 }
 
 // networkOperations manages isolated Proxmox SDN resources through Organesson.
-func networkOperations() (operations remoteResourceOperations) {
+func networkOperations(mode string) (operations remoteResourceOperations) {
 	operations.Create = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
 		var parentID string
 		var deploymentID string
@@ -236,7 +236,7 @@ func networkOperations() (operations remoteResourceOperations) {
 		}
 		var result networkResult
 		err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+deploymentID+"/networks", map[string]any{
-			"parent_node_id": parentNodeID, "name": data.Get("name").(string), "mode": data.Get("mode").(string),
+			"parent_node_id": parentNodeID, "name": data.Get("name").(string), "mode": mode,
 			"ipv4_subnet": data.Get("ipv4_subnet").(string), "ipv4_gateway": data.Get("ipv4_gateway").(string),
 			"dhcp_enabled": data.Get("dhcp_enabled").(bool), "egress_policy": data.Get("egress_policy").(string),
 			"router_vmid": data.Get("router_vmid").(int),
@@ -261,7 +261,6 @@ func networkOperations() (operations remoteResourceOperations) {
 		err = client.request(ctx, http.MethodGet, "/api/v1/networks/"+id, nil, &result)
 		if err == nil {
 			_ = data.Set("name", result.Resource.Name)
-			_ = data.Set("mode", result.Configuration.Request.Mode)
 			_ = data.Set("ipv4_subnet", result.Configuration.Request.Subnet)
 			_ = data.Set("ipv4_gateway", result.Configuration.Request.Gateway)
 			_ = data.Set("dhcp_enabled", result.Configuration.Request.DHCPEnabled)
@@ -465,6 +464,16 @@ func deploymentOperations() (operations remoteResourceOperations) {
 
 // logicalGroupOperations supplies remote ownership-node operations.
 func logicalGroupOperations() (operations remoteResourceOperations) {
+	return createLogicalGroupOperations(false)
+}
+
+// internalGroupOperations creates an administrator-only ownership branch.
+func internalGroupOperations() (operations remoteResourceOperations) {
+	return createLogicalGroupOperations(true)
+}
+
+// createLogicalGroupOperations supplies lifecycle operations for visible and internal groups.
+func createLogicalGroupOperations(internal bool) (operations remoteResourceOperations) {
 	operations.Create = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
 		var deploymentID string
 		if deploymentID, err = remoteID(data.Get("deployment_id").(string)); err != nil {
@@ -474,6 +483,7 @@ func logicalGroupOperations() (operations remoteResourceOperations) {
 		err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+deploymentID+"/logical-groups", map[string]any{
 			"name":           data.Get("name").(string),
 			"parent_node_id": data.Get("parent_node_id").(int),
+			"internal":       internal,
 		}, &result)
 		if err != nil {
 			return

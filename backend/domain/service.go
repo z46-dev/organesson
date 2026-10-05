@@ -197,7 +197,7 @@ func (service *Service) UpdateDeployment(actorID int, deploymentID int, name str
 }
 
 // CreateLogicalGroup adds a child ownership node to a deployment's resource tree.
-func (service *Service) CreateLogicalGroup(actorID int, deploymentID int, parentNodeID int, name string) (node *db.OwnershipNode, err error) {
+func (service *Service) CreateLogicalGroup(actorID int, deploymentID int, parentNodeID int, name string, internal bool) (node *db.OwnershipNode, err error) {
 	var parent *db.OwnershipNode
 	if parent, err = service.store.OwnershipNodes.Select(parentNodeID); err != nil {
 		return
@@ -208,6 +208,16 @@ func (service *Service) CreateLogicalGroup(actorID int, deploymentID int, parent
 	}
 	if err = service.Require(actorID, db.PermissionDeploymentManage, parentNodeID); err != nil {
 		return
+	}
+	if internal {
+		var actor *db.Account
+		if actor, err = service.store.Accounts.Select(actorID); err != nil {
+			return
+		}
+		if actor == nil || !actor.PlatformAdministrator {
+			err = ErrForbidden
+			return
+		}
 	}
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > 128 || parent.Kind == db.OwnershipNodeKindResource {
@@ -221,6 +231,9 @@ func (service *Service) CreateLogicalGroup(actorID int, deploymentID int, parent
 		Kind:         db.OwnershipNodeKindGroup,
 		Name:         name,
 		CreatedAt:    service.now(),
+	}
+	if internal {
+		node.Kind = db.OwnershipNodeKindInternal
 	}
 	if err = service.store.OwnershipNodes.Insert(node); err != nil {
 		return
@@ -338,7 +351,7 @@ func (service *Service) DeleteLogicalGroup(actorID int, nodeID int) (err error) 
 	if node, err = service.store.OwnershipNodes.Select(nodeID); err != nil {
 		return
 	}
-	if node == nil || node.Kind != db.OwnershipNodeKindGroup {
+	if node == nil || node.Kind != db.OwnershipNodeKindGroup && node.Kind != db.OwnershipNodeKindInternal {
 		err = ErrNotFound
 		return
 	}
@@ -525,6 +538,9 @@ func (service *Service) Can(actorID int, permission string, targetNodeID int) (a
 			return
 		}
 		visited[current.ID] = struct{}{}
+		if current.Kind == db.OwnershipNodeKindInternal {
+			return
+		}
 		for _, grant := range grants {
 			if grant.TargetNodeID != current.ID || grant.Permission != permission {
 				continue
@@ -551,6 +567,24 @@ func (service *Service) Can(actorID int, permission string, targetNodeID int) (a
 				err = errors.New("ownership tree has a missing parent")
 				return
 			}
+		}
+	}
+	return
+}
+
+// hasInternalAncestor identifies platform-owned implementation branches in a deployment tree.
+func (service *Service) hasInternalAncestor(node *db.OwnershipNode, nodesByID map[int]*db.OwnershipNode) (internal bool) {
+	var visited map[int]struct{} = make(map[int]struct{})
+	for node != nil {
+		if _, exists := visited[node.ID]; exists || node.Kind == db.OwnershipNodeKindInternal {
+			internal = true
+			return
+		}
+		visited[node.ID] = struct{}{}
+		if node.ParentID == nil {
+			node = nil
+		} else {
+			node = nodesByID[*node.ParentID]
 		}
 	}
 	return
@@ -631,6 +665,14 @@ func (service *Service) GetDeployment(actorID int, deploymentID int) (summary *D
 	if summary.CanManagePermissions, err = service.Can(actorID, db.PermissionDeploymentManagePermissions, *deployment.RootNodeID); err != nil {
 		return
 	}
+	var ownershipNodes []*db.OwnershipNode
+	if ownershipNodes, err = service.store.OwnershipNodes.SelectAll(); err != nil {
+		return
+	}
+	var nodesByID map[int]*db.OwnershipNode = make(map[int]*db.OwnershipNode, len(ownershipNodes))
+	for _, node := range ownershipNodes {
+		nodesByID[node.ID] = node
+	}
 	var resources []*db.ManagedResource
 	var visibleOwnershipIDs map[int]struct{} = make(map[int]struct{})
 	if resources, err = service.store.ManagedResources.SelectAll(); err != nil {
@@ -640,7 +682,7 @@ func (service *Service) GetDeployment(actorID int, deploymentID int) (summary *D
 		if resource.DeploymentID != deploymentID {
 			continue
 		}
-		var visible bool = deploymentAllowed
+		var visible bool = deploymentAllowed && !service.hasInternalAncestor(nodesByID[resource.OwnershipID], nodesByID)
 		if !visible {
 			if visible, err = service.Can(actorID, db.PermissionResourceView, resource.OwnershipID); err != nil {
 				return
@@ -673,19 +715,12 @@ func (service *Service) GetDeployment(actorID int, deploymentID int) (summary *D
 			visibleOwnershipIDs[resource.OwnershipID] = struct{}{}
 		}
 	}
-	var ownershipNodes []*db.OwnershipNode
-	if ownershipNodes, err = service.store.OwnershipNodes.SelectAll(); err != nil {
-		return
-	}
-	var nodeByID map[int]*db.OwnershipNode = make(map[int]*db.OwnershipNode)
-	for _, node := range ownershipNodes {
-		if node.DeploymentID == deploymentID {
-			nodeByID[node.ID] = node
-		}
-	}
+	var nodeByID map[int]*db.OwnershipNode = nodesByID
 	if deploymentAllowed {
 		for _, node := range nodeByID {
-			summary.OwnershipNodes = append(summary.OwnershipNodes, node)
+			if node.DeploymentID == deploymentID && !service.hasInternalAncestor(node, nodeByID) {
+				summary.OwnershipNodes = append(summary.OwnershipNodes, node)
+			}
 		}
 	} else {
 		for ownershipID := range visibleOwnershipIDs {
@@ -703,7 +738,7 @@ func (service *Service) GetDeployment(actorID int, deploymentID int) (summary *D
 			}
 		}
 		for ownershipID := range visibleOwnershipIDs {
-			if node := nodeByID[ownershipID]; node != nil {
+			if node := nodeByID[ownershipID]; node != nil && !service.hasInternalAncestor(node, nodeByID) {
 				summary.OwnershipNodes = append(summary.OwnershipNodes, node)
 			}
 		}
@@ -817,8 +852,12 @@ func (service *Service) GetDeploymentAccess(actorID int, deploymentID int) (acce
 		}
 		var nodeByID map[int]*db.OwnershipNode = make(map[int]*db.OwnershipNode)
 		var groupByID map[int]*db.UserGroup = make(map[int]*db.UserGroup)
+		var allNodesByID map[int]*db.OwnershipNode = make(map[int]*db.OwnershipNode, len(nodes))
 		for _, node := range nodes {
-			if node.DeploymentID == deploymentID {
+			allNodesByID[node.ID] = node
+		}
+		for _, node := range nodes {
+			if node.DeploymentID == deploymentID && !service.hasInternalAncestor(node, allNodesByID) {
 				access.OwnershipNodes = append(access.OwnershipNodes, node)
 				nodeByID[node.ID] = node
 			}

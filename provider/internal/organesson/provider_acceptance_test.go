@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +27,27 @@ import (
 	"github.com/z46-dev/organesson/backend/domain"
 	"github.com/z46-dev/organesson/backend/proxmox"
 )
+
+func TestProviderSeparatesManagedAndUnmanagedNetworkDefinitions(t *testing.T) {
+	var provider *schema.Provider = Provider()
+	var managed *schema.Resource = provider.ResourcesMap["organesson_managed_network"]
+	var unmanaged *schema.Resource = provider.ResourcesMap["organesson_unmanaged_network"]
+	if managed == nil || unmanaged == nil {
+		t.Fatal("provider does not expose both explicit network resource types")
+	}
+	if _, exists := managed.Schema["mode"]; exists {
+		t.Fatal("managed network requires an unnecessary mode selector")
+	}
+	if _, exists := unmanaged.Schema["mode"]; exists {
+		t.Fatal("unmanaged network requires an unnecessary mode selector")
+	}
+	if _, exists := provider.ResourcesMap["organesson_internal_group"]; exists {
+		t.Fatal("provider should keep internal ownership groups inside composite resources")
+	}
+	if _, exists := provider.ResourcesMap["organesson_router"]; exists {
+		t.Fatal("provider should keep router provisioning inside organesson_managed_network")
+	}
+}
 
 func TestGuestSetupProviderUploadsOnlyVerifiedArtifactDuringApply(t *testing.T) {
 	var sourceDirectory string = t.TempDir()
@@ -73,6 +96,112 @@ func TestGuestSetupProviderUploadsOnlyVerifiedArtifactDuringApply(t *testing.T) 
 	}
 	if diagnostics := resource.ReadContext(context.Background(), data, client); diagnostics.HasError() || requestCount.Load() != 1 {
 		t.Fatalf("refresh reran one-shot guest setup: diagnostics=%v calls=%d", diagnostics, requestCount.Load())
+	}
+}
+
+// TestManagedNetworkOwnsRouterLifecycle verifies one resource creates and destroys its complete router stack.
+func TestManagedNetworkOwnsRouterLifecycle(t *testing.T) {
+	var calls []string
+	var server *httptest.Server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var body []byte
+		var err error
+		if body, err = io.ReadAll(request.Body); err != nil {
+			t.Errorf("read %s %s body: %v", request.Method, request.URL.Path, err)
+		}
+		calls = append(calls, request.Method+" "+request.URL.Path)
+		response.Header().Set("Content-Type", "application/json")
+		switch request.Method + " " + request.URL.Path {
+		case "GET /api/v1/deployments/1":
+			_, _ = response.Write([]byte(`{"deployment":{"id":1,"root_node_id":10}}`))
+		case "POST /api/v1/deployments/1/logical-groups":
+			_, _ = response.Write([]byte(`{"ownership_node":{"id":11,"deployment_id":1,"parent_id":10,"name":"demo-router"}}`))
+		case "POST /api/v1/deployments/1/virtual-machines":
+			var payload map[string]any
+			_ = json.Unmarshal(body, &payload)
+			if payload["provisioning_mode"] != "proxmox" || payload["parent_node_id"] != float64(11) || payload["template"] != "router-template" {
+				t.Errorf("router VM create did not use the internal group and requested template: %#v", payload)
+			}
+			_, _ = response.Write([]byte(`{"resource":{"id":12,"ownership_id":11,"external_id":"9001","external_node":"tungsten","name":"demo-router","power_state":"running"}}`))
+		case "POST /api/v1/deployments/1/networks":
+			var payload map[string]any
+			_ = json.Unmarshal(body, &payload)
+			if payload["router_vmid"] != float64(9001) || payload["mode"] != "managed" {
+				t.Errorf("managed network did not reference its router: %#v", payload)
+			}
+			_, _ = response.Write([]byte(`{"resource":{"id":13,"ownership_id":10,"external_id":"vnet-demo","external_node":"ogvxlan","name":"demo","power_state":"ready"},"configuration":{"request":{"name":"demo","mode":"managed","subnet":"192.168.44.0/24","gateway":"192.168.44.1","dhcp_enabled":true,"egress_policy":"isolated","router_vmid":9001}}}`))
+		case "POST /api/v1/virtual-machines/12/network-attachments":
+			var payload map[string]any
+			_ = json.Unmarshal(body, &payload)
+			if payload["name"] == "lan" {
+				_, _ = response.Write([]byte(`{"resource":{"id":14,"name":"lan"},"configuration":{"placement":{"device":"net0","mac":"02:00:00:00:00:14"}}}`))
+				return
+			}
+			if payload["name"] != "egress" || payload["address_pool_request_id"] != float64(20) || payload["requested_address_count"] != float64(1) {
+				t.Errorf("static WAN attachment did not use its reservation: %#v", payload)
+			}
+			_, _ = response.Write([]byte(`{"resource":{"id":15,"name":"egress"},"configuration":{"addresses":["10.192.0.7"],"address_prefix":"10.0.0.0/8","address_gateway":"10.0.0.1","address_dns":["10.0.0.2"],"placement":{"device":"net1","mac":"02:00:00:00:00:15"}}}`))
+		case "GET /api/v1/network-attachments/14", "GET /api/v1/network-attachments/15":
+			var attachmentID string = strings.TrimPrefix(request.URL.Path, "/api/v1/network-attachments/")
+			var mac string = "02:00:00:00:00:14"
+			if attachmentID == "15" {
+				mac = "02:00:00:00:00:15"
+			}
+			_, _ = fmt.Fprintf(response, `{"resource":{"id":%s},"configuration":{"placement":{"mac":%q}}}`, attachmentID, mac)
+		case "POST /api/v1/network-attachments/14/guest-network-configuration":
+			var payload map[string]any
+			_ = json.Unmarshal(body, &payload)
+			if payload["ipv4_method"] != "static" || payload["ipv4_address"] != "192.168.44.1/24" {
+				t.Errorf("LAN guest config is not the requested static gateway: %#v", payload)
+			}
+			response.WriteHeader(http.StatusNoContent)
+		case "POST /api/v1/network-attachments/15/guest-network-configuration":
+			var payload map[string]any
+			_ = json.Unmarshal(body, &payload)
+			if payload["ipv4_method"] != "static" || payload["ipv4_address"] != "10.192.0.7/8" || payload["ipv4_gateway"] != "10.0.0.1" {
+				t.Errorf("WAN guest config did not preserve source network addressing: %#v", payload)
+			}
+			response.WriteHeader(http.StatusNoContent)
+		case "POST /api/v1/virtual-machines/12/guest-setup":
+			if request.Header.Get("Content-Type") != "application/vnd.organesson.artifact+gzip" || len(body) == 0 {
+				t.Errorf("router configuration package was not uploaded")
+			}
+			_, _ = response.Write([]byte(fmt.Sprintf(`{"execution":{"sha256":%q,"status":"succeeded","exit_code":0}}`, request.Header.Get("X-Organesson-Artifact-SHA256"))))
+		case "GET /api/v1/networks/13":
+			_, _ = response.Write([]byte(`{"resource":{"id":13,"external_id":"vnet-demo","external_node":"ogvxlan","name":"demo","power_state":"ready"},"configuration":{"request":{"subnet":"192.168.44.0/24","gateway":"192.168.44.1","router_vmid":9001}}}`))
+		case "DELETE /api/v1/network-attachments/15/guest-network-configuration", "DELETE /api/v1/network-attachments/15", "DELETE /api/v1/network-attachments/14/guest-network-configuration", "DELETE /api/v1/network-attachments/14", "DELETE /api/v1/networks/13", "DELETE /api/v1/virtual-machines/12", "DELETE /api/v1/ownership-nodes/11":
+			response.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected API request: %s %s", request.Method, request.URL.Path)
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	var client *apiClient
+	var err error
+	if client, err = configuredClient(server.URL, "test-token"); err != nil {
+		t.Fatal(err)
+	}
+	var resource *schema.Resource = resourceManagedNetwork()
+	var data *schema.ResourceData = schema.TestResourceDataRaw(t, resource.Schema, map[string]interface{}{
+		"deployment_id": "1", "name": "demo", "ipv4_subnet": "192.168.44.0/24", "ipv4_gateway": "192.168.44.1",
+		"dhcp_start": "192.168.44.30", "dhcp_end": "192.168.44.40", "dns_servers": []interface{}{"192.168.44.1"},
+		"router_template": "router-template", "router_pool": "organesson", "router_storage": "laas", "egress_enabled": true,
+		"egress_environment_network": "cyber.lab", "egress_address_pool_request_id": "20", "egress_ipv4_method": "static",
+	})
+	if diagnostics := resource.CreateContext(context.Background(), data, client); diagnostics.HasError() {
+		t.Fatalf("managed network create failed: %v", diagnostics)
+	}
+	if data.Id() != "13" || data.Get("router_vmid") != 9001 || data.Get("lan_attachment_id") != "14" || data.Get("egress_attachment_id") != "15" {
+		t.Fatalf("managed router identifiers were not recorded: id=%q router=%v lan=%v wan=%v", data.Id(), data.Get("router_vmid"), data.Get("lan_attachment_id"), data.Get("egress_attachment_id"))
+	}
+	if diagnostics := resource.ReadContext(context.Background(), data, client); diagnostics.HasError() || data.Get("proxmox_vnet") != "vnet-demo" {
+		t.Fatalf("managed network refresh failed: %v", diagnostics)
+	}
+	if diagnostics := resource.DeleteContext(context.Background(), data, client); diagnostics.HasError() || data.Id() != "" {
+		t.Fatalf("managed network destroy failed: %v", diagnostics)
+	}
+	if len(calls) != 20 {
+		t.Fatalf("expected complete router create/read/destroy sequence; got %d calls: %v", len(calls), calls)
 	}
 }
 
@@ -168,13 +297,14 @@ func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {
 	if addressRequest.Get("pool_name") != "test-pool" || len(addressRequest.Get("addresses").([]interface{})) != 2 {
 		t.Fatalf("address allocation was not refreshed into provider state: %#v", addressRequest.Get("addresses"))
 	}
-	var network *schema.ResourceData = schema.TestResourceDataRaw(t, provider.ResourcesMap["organesson_network"].Schema, map[string]interface{}{
-		"deployment_id": deployment.Id(), "name": "shared-lan", "mode": "managed", "ipv4_subnet": "192.168.100.0/24",
+	var networkResource *schema.Resource = resourceNetworkMode("managed")
+	var network *schema.ResourceData = schema.TestResourceDataRaw(t, networkResource.Schema, map[string]interface{}{
+		"deployment_id": deployment.Id(), "name": "shared-lan", "ipv4_subnet": "192.168.100.0/24",
 		"ipv4_gateway": "192.168.100.1", "dhcp_enabled": true, "egress_policy": "isolated",
 		"router_vmid": 158,
 	})
-	createRemoteResource(t, ctx, provider.ResourcesMap["organesson_network"], network, client)
-	readRemoteResource(t, ctx, provider.ResourcesMap["organesson_network"], network, client)
+	createRemoteResource(t, ctx, networkResource, network, client)
+	readRemoteResource(t, ctx, networkResource, network, client)
 	if network.Get("proxmox_vnet") == "" || network.Get("power_state") != "ready" || network.Get("router_vmid") != 158 || networkDriver.request.RouterVMID != 158 {
 		t.Fatalf("network refresh did not restore Proxmox placement: %#v", network.Get("proxmox_vnet"))
 	}
@@ -242,7 +372,7 @@ func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {
 	deleteRemoteResource(t, ctx, provider.ResourcesMap["organesson_permission_grant"], charliePower, client)
 	deleteRemoteResource(t, ctx, provider.ResourcesMap["organesson_permission_grant"], charlieView, client)
 	deleteRemoteResource(t, ctx, provider.ResourcesMap["organesson_address_pool_request"], addressRequest, client)
-	deleteRemoteResource(t, ctx, provider.ResourcesMap["organesson_network"], network, client)
+	deleteRemoteResource(t, ctx, networkResource, network, client)
 	if !networkDriver.deleted {
 		t.Fatal("network destroy did not call the Proxmox SDN driver")
 	}

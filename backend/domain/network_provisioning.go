@@ -16,6 +16,7 @@ type (
 	// StaticNetworkAddress describes a guest address explicitly configured through Organesson.
 	StaticNetworkAddress struct {
 		Address             string `json:"address"`
+		MAC                 string `json:"mac,omitempty"`
 		NetworkAttachmentID int    `json:"network_attachment_id"`
 		NetworkAttachment   string `json:"network_attachment"`
 		VirtualMachineID    int    `json:"virtual_machine_id,omitempty"`
@@ -199,7 +200,7 @@ func (service *Service) ListNetworkStaticAddresses(actorID int, network *db.Mana
 			continue
 		}
 		var address StaticNetworkAddress = StaticNetworkAddress{
-			Address: configuration.GuestNetwork.Address, NetworkAttachmentID: resource.ID,
+			Address: configuration.GuestNetwork.Address, MAC: strings.ToLower(configuration.Placement.MAC), NetworkAttachmentID: resource.ID,
 			NetworkAttachment: resource.Name,
 		}
 		var vm *db.ManagedResource
@@ -217,6 +218,30 @@ func (service *Service) ListNetworkStaticAddresses(actorID int, network *db.Mana
 			}
 		}
 		addresses = append(addresses, address)
+	}
+	return
+}
+
+// FilterStaleRouterLeases drops DHCP leases superseded by a static address on the same NIC.
+func FilterStaleRouterLeases(staticAddresses []StaticNetworkAddress, observed []proxmox.SDNRouterObservedAddress) (filtered []proxmox.SDNRouterObservedAddress) {
+	var staticByMAC map[string]map[string]bool = make(map[string]map[string]bool)
+	for _, address := range staticAddresses {
+		var mac string = strings.ToLower(strings.TrimSpace(address.MAC))
+		if mac == "" {
+			continue
+		}
+		if staticByMAC[mac] == nil {
+			staticByMAC[mac] = make(map[string]bool)
+		}
+		staticByMAC[mac][strings.Split(address.Address, "/")[0]] = true
+	}
+	for _, address := range observed {
+		if strings.Contains(address.Source, "lease") {
+			if len(staticByMAC[strings.ToLower(strings.TrimSpace(address.MAC))]) > 0 {
+				continue
+			}
+		}
+		filtered = append(filtered, address)
 	}
 	return
 }

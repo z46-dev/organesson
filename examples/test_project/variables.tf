@@ -1,9 +1,3 @@
-variable "proxmox_test_deployment" {
-    type        = bool
-    default     = false
-    description = "Provision the complete Alice/Bob/Charlie/Dave Proxmox lab topology."
-}
-
 variable "cyber_environment_network" {
     type        = string
     default     = "cyber.lab"

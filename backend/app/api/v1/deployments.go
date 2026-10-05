@@ -66,6 +66,7 @@ type (
 	createLogicalGroupRequest struct {
 		ParentNodeID int    `json:"parent_node_id"`
 		Name         string `json:"name"`
+		Internal     bool   `json:"internal"`
 	}
 
 	createUserGroupRequest struct {
@@ -392,6 +393,14 @@ func getNetworkHandler(services common.Services) (handler fiber.Handler) {
 		var routerPolling proxmox.SDNRouterPollingResult = proxmox.SDNRouterPollingResult{
 			State: "not_configured", ObservedAddresses: []proxmox.SDNRouterObservedAddress{},
 		}
+		if configuration.Request.Mode == "managed" {
+			if staticAddresses, err = services.Domain.ListNetworkStaticAddresses(actorID, resource); err != nil {
+				return common.DomainError(ctx, err)
+			}
+			if staticAddresses == nil {
+				staticAddresses = []domain.StaticNetworkAddress{}
+			}
+		}
 		if services.Proxmox != nil && services.Proxmox.Configured() {
 			if err = services.Proxmox.ReadSDNNetwork(ctx, configuration.Request, configuration.Placement); err == nil {
 				liveState = "verified"
@@ -405,20 +414,23 @@ func getNetworkHandler(services common.Services) (handler fiber.Handler) {
 				if routerPolling.ObservedAddresses, err = services.Domain.LinkObservedNetworkAddresses(actorID, resource, routerPolling.ObservedAddresses); err != nil {
 					return common.DomainError(ctx, err)
 				}
+				routerPolling.ObservedAddresses = domain.FilterStaleRouterLeases(staticAddresses, routerPolling.ObservedAddresses)
 			}
 		}
-		if configuration.Request.Mode == "managed" {
-			if staticAddresses, err = services.Domain.ListNetworkStaticAddresses(actorID, resource); err != nil {
-				return common.DomainError(ctx, err)
-			}
-			if staticAddresses == nil {
-				staticAddresses = []domain.StaticNetworkAddress{}
-			}
+		var actor *db.Account
+		if actor, err = services.Store.Accounts.Select(actorID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if actor == nil || !actor.PlatformAdministrator {
+			configuration.Request.RouterVMID = 0
+			routerPolling.RouterVMID = 0
 		}
 		err = ctx.JSON(fiber.Map{
 			"resource": resource, "configuration": configuration, "live_state": liveState,
 			"router_polling": fiber.Map{
 				"state": routerPolling.State, "router_vmid": routerPolling.RouterVMID,
+				"dhcp_range_start": routerPolling.DHCPRangeStart, "dhcp_range_end": routerPolling.DHCPRangeEnd,
+				"egress":         routerPolling.Egress,
 				"last_polled_at": routerPolling.LastPolledAt, "observed_addresses": routerPolling.ObservedAddresses,
 				"static_addresses": staticAddresses,
 			},
@@ -554,7 +566,7 @@ func createLogicalGroup(services common.Services) (handler fiber.Handler) {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "A valid ownership parent is required."})
 		}
 		var node *db.OwnershipNode
-		if node, err = services.Domain.CreateLogicalGroup(accountID, deploymentID, request.ParentNodeID, request.Name); err != nil {
+		if node, err = services.Domain.CreateLogicalGroup(accountID, deploymentID, request.ParentNodeID, request.Name, request.Internal); err != nil {
 			return common.DomainError(ctx, err)
 		}
 		err = ctx.Status(fiber.StatusCreated).JSON(fiber.Map{"ownership_node": node})

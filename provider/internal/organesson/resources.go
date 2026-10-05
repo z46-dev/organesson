@@ -38,6 +38,18 @@ func resourceLogicalGroup() (resource *schema.Resource) {
 	return
 }
 
+// resourceInternalGroup defines a platform-owned branch hidden from deployment users.
+func resourceInternalGroup() (resource *schema.Resource) {
+	resource = apiResource(map[string]*schema.Schema{
+		"deployment_id":  {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Parent deployment identifier."},
+		"name":           {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Platform-owned implementation group name."},
+		"parent_node_id": {Type: schema.TypeInt, Optional: true, Computed: true, ForceNew: true, Description: "Parent ownership node; defaults to the deployment root."},
+		"summary":        summarySchema(),
+	}, internalGroupOperations())
+
+	return
+}
+
 // resourceUserGroup defines a deployment-local group of Organesson-resolved users.
 func resourceUserGroup() (resource *schema.Resource) {
 	resource = apiResource(map[string]*schema.Schema{
@@ -75,9 +87,9 @@ func resourcePermissionGrant() (resource *schema.Resource) {
 	return
 }
 
-// resourceNetwork defines a virtual network owned by one deployment or logical group.
-func resourceNetwork() (resource *schema.Resource) {
-	resource = apiResource(map[string]*schema.Schema{
+// resourceNetworkMode keeps managed and unmanaged network schemas distinct at the Tofu boundary.
+func resourceNetworkMode(mode string) (resource *schema.Resource) {
+	var fields map[string]*schema.Schema = map[string]*schema.Schema{
 		"deployment_id": {
 			Type:         schema.TypeString,
 			Optional:     true,
@@ -107,20 +119,14 @@ func resourceNetwork() (resource *schema.Resource) {
 			ExactlyOneOf: []string{"deployment_id", "logical_group_id"},
 			Description:  "The owning logical group identifier for a private network.",
 		},
-		"mode": {
-			Type:         schema.TypeString,
-			Required:     true,
-			ForceNew:     true,
-			ValidateFunc: validation.StringInSlice([]string{"managed", "unmanaged-layer-2"}, false),
-			Description:  "The requested network mode.",
-		},
 		"name":         {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The virtual network name."},
 		"power_state":  {Type: schema.TypeString, Computed: true, Description: "Proxmox SDN provisioning state."},
 		"router_vmid":  {Type: schema.TypeInt, Optional: true, ForceNew: true, Description: "Deployment-managed router VM queried through QEMU Guest Agent for Router Polling."},
 		"proxmox_vnet": {Type: schema.TypeString, Computed: true, Description: "The Organesson-owned Proxmox SDN VNet identifier."},
 		"proxmox_zone": {Type: schema.TypeString, Computed: true, Description: "The Proxmox SDN zone containing this VNet."},
 		"summary":      summarySchema(),
-	}, networkOperations())
+	}
+	resource = apiResource(fields, networkOperations(mode))
 
 	return
 }

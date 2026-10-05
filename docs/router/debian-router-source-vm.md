@@ -2,7 +2,7 @@
 
 This guide builds an ordinary, editable Proxmox VM that Organesson can clone as a small IPv4 router. The source contains the operating system and required tools, but no deployment addresses, active DHCP service, or enabled routing. A clone receives those settings for one deployment.
 
-The first version uses NetworkManager for NIC configuration, `nftables` for firewalling/NAT, and `dnsmasq` for DHCP plus local/forwarding DNS. Organesson's guest-network operation configures NICs by MAC address. The reusable OpenTofu `organesson_router` resource packages the DHCP range and advertised DNS settings and executes a generic router setup through QEMU Guest Agent; it enables forwarding/NAT only when a WAN attachment is declared. The example project contains no router implementation script.
+The first version uses NetworkManager for NIC configuration, `nftables` for firewalling/NAT, and `dnsmasq` for DHCP plus local/forwarding DNS. Organesson's guest-network operation configures NICs by MAC address. The OpenTofu `organesson_managed_network` resource creates the platform-owned router and packages its DHCP range and advertised DNS settings for execution through QEMU Guest Agent; it enables forwarding/NAT only when a WAN attachment is declared. The example project contains no router implementation script.
 
 ```text
 approved environment network (WAN) ── router clone ── Organesson VNet (LAN)
