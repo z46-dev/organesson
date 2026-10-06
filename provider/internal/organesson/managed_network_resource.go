@@ -27,11 +27,18 @@ func resourceManagedNetwork() (resource *schema.Resource) {
 			"deployment_id":                  {Type: schema.TypeString, Optional: true, ForceNew: true, ExactlyOneOf: []string{"deployment_id", "logical_group_id"}, Description: "The owning deployment identifier."},
 			"logical_group_id":               {Type: schema.TypeString, Optional: true, ForceNew: true, ExactlyOneOf: []string{"deployment_id", "logical_group_id"}, Description: "The owning logical group identifier."},
 			"name":                           {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Managed network name."},
-			"ipv4_subnet":                    {Type: schema.TypeString, Required: true, ForceNew: true, ValidateFunc: validation.IsCIDR, Description: "Managed IPv4 subnet in CIDR notation."},
-			"ipv4_gateway":                   {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Router address inside the managed subnet."},
-			"dhcp_start":                     {Type: schema.TypeString, Required: true, ForceNew: true, Description: "First IPv4 address offered by the router DHCP service."},
-			"dhcp_end":                       {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Last IPv4 address offered by the router DHCP service."},
-			"dns_servers":                    {Type: schema.TypeSet, Required: true, ForceNew: true, MinItems: 1, Elem: &schema.Schema{Type: schema.TypeString}, Description: "DNS servers advertised to DHCP clients."},
+			"ipv4_subnet":                    {Type: schema.TypeString, Optional: true, ForceNew: true, ValidateFunc: validation.IsCIDR, Description: "Optional managed IPv4 subnet in CIDR notation."},
+			"ipv4_gateway":                   {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Router address inside the managed IPv4 subnet."},
+			"ipv4_dhcp_enabled":              {Type: schema.TypeBool, Optional: true, Default: true, ForceNew: true, Description: "Whether the router provides IPv4 DHCP on this network."},
+			"dhcp_start":                     {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "First IPv4 address offered by the router DHCP service."},
+			"dhcp_end":                       {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Last IPv4 address offered by the router DHCP service."},
+			"dns_servers":                    {Type: schema.TypeSet, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "IPv4 DNS servers advertised to DHCP clients."},
+			"ipv6_subnet":                    {Type: schema.TypeString, Optional: true, ForceNew: true, ValidateFunc: validation.IsCIDR, Description: "Optional managed IPv6 subnet in CIDR notation."},
+			"ipv6_gateway":                   {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Router address inside the managed IPv6 subnet."},
+			"ipv6_dhcp_enabled":              {Type: schema.TypeBool, Optional: true, Default: false, ForceNew: true, Description: "Whether the router provides stateful DHCPv6 on this network. Router advertisements remain enabled for SLAAC when IPv6 is configured."},
+			"ipv6_dhcp_start":                {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "First IPv6 address offered by the router DHCPv6 service."},
+			"ipv6_dhcp_end":                  {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Last IPv6 address offered by the router DHCPv6 service."},
+			"ipv6_dns_servers":               {Type: schema.TypeSet, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "IPv6 DNS servers advertised to IPv6 clients."},
 			"router_template":                {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Ready Organesson Debian router template alias."},
 			"router_pool":                    {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Authorized Proxmox resource pool for the hidden router VM."},
 			"router_storage":                 {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Authorized Proxmox storage for the hidden router VM."},
@@ -67,31 +74,89 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 		return
 	}
 	var subnet netip.Prefix
-	if subnet, err = netip.ParsePrefix(data.Get("ipv4_subnet").(string)); err != nil || !subnet.Addr().Is4() || subnet != subnet.Masked() {
-		diagnostics = diag.Errorf("managed network subnet must be a canonical IPv4 CIDR")
-		return
-	}
 	var gateway netip.Addr
-	if gateway, err = netip.ParseAddr(data.Get("ipv4_gateway").(string)); err != nil || !gateway.Is4() || !subnet.Contains(gateway) {
-		diagnostics = diag.Errorf("managed network gateway must be an IPv4 host within its subnet")
+	var subnetText string
+	var gatewayText string
+	var dhcpStartText string
+	var dhcpEndText string
+	if data.Get("ipv4_subnet").(string) != "" {
+		if subnet, err = netip.ParsePrefix(data.Get("ipv4_subnet").(string)); err != nil || !subnet.Addr().Is4() || subnet != subnet.Masked() {
+			diagnostics = diag.Errorf("managed network IPv4 subnet must be a canonical IPv4 CIDR")
+			return
+		}
+		if gateway, err = netip.ParseAddr(data.Get("ipv4_gateway").(string)); err != nil || !gateway.Is4() || !subnet.Contains(gateway) {
+			diagnostics = diag.Errorf("managed network IPv4 gateway must be an IPv4 host within its subnet")
+			return
+		}
+		subnetText, gatewayText = subnet.String(), gateway.String()
+		if data.Get("ipv4_dhcp_enabled").(bool) {
+			var dhcpStart netip.Addr
+			var dhcpEnd netip.Addr
+			if dhcpStart, err = netip.ParseAddr(data.Get("dhcp_start").(string)); err != nil {
+				diagnostics = diag.Errorf("DHCP start must be a valid IPv4 address")
+				return
+			}
+			if dhcpEnd, err = netip.ParseAddr(data.Get("dhcp_end").(string)); err != nil || !subnet.Contains(dhcpStart) || !subnet.Contains(dhcpEnd) || dhcpStart.Compare(dhcpEnd) > 0 || dhcpStart.Compare(gateway) <= 0 && dhcpEnd.Compare(gateway) >= 0 || dhcpStart == subnet.Masked().Addr() || dhcpEnd == routerBroadcastAddress(subnet) {
+				diagnostics = diag.Errorf("DHCP range must be ordered IPv4 hosts in the subnet, excluding the gateway, network, and broadcast addresses")
+				return
+			}
+			dhcpStartText, dhcpEndText = dhcpStart.String(), dhcpEnd.String()
+		} else if data.Get("dhcp_start").(string) != "" || data.Get("dhcp_end").(string) != "" {
+			diagnostics = diag.Errorf("IPv4 DHCP range requires ipv4_dhcp_enabled")
+			return
+		}
+	} else if data.Get("ipv4_gateway").(string) != "" || data.Get("ipv4_dhcp_enabled").(bool) || data.Get("dhcp_start").(string) != "" || data.Get("dhcp_end").(string) != "" {
+		diagnostics = diag.Errorf("IPv4 gateway and DHCP settings require ipv4_subnet; disable IPv4 DHCP on an IPv6-only network")
 		return
 	}
-	var dhcpStart netip.Addr
-	if dhcpStart, err = netip.ParseAddr(data.Get("dhcp_start").(string)); err != nil {
-		diagnostics = diag.Errorf("DHCP start must be a valid IPv4 address")
+	var ipv6Subnet netip.Prefix
+	var ipv6Gateway netip.Addr
+	var ipv6SubnetText string
+	var ipv6GatewayText string
+	if raw := data.Get("ipv6_subnet").(string); raw != "" {
+		if ipv6Subnet, err = netip.ParsePrefix(raw); err != nil || !ipv6Subnet.Addr().Is6() || ipv6Subnet.Addr().Is4In6() || ipv6Subnet != ipv6Subnet.Masked() {
+			diagnostics = diag.Errorf("managed IPv6 subnet must be a canonical IPv6 CIDR")
+			return
+		}
+		if ipv6Subnet.Bits() != 64 {
+			diagnostics = diag.Errorf("managed IPv6 router networks must use a /64 subnet for router advertisements and SLAAC")
+			return
+		}
+		if ipv6Gateway, err = netip.ParseAddr(data.Get("ipv6_gateway").(string)); err != nil || !ipv6Gateway.Is6() || ipv6Gateway.Is4In6() || !ipv6Subnet.Contains(ipv6Gateway) {
+			diagnostics = diag.Errorf("managed IPv6 gateway must be an IPv6 host within its subnet")
+			return
+		}
+		ipv6SubnetText = ipv6Subnet.String()
+		ipv6GatewayText = ipv6Gateway.String()
+	} else if data.Get("ipv6_gateway").(string) != "" || data.Get("ipv6_dhcp_enabled").(bool) || data.Get("ipv6_dhcp_start").(string) != "" || data.Get("ipv6_dhcp_end").(string) != "" {
+		diagnostics = diag.Errorf("IPv6 gateway and DHCP settings require ipv6_subnet")
 		return
 	}
-	var dhcpEnd netip.Addr
-	if dhcpEnd, err = netip.ParseAddr(data.Get("dhcp_end").(string)); err != nil || !subnet.Contains(dhcpStart) || !subnet.Contains(dhcpEnd) || dhcpStart.Compare(dhcpEnd) > 0 || dhcpStart.Compare(gateway) <= 0 && dhcpEnd.Compare(gateway) >= 0 || dhcpStart == subnet.Masked().Addr() || dhcpEnd == routerBroadcastAddress(subnet) {
-		diagnostics = diag.Errorf("DHCP range must be ordered IPv4 hosts in the subnet, excluding the gateway, network, and broadcast addresses")
+	if subnetText == "" && ipv6SubnetText == "" {
+		diagnostics = diag.Errorf("managed network must configure at least one IP family")
+		return
+	}
+	if data.Get("ipv6_dhcp_enabled").(bool) {
+		var first netip.Addr
+		var last netip.Addr
+		if first, err = netip.ParseAddr(data.Get("ipv6_dhcp_start").(string)); err != nil {
+			diagnostics = diag.Errorf("DHCPv6 start must be a valid IPv6 address")
+			return
+		}
+		if last, err = netip.ParseAddr(data.Get("ipv6_dhcp_end").(string)); err != nil || !ipv6Subnet.Contains(first) || !ipv6Subnet.Contains(last) || first.Is4In6() || last.Is4In6() || first.Compare(last) > 0 || first.Compare(ipv6Gateway) <= 0 && last.Compare(ipv6Gateway) >= 0 || first == ipv6Subnet.Masked().Addr() {
+			diagnostics = diag.Errorf("DHCPv6 range must be ordered IPv6 hosts inside the subnet and exclude the gateway")
+			return
+		}
+	} else if data.Get("ipv6_dhcp_start").(string) != "" || data.Get("ipv6_dhcp_end").(string) != "" {
+		diagnostics = diag.Errorf("DHCPv6 range requires ipv6_dhcp_enabled")
 		return
 	}
 	if data.Get("egress_enabled").(bool) && data.Get("egress_environment_network").(string) == "" {
 		diagnostics = diag.Errorf("egress_environment_network is required when egress_enabled is true")
 		return
 	}
-	if data.Get("egress_enabled").(bool) && data.Get("egress_ipv4_method").(string) == "static" && data.Get("egress_address_pool_request_id").(string) == "" {
-		diagnostics = diag.Errorf("static egress requires egress_address_pool_request_id")
+	if data.Get("egress_enabled").(bool) && data.Get("egress_address_pool_request_id").(string) == "" {
+		diagnostics = diag.Errorf("egress requires egress_address_pool_request_id so its interface can be source-filtered")
 		return
 	}
 	var dnsServers []string
@@ -102,6 +167,15 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 			return
 		}
 		dnsServers = append(dnsServers, address.String())
+	}
+	var ipv6DNSServers []string
+	for _, entry := range data.Get("ipv6_dns_servers").(*schema.Set).List() {
+		var address netip.Addr
+		if address, err = netip.ParseAddr(entry.(string)); err != nil || !address.Is6() || address.Is4In6() {
+			diagnostics = diag.Errorf("IPv6 DNS servers must be valid IPv6 addresses")
+			return
+		}
+		ipv6DNSServers = append(ipv6DNSServers, address.String())
 	}
 
 	var group nodeResult
@@ -137,7 +211,8 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 	var network networkResult
 	if err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+deploymentID+"/networks", map[string]any{
 		"parent_node_id": networkParentID, "name": data.Get("name").(string), "mode": "managed",
-		"ipv4_subnet": subnet.String(), "ipv4_gateway": gateway.String(), "dhcp_enabled": true,
+		"ipv4_subnet": subnetText, "ipv4_gateway": gatewayText, "dhcp_enabled": data.Get("ipv4_dhcp_enabled").(bool),
+		"ipv6_subnet": ipv6SubnetText, "ipv6_gateway": ipv6GatewayText, "ipv6_dhcp_enabled": data.Get("ipv6_dhcp_enabled").(bool),
 		"egress_policy": "isolated", "router_vmid": vmID,
 	}, &network); err != nil {
 		managedNetworkRollback(ctx, client, "", "", "", vmResourceID, groupID)
@@ -154,9 +229,19 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 		return
 	}
 	var lanID string = strconv.Itoa(lan.Resource.ID)
-	if err = createGuestNetworkConfiguration(ctx, client, lanID, map[string]any{
-		"ipv4_method": "static", "ipv4_address": gateway.String() + "/" + strconv.Itoa(subnet.Bits()), "ipv4_gateway": "", "ipv4_dns": []string{}, "ipv4_never_default": true,
-	}); err != nil {
+	var lanGuestConfiguration map[string]any = map[string]any{
+		"ipv4_method": "disabled", "ipv4_address": "", "ipv4_gateway": "", "ipv4_dns": []string{}, "ipv4_never_default": true,
+		"ipv6_method": "disabled", "ipv6_address": "", "ipv6_gateway": "", "ipv6_dns": []string{}, "ipv6_never_default": true,
+	}
+	if subnetText != "" {
+		lanGuestConfiguration["ipv4_method"] = "static"
+		lanGuestConfiguration["ipv4_address"] = gatewayText + "/" + strconv.Itoa(subnet.Bits())
+	}
+	if ipv6Subnet.IsValid() {
+		lanGuestConfiguration["ipv6_method"] = "static"
+		lanGuestConfiguration["ipv6_address"] = ipv6Gateway.String() + "/" + strconv.Itoa(ipv6Subnet.Bits())
+	}
+	if err = createGuestNetworkConfiguration(ctx, client, lanID, lanGuestConfiguration); err != nil {
 		managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID)
 		diagnostics = diag.FromErr(err)
 		return
@@ -172,10 +257,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 				return
 			}
 		}
-		var requested int
-		if data.Get("egress_ipv4_method").(string) == "static" {
-			requested = 1
-		}
+		var requested int = 1
 		if err = client.request(ctx, http.MethodPost, "/api/v1/virtual-machines/"+vmResourceID+"/network-attachments", map[string]any{
 			"name": "egress", "environment_network": data.Get("egress_environment_network").(string), "address_pool_request_id": poolID, "requested_address_count": requested, "logical_network_id": 0,
 		}, &wan); err != nil {
@@ -184,7 +266,10 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 			return
 		}
 		wanID = strconv.Itoa(wan.Resource.ID)
-		var guestConfig map[string]any = map[string]any{"ipv4_method": data.Get("egress_ipv4_method").(string), "ipv4_address": "", "ipv4_gateway": "", "ipv4_dns": []string{}, "ipv4_never_default": false}
+		var guestConfig map[string]any = map[string]any{
+			"ipv4_method": data.Get("egress_ipv4_method").(string), "ipv4_address": "", "ipv4_gateway": "", "ipv4_dns": []string{}, "ipv4_never_default": false,
+			"ipv6_method": "disabled", "ipv6_address": "", "ipv6_gateway": "", "ipv6_dns": []string{}, "ipv6_never_default": true,
+		}
 		if data.Get("egress_ipv4_method").(string) == "static" {
 			if len(wan.Configuration.Addresses) != 1 || wan.Configuration.AddressPrefix == "" {
 				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
@@ -200,6 +285,10 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 			guestConfig["ipv4_address"] = wan.Configuration.Addresses[0] + "/" + strconv.Itoa(prefix.Bits())
 			guestConfig["ipv4_gateway"] = wan.Configuration.AddressGateway
 			guestConfig["ipv4_dns"] = wan.Configuration.AddressDNS
+		} else if len(wan.Configuration.Addresses) != 1 {
+			managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
+			diagnostics = diag.Errorf("DHCP router egress requires exactly one reserved IPv4 address")
+			return
 		}
 		if err = createGuestNetworkConfiguration(ctx, client, wanID, guestConfig); err != nil {
 			managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
@@ -207,7 +296,9 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 			return
 		}
 	}
-	if err = executeManagedRouter(ctx, client, vmResourceID, lanID, wanID, gateway.String(), subnet.String(), dhcpStart.String(), dhcpEnd.String(), dnsServers); err != nil {
+	if err = executeManagedRouter(ctx, client, vmResourceID, lanID, wanID, gatewayText, subnetText, dhcpStartText, dhcpEndText, dnsServers,
+		ipv6GatewayText, ipv6SubnetText, data.Get("ipv6_dhcp_start").(string), data.Get("ipv6_dhcp_end").(string), ipv6DNSServers,
+	); err != nil {
 		managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
 		diagnostics = diag.FromErr(err)
 		return
@@ -277,7 +368,7 @@ func createGuestNetworkConfiguration(ctx context.Context, client *apiClient, att
 }
 
 // executeManagedRouter packages and applies the hidden router's DHCP/DNS and firewall configuration.
-func executeManagedRouter(ctx context.Context, client *apiClient, vmResourceID string, lanID string, wanID string, gateway string, subnet string, dhcpStart string, dhcpEnd string, dns []string) (err error) {
+func executeManagedRouter(ctx context.Context, client *apiClient, vmResourceID string, lanID string, wanID string, gateway string, subnet string, dhcpStart string, dhcpEnd string, dns []string, ipv6Gateway string, ipv6Subnet string, ipv6DHCPStart string, ipv6DHCPEnd string, ipv6DNS []string) (err error) {
 	var vmID string
 	if vmID, err = remoteID(vmResourceID); err != nil {
 		return
@@ -308,6 +399,9 @@ func executeManagedRouter(ctx context.Context, client *apiClient, vmResourceID s
 		"LAN_MAC=" + shellQuoted(lanMAC), "WAN_MAC=" + shellQuoted(wanMAC), "LAN_ADDRESS=" + shellQuoted(gateway),
 		"LAN_SUBNET=" + shellQuoted(subnet), "DHCP_START=" + shellQuoted(dhcpStart), "DHCP_END=" + shellQuoted(dhcpEnd),
 		"DNS_SERVERS=(" + strings.Join(dns, " ") + ")",
+		"LAN_IPV6_ADDRESS=" + shellQuoted(ipv6Gateway), "LAN_IPV6_SUBNET=" + shellQuoted(ipv6Subnet),
+		"DHCPV6_START=" + shellQuoted(ipv6DHCPStart), "DHCPV6_END=" + shellQuoted(ipv6DHCPEnd),
+		"DNSV6_SERVERS=(" + strings.Join(ipv6DNS, " ") + ")",
 	}, "\n") + "\n"
 	if err = os.WriteFile(filepath.Join(directory, "organesson-router.conf"), []byte(configuration), 0600); err != nil {
 		return
@@ -379,6 +473,8 @@ func managedNetworkRead(ctx context.Context, data *schema.ResourceData, meta int
 	_ = data.Set("name", result.Resource.Name)
 	_ = data.Set("ipv4_subnet", result.Configuration.Request.Subnet)
 	_ = data.Set("ipv4_gateway", result.Configuration.Request.Gateway)
+	_ = data.Set("ipv6_subnet", result.Configuration.Request.IPv6Subnet)
+	_ = data.Set("ipv6_gateway", result.Configuration.Request.IPv6Gateway)
 	_ = data.Set("power_state", result.Resource.PowerState)
 	_ = data.Set("proxmox_vnet", result.Resource.ExternalID)
 	_ = data.Set("proxmox_zone", result.Resource.ExternalNode)

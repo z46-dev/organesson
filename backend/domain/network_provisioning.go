@@ -196,11 +196,21 @@ func (service *Service) ListNetworkStaticAddresses(actorID int, network *db.Mana
 		if err = json.Unmarshal([]byte(resource.ConfigurationJSON), &configuration); err != nil {
 			return
 		}
-		if configuration.LogicalNetworkID != network.ID || configuration.GuestNetwork == nil || configuration.GuestNetwork.Method != "static" || configuration.GuestNetwork.Address == "" {
+		if configuration.LogicalNetworkID != network.ID || configuration.GuestNetwork == nil {
+			continue
+		}
+		var declaredAddresses []string
+		if configuration.GuestNetwork.Method == "static" && configuration.GuestNetwork.Address != "" {
+			declaredAddresses = append(declaredAddresses, configuration.GuestNetwork.Address)
+		}
+		if configuration.GuestNetwork.IPv6Method == "static" && configuration.GuestNetwork.IPv6Address != "" {
+			declaredAddresses = append(declaredAddresses, configuration.GuestNetwork.IPv6Address)
+		}
+		if len(declaredAddresses) == 0 {
 			continue
 		}
 		var address StaticNetworkAddress = StaticNetworkAddress{
-			Address: configuration.GuestNetwork.Address, MAC: strings.ToLower(configuration.Placement.MAC), NetworkAttachmentID: resource.ID,
+			MAC: strings.ToLower(configuration.Placement.MAC), NetworkAttachmentID: resource.ID,
 			NetworkAttachment: resource.Name,
 		}
 		var vm *db.ManagedResource
@@ -217,7 +227,10 @@ func (service *Service) ListNetworkStaticAddresses(actorID int, network *db.Mana
 				return
 			}
 		}
-		addresses = append(addresses, address)
+		for _, declared := range declaredAddresses {
+			address.Address = declared
+			addresses = append(addresses, address)
+		}
 	}
 	return
 }

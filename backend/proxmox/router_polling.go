@@ -137,6 +137,7 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 	var dhcpConfig *pve.AgentFileRead
 	if dhcpConfig, err = vm.AgentFileRead(ctx, routerDHCPConfigFile); err == nil && dhcpConfig != nil && !bool(dhcpConfig.Truncated) {
 		result.DHCPRangeStart, result.DHCPRangeEnd = parseRouterDHCPRange(dhcpConfig.Content)
+		result.DHCPv6RangeStart, result.DHCPv6RangeEnd = parseRouterDHCPv6Range(dhcpConfig.Content)
 	} else {
 		err = nil
 	}
@@ -149,13 +150,21 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 			}
 			result.Egress = &SDNRouterEgress{
 				Interface: iface.Name, MAC: strings.ToLower(iface.HardwareAddress), Bridge: bridgeByMAC[strings.ToLower(iface.HardwareAddress)],
-				Addresses: routerInterfaceIPv4Addresses(iface),
+				Addresses:     routerInterfaceIPv4Addresses(iface),
+				IPv6Addresses: routerInterfaceIPv6Addresses(iface),
 			}
 			var gatewayPID int
 			if gatewayPID, err = vm.AgentExec(ctx, []string{"ip", "-4", "route", "show", "default", "dev", iface.Name}, ""); err == nil {
 				var gatewayResult guestAgentExecStatus
 				if gatewayResult, err = waitForGuestExecExit(ctx, driver.settings, vm.Node, request.RouterVMID, gatewayPID, 15); err == nil && gatewayResult.ExitCode == 0 {
 					result.Egress.Gateway = parseRouterDefaultGateway(gatewayResult.OutData)
+				}
+			}
+			var gatewayIPv6PID int
+			if gatewayIPv6PID, err = vm.AgentExec(ctx, []string{"ip", "-6", "route", "show", "default", "dev", iface.Name}, ""); err == nil {
+				var gatewayIPv6Result guestAgentExecStatus
+				if gatewayIPv6Result, err = waitForGuestExecExit(ctx, driver.settings, vm.Node, request.RouterVMID, gatewayIPv6PID, 15); err == nil && gatewayIPv6Result.ExitCode == 0 {
+					result.Egress.IPv6Gateway = parseRouterDefaultGateway(gatewayIPv6Result.OutData)
 				}
 			}
 			err = nil
@@ -170,11 +179,13 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 			continue
 		}
 		mergeRouterInterfaceAddresses(observed, iface, request.Subnet)
+		mergeRouterInterfaceAddresses(observed, iface, request.IPv6Subnet)
 		break
 	}
 	var leaseFile *pve.AgentFileRead
 	if leaseFile, err = vm.AgentFileRead(ctx, routerLeaseFile); err == nil && leaseFile != nil && !bool(leaseFile.Truncated) {
 		mergeRouterLeases(observed, leaseFile.Content, request.Subnet)
+		mergeRouterLeases(observed, leaseFile.Content, request.IPv6Subnet)
 	} else if err != nil {
 		err = nil
 	}
@@ -191,12 +202,49 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 		return
 	}
 	mergeRouterNeighbors(observed, commandResult.OutData, request.Subnet)
+	if request.IPv6Subnet != "" {
+		var ipv6PID int
+		if ipv6PID, err = vm.AgentExec(ctx, []string{"ip", "-6", "neigh", "show", "dev", lanInterface}, ""); err != nil {
+			return
+		}
+		var ipv6Result guestAgentExecStatus
+		if ipv6Result, err = waitForGuestExecExit(ctx, driver.settings, vm.Node, request.RouterVMID, ipv6PID, 15); err != nil {
+			return
+		}
+		if ipv6Result.ExitCode != 0 {
+			err = errors.New("router IPv6 neighbor-table query failed")
+			return
+		}
+		mergeRouterNeighbors(observed, ipv6Result.OutData, request.IPv6Subnet)
+	}
 	for _, entry := range observed {
 		result.ObservedAddresses = append(result.ObservedAddresses, entry)
 	}
 	sortRouterAddresses(result.ObservedAddresses)
 	result.State = "available"
 	result.LastPolledAt = time.Now().UTC()
+	return
+}
+
+func parseRouterDHCPv6Range(content string) (start string, end string) {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "dhcp-range=") {
+			continue
+		}
+		var fields []string = strings.Split(strings.TrimPrefix(line, "dhcp-range="), ",")
+		if len(fields) < 2 {
+			continue
+		}
+		var first netip.Addr
+		var last netip.Addr
+		if first, _ = netip.ParseAddr(strings.TrimSpace(fields[0])); first.Is6() && first.IsValid() {
+			if last, _ = netip.ParseAddr(strings.TrimSpace(fields[1])); last.Is6() && last.IsValid() {
+				start, end = first.String(), last.String()
+				return
+			}
+		}
+	}
 	return
 }
 
@@ -238,6 +286,19 @@ func routerInterfaceIPv4Addresses(iface *pve.AgentNetworkIface) (addresses []str
 	}
 	for _, address := range iface.IPAddresses {
 		if address == nil || address.IPAddressType != "ipv4" {
+			continue
+		}
+		addresses = append(addresses, fmt.Sprintf("%s/%d", address.IPAddress, address.Prefix))
+	}
+	return
+}
+
+func routerInterfaceIPv6Addresses(iface *pve.AgentNetworkIface) (addresses []string) {
+	if iface == nil {
+		return
+	}
+	for _, address := range iface.IPAddresses {
+		if address == nil || address.IPAddressType != "ipv6" {
 			continue
 		}
 		addresses = append(addresses, fmt.Sprintf("%s/%d", address.IPAddress, address.Prefix))
@@ -305,7 +366,13 @@ func mergeRouterLeases(observed map[string]SDNRouterObservedAddress, content str
 		}
 		var entry SDNRouterObservedAddress = observed[address.String()]
 		entry.Address = address.String()
-		entry.MAC = strings.ToLower(fields[1])
+		if address.Is4() {
+			entry.MAC = strings.ToLower(fields[1])
+		} else {
+			if len(fields) >= 5 {
+				entry.MAC = macFromDHCPv6DUID(fields[4])
+			}
+		}
 		if fields[3] != "*" {
 			entry.Hostname = fields[3]
 		}
@@ -315,6 +382,19 @@ func mergeRouterLeases(observed map[string]SDNRouterObservedAddress, content str
 		}
 		observed[entry.Address] = entry
 	}
+}
+
+// macFromDHCPv6DUID extracts the hardware address from an Ethernet DUID-LL lease identity.
+func macFromDHCPv6DUID(value string) (mac string) {
+	var fields []string = strings.Split(strings.ToLower(value), ":")
+	if len(fields) != 10 || fields[0] != "00" || fields[1] != "03" || fields[2] != "00" || fields[3] != "01" {
+		return
+	}
+	mac = strings.Join(fields[4:], ":")
+	if !validNetworkMAC(mac) {
+		mac = ""
+	}
+	return
 }
 
 // mergeRouterNeighbors parses a fixed ip-neighbor command output and joins matching leases.

@@ -514,12 +514,12 @@ func TestProviderProxmoxVMCreateRefreshDelete(t *testing.T) {
 	}
 	readRemoteResource(t, ctx, provider.ResourcesMap["organesson_network_attachment"], attachment, client)
 	var guestNetwork *schema.ResourceData = schema.TestResourceDataRaw(t, provider.ResourcesMap["organesson_guest_network_configuration"].Schema, map[string]interface{}{
-		"network_attachment_id": attachment.Id(), "ipv4_method": "static", "ipv4_address": "10.0.0.100/8",
+		"network_attachment_id": attachment.Id(), "ipv4_method": "static", "ipv4_address": "10.192.0.1/8",
 		"ipv4_gateway": "10.0.0.1", "ipv4_dns": []interface{}{"10.0.0.2"},
 	})
 	createRemoteResource(t, ctx, provider.ResourcesMap["organesson_guest_network_configuration"], guestNetwork, client)
 	readRemoteResource(t, ctx, provider.ResourcesMap["organesson_guest_network_configuration"], guestNetwork, client)
-	if guestNetworkDriver.configureCount != 1 || guestNetworkDriver.readCount != 1 || guestNetwork.Get("ipv4_address") != "10.0.0.100/8" {
+	if guestNetworkDriver.configureCount != 1 || guestNetworkDriver.readCount != 1 || guestNetwork.Get("ipv4_address") != "10.192.0.1/8" {
 		t.Fatalf("guest network apply/refresh did not use its QGA driver: configure=%d read=%d address=%v", guestNetworkDriver.configureCount, guestNetworkDriver.readCount, guestNetwork.Get("ipv4_address"))
 	}
 	deleteRemoteResource(t, ctx, provider.ResourcesMap["organesson_guest_network_configuration"], guestNetwork, client)

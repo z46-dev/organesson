@@ -41,22 +41,27 @@ type (
 	}
 
 	createNetworkRequest struct {
-		ParentNodeID int    `json:"parent_node_id"`
-		Name         string `json:"name"`
-		Mode         string `json:"mode"`
-		Subnet       string `json:"ipv4_subnet"`
-		Gateway      string `json:"ipv4_gateway"`
-		DHCPEnabled  bool   `json:"dhcp_enabled"`
-		EgressPolicy string `json:"egress_policy"`
-		RouterVMID   int    `json:"router_vmid"`
+		ParentNodeID    int    `json:"parent_node_id"`
+		Name            string `json:"name"`
+		Mode            string `json:"mode"`
+		Subnet          string `json:"ipv4_subnet"`
+		Gateway         string `json:"ipv4_gateway"`
+		IPv6Subnet      string `json:"ipv6_subnet"`
+		IPv6Gateway     string `json:"ipv6_gateway"`
+		DHCPEnabled     bool   `json:"dhcp_enabled"`
+		IPv6DHCPEnabled bool   `json:"ipv6_dhcp_enabled"`
+		EgressPolicy    string `json:"egress_policy"`
+		RouterVMID      int    `json:"router_vmid"`
 	}
 
 	createNetworkAttachmentRequest struct {
-		Name                  string `json:"name"`
-		EnvironmentNetwork    string `json:"environment_network"`
-		LogicalNetworkID      int    `json:"logical_network_id"`
-		AddressPoolRequestID  int    `json:"address_pool_request_id"`
-		RequestedAddressCount int    `json:"requested_address_count"`
+		Name                      string `json:"name"`
+		EnvironmentNetwork        string `json:"environment_network"`
+		LogicalNetworkID          int    `json:"logical_network_id"`
+		AddressPoolRequestID      int    `json:"address_pool_request_id"`
+		RequestedAddressCount     int    `json:"requested_address_count"`
+		IPv6AddressPoolRequestID  int    `json:"ipv6_address_pool_request_id"`
+		RequestedIPv6AddressCount int    `json:"requested_ipv6_address_count"`
 	}
 
 	setPowerRequest struct {
@@ -347,8 +352,8 @@ func createNetworkHandler(services common.Services) (handler fiber.Handler) {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid network request."})
 		}
 		var networkRequest proxmox.SDNNetworkRequest = proxmox.SDNNetworkRequest{
-			Name: request.Name, Mode: request.Mode, Subnet: request.Subnet, Gateway: request.Gateway,
-			DHCPEnabled: request.DHCPEnabled, EgressPolicy: request.EgressPolicy, RouterVMID: request.RouterVMID,
+			Name: request.Name, Mode: request.Mode, Subnet: request.Subnet, Gateway: request.Gateway, IPv6Subnet: request.IPv6Subnet, IPv6Gateway: request.IPv6Gateway,
+			DHCPEnabled: request.DHCPEnabled, IPv6DHCPEnabled: request.IPv6DHCPEnabled, EgressPolicy: request.EgressPolicy, RouterVMID: request.RouterVMID,
 		}
 		var resource *db.ManagedResource
 		if resource, err = services.Domain.ReserveSDNNetwork(actorID, deploymentID, request.ParentNodeID, networkRequest); err != nil {
@@ -430,6 +435,7 @@ func getNetworkHandler(services common.Services) (handler fiber.Handler) {
 			"router_polling": fiber.Map{
 				"state": routerPolling.State, "router_vmid": routerPolling.RouterVMID,
 				"dhcp_range_start": routerPolling.DHCPRangeStart, "dhcp_range_end": routerPolling.DHCPRangeEnd,
+				"dhcpv6_range_start": routerPolling.DHCPv6RangeStart, "dhcpv6_range_end": routerPolling.DHCPv6RangeEnd,
 				"egress":         routerPolling.Egress,
 				"last_polled_at": routerPolling.LastPolledAt, "observed_addresses": routerPolling.ObservedAddresses,
 				"static_addresses": staticAddresses,

@@ -70,6 +70,33 @@ func TestRouterPollingIncludesRouterLANAddressAndMAC(t *testing.T) {
 	}
 }
 
+func TestRouterPollingSupportsIPv6ObservationsAndDHCPRange(t *testing.T) {
+	var observed map[string]SDNRouterObservedAddress = make(map[string]SDNRouterObservedAddress)
+	var iface *pve.AgentNetworkIface = &pve.AgentNetworkIface{
+		Name: "ens19", HardwareAddress: "02:aa:bb:cc:dd:ee",
+		IPAddresses: []*pve.AgentNetworkIPAddress{{IPAddressType: "ipv6", IPAddress: "fd42:1::1", Prefix: 64}},
+	}
+	mergeRouterInterfaceAddresses(observed, iface, "fd42:1::/64")
+	mergeRouterLeases(observed, "1791133200 00000001 fd42:1::42 fedora 00:03:00:01:02:11:22:33:44:55\n", "fd42:1::/64")
+	mergeRouterNeighbors(observed, "fd42:1::42 dev ens19 lladdr 02:11:22:33:44:55 REACHABLE\n", "fd42:1::/64")
+	if observed["fd42:1::1"].MAC != iface.HardwareAddress || observed["fd42:1::42"].MAC != "02:11:22:33:44:55" || observed["fd42:1::42"].Source != "lease, neighbor" {
+		t.Fatalf("IPv6 router or neighbor observation missing MAC: %#v", observed)
+	}
+	start, end := parseRouterDHCPv6Range("dhcp-range=192.0.2.20,192.0.2.40,12h\ndhcp-range=fd42:1::20,fd42:1::40,slaac,12h\n")
+	if start != "fd42:1::20" || end != "fd42:1::40" {
+		t.Fatalf("unexpected DHCPv6 range: %q–%q", start, end)
+	}
+}
+
+func TestDHCPv6DUIDMapsToEthernetMAC(t *testing.T) {
+	if mac := macFromDHCPv6DUID("00:03:00:01:02:11:22:33:44:55"); mac != "02:11:22:33:44:55" {
+		t.Fatalf("DUID-LL mapped to MAC %q", mac)
+	}
+	if mac := macFromDHCPv6DUID("00:04:00:01:02:11:22:33:44:55"); mac != "" {
+		t.Fatalf("unsupported DUID mapped to MAC %q", mac)
+	}
+}
+
 func TestRouterPollingParsesDHCPAndEgressDetails(t *testing.T) {
 	var start string
 	var end string

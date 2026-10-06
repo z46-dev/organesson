@@ -33,6 +33,22 @@ func TestValidateSDNNetworkRequestRestrictsToIsolatedNetworks(t *testing.T) {
 	if err := validateSDNNetworkRequest(valid); err == nil {
 		t.Fatal("unmanaged layer-2 network accepted DHCP")
 	}
+	valid.DHCPEnabled = false
+	valid.IPv6DHCPEnabled = true
+	if err := validateSDNNetworkRequest(valid); err == nil {
+		t.Fatal("unmanaged layer-2 network accepted DHCPv6")
+	}
+	valid = SDNNetworkRequest{
+		Name: "ipv6-only", Mode: "managed", IPv6Subnet: "fd42:5::/64", IPv6Gateway: "fd42:5::1",
+		IPv6DHCPEnabled: true, EgressPolicy: "isolated", OperationKey: "og-ipv6-only",
+	}
+	if err := validateSDNNetworkRequest(valid); err != nil {
+		t.Fatalf("IPv6-only DHCP network rejected: %v", err)
+	}
+	valid.IPv6Subnet = ""
+	if err := validateSDNNetworkRequest(valid); err == nil {
+		t.Fatal("DHCPv6 without an IPv6 subnet was accepted")
+	}
 }
 
 func TestValidateSDNNetworkRequestRejectsNonCanonicalOrInvalidSubnet(t *testing.T) {

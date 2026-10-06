@@ -73,6 +73,27 @@ func TestValidateResourcePolicyAllowsCreatedVNetAndConstrainsItsAddressPools(t *
 	}
 }
 
+func TestValidateResourcePolicyAcceptsIPv6SubnetsAndPools(t *testing.T) {
+	var policy ResourcePolicy = ResourcePolicy{
+		ResourcePools:  []string{"students"},
+		Storages:       []string{"laas"},
+		VNetSourceZone: "ogvxlan",
+		Networks: []PolicyNetwork{{
+			Name: "ipv6-lan", Kind: "vnet", TargetMode: "create",
+			Subnets:      []PolicySubnet{{Prefix: "2001:db8:1234::/64", Gateway: "2001:db8:1234::1"}},
+			AddressPools: []AddressPool{{Name: "hosts", Prefix: "2001:db8:1234::/64", AllocationPrefix: "2001:db8:1234::/120", Gateway: "2001:db8:1234::1", DNS: []string{"2001:db8:1234::53"}}},
+		}},
+	}
+	var inventory ResourceInventory = ResourceInventory{Pools: []string{"students"}, Storages: []string{"laas"}, VNetSources: []string{"ogvxlan"}}
+	if result := ValidateResourcePolicy(policy, &inventory); !result.Valid {
+		t.Fatalf("valid IPv6 network policy rejected: %#v", result.Issues)
+	}
+	policy.Networks[0].Subnets[0].Gateway = "192.0.2.1"
+	if result := ValidateResourcePolicy(policy, &inventory); result.Valid {
+		t.Fatal("mixed-family subnet gateway was accepted")
+	}
+}
+
 func TestResourcePolicyHashIsStableAndChangesWithPolicy(t *testing.T) {
 	var first string
 	var second string
@@ -143,5 +164,19 @@ func TestAllocateAddressesExcludesIPv4NetworkAndBroadcastAddresses(t *testing.T)
 	}
 	if _, err = AllocateAddresses(AddressPool{Name: "small", Prefix: "192.0.2.0/29"}, 7, nil); err == nil {
 		t.Fatal("IPv4 network and broadcast addresses were allocated")
+	}
+}
+
+func TestAllocateAddressesSupportsIPv6Hosts(t *testing.T) {
+	var addresses []string
+	var err error
+	if addresses, err = AllocateAddresses(AddressPool{
+		Name: "v6-lan", Prefix: "2001:db8:1234::/64", AllocationPrefix: "2001:db8:1234::/125",
+		Gateway: "2001:db8:1234::1", DNS: []string{"2001:db8:1234::2"},
+	}, 3, []string{"2001:db8:1234::4"}); err != nil {
+		t.Fatalf("allocate IPv6 addresses: %v", err)
+	}
+	if len(addresses) != 3 || addresses[0] != "2001:db8:1234::3" || addresses[1] != "2001:db8:1234::5" || addresses[2] != "2001:db8:1234::6" {
+		t.Fatalf("unexpected IPv6 allocation: %v", addresses)
 	}
 }

@@ -31,8 +31,16 @@ func allocateManagedNetworkAddresses(pool proxmox.AddressPool, rangeStart string
 	if prefix, err = netip.ParsePrefix(pool.Prefix); err != nil {
 		return
 	}
-	if !first.Is4() || !last.Is4() || !prefix.Contains(first) || !prefix.Contains(last) || first.Compare(last) > 0 {
-		err = errors.New("managed network allocation range is outside its IPv4 subnet")
+	if first.Is4() != prefix.Addr().Is4() || last.Is4() != prefix.Addr().Is4() || !prefix.Contains(first) || !prefix.Contains(last) || first.Compare(last) > 0 {
+		err = errors.New("managed network allocation range is outside its address-family subnet")
+		return
+	}
+	if first == prefix.Masked().Addr() || last == prefix.Masked().Addr() {
+		err = errors.New("managed network allocation range cannot include the subnet address")
+		return
+	}
+	if prefix.Addr().Is4() && (first == managedIPv4BroadcastAddress(prefix) || last == managedIPv4BroadcastAddress(prefix)) {
+		err = errors.New("managed IPv4 allocation range cannot include the broadcast address")
 		return
 	}
 	for _, address := range reserved {
@@ -51,6 +59,23 @@ func allocateManagedNetworkAddresses(pool proxmox.AddressPool, rangeStart string
 	if len(addresses) != count {
 		err = fmt.Errorf("managed network address range has only %d available addresses; %d requested", len(addresses), count)
 	}
+	return
+}
+
+// managedIPv4BroadcastAddress returns the final address in an IPv4 allocation prefix.
+func managedIPv4BroadcastAddress(prefix netip.Prefix) (address netip.Addr) {
+	var bytes [4]byte = prefix.Masked().Addr().As4()
+	var hostBits uint = uint(32 - prefix.Bits())
+	var hostMask uint32
+	if hostBits == 32 {
+		hostMask = ^uint32(0)
+	} else {
+		hostMask = uint32(1<<hostBits) - 1
+	}
+	var value uint32 = binary.BigEndian.Uint32(bytes[:]) | hostMask
+	var result [4]byte
+	binary.BigEndian.PutUint32(result[:], value)
+	address = netip.AddrFrom4(result)
 	return
 }
 
@@ -129,8 +154,8 @@ func (service *Service) ReserveAddressPoolRequest(actorID int, request AddressPo
 	}
 	var selectedPool *proxmox.AddressPool
 	if request.LogicalNetworkID > 0 {
-		if request.AddressFamily != "ipv4" || request.RangeStart == "" || request.RangeEnd == "" {
-			err = fmt.Errorf("%w: managed-network requests require an IPv4 range", ErrInvalidInput)
+		if request.RangeStart == "" || request.RangeEnd == "" {
+			err = fmt.Errorf("%w: managed-network requests require a bounded address range", ErrInvalidInput)
 			return
 		}
 		var networkResource *db.ManagedResource
@@ -145,10 +170,24 @@ func (service *Service) ReserveAddressPoolRequest(actorID int, request AddressPo
 		if err = json.Unmarshal([]byte(networkResource.ConfigurationJSON), &networkConfiguration); err != nil {
 			return
 		}
+		if networkConfiguration.Request.Mode != "managed" {
+			err = fmt.Errorf("%w: address pools require an Organesson-managed network", ErrInvalidInput)
+			return
+		}
+		var subnetText string = networkConfiguration.Request.Subnet
+		var gatewayText string = networkConfiguration.Request.Gateway
+		if request.AddressFamily == "ipv6" {
+			subnetText = networkConfiguration.Request.IPv6Subnet
+			gatewayText = networkConfiguration.Request.IPv6Gateway
+		}
+		if subnetText == "" {
+			err = fmt.Errorf("%w: managed network has no %s subnet", ErrInvalidInput, request.AddressFamily)
+			return
+		}
 		var prefix netip.Prefix
 		var firstAddress netip.Addr
 		var lastAddress netip.Addr
-		if prefix, err = netip.ParsePrefix(networkConfiguration.Request.Subnet); err != nil {
+		if prefix, err = netip.ParsePrefix(subnetText); err != nil {
 			return
 		}
 		if firstAddress, err = netip.ParseAddr(request.RangeStart); err != nil {
@@ -157,7 +196,7 @@ func (service *Service) ReserveAddressPoolRequest(actorID int, request AddressPo
 		if lastAddress, err = netip.ParseAddr(request.RangeEnd); err != nil {
 			return
 		}
-		gateway, gatewayErr := netip.ParseAddr(networkConfiguration.Request.Gateway)
+		gateway, gatewayErr := netip.ParseAddr(gatewayText)
 		var broadcast netip.Addr
 		if prefix.Addr().Is4() {
 			var networkBytes [4]byte = prefix.Masked().Addr().As4()
@@ -172,11 +211,11 @@ func (service *Service) ReserveAddressPoolRequest(actorID int, request AddressPo
 			binary.BigEndian.PutUint32(broadcastBytes[:], binary.BigEndian.Uint32(networkBytes[:])|hostMask)
 			broadcast = netip.AddrFrom4(broadcastBytes)
 		}
-		if gatewayErr != nil || !prefix.Addr().Is4() || !firstAddress.Is4() || !lastAddress.Is4() || !prefix.Contains(firstAddress) || !prefix.Contains(lastAddress) || firstAddress.Compare(lastAddress) > 0 || firstAddress == prefix.Masked().Addr() || lastAddress == broadcast || gateway.IsValid() && gateway.Compare(firstAddress) >= 0 && gateway.Compare(lastAddress) <= 0 {
-			err = fmt.Errorf("%w: address range must be ordered usable host addresses within the managed network and exclude its gateway", ErrInvalidInput)
+		if gatewayErr != nil || firstAddress.Is4() != prefix.Addr().Is4() || lastAddress.Is4() != prefix.Addr().Is4() || !prefix.Contains(firstAddress) || !prefix.Contains(lastAddress) || firstAddress.Compare(lastAddress) > 0 || firstAddress == prefix.Masked().Addr() || prefix.Addr().Is4() && lastAddress == broadcast || gateway.IsValid() && gateway.Compare(firstAddress) >= 0 && gateway.Compare(lastAddress) <= 0 {
+			err = fmt.Errorf("%w: address range must contain ordered usable hosts within the managed network and exclude its gateway", ErrInvalidInput)
 			return
 		}
-		selectedPool = &proxmox.AddressPool{Name: "managed-network", Prefix: prefix.String(), AllocationPrefix: prefix.String(), Gateway: networkConfiguration.Request.Gateway}
+		selectedPool = &proxmox.AddressPool{Name: "managed-network-" + request.AddressFamily, Prefix: prefix.String(), AllocationPrefix: prefix.String(), Gateway: gatewayText}
 	} else {
 		if request.RangeStart != "" || request.RangeEnd != "" {
 			err = fmt.Errorf("%w: range bounds are only valid for a managed network", ErrInvalidInput)
@@ -319,7 +358,13 @@ func (service *Service) GetAddressPoolRequest(actorID int, resourceID int) (reso
 		if err = json.Unmarshal([]byte(current.ConfigurationJSON), &configuration); err != nil {
 			return
 		}
-		if configuration.AddressPoolRequestID != resourceID {
+		var usedAddresses []string
+		if configuration.AddressPoolRequestID == resourceID {
+			usedAddresses = configuration.Addresses
+		} else if configuration.IPv6AddressPoolRequestID == resourceID {
+			usedAddresses = configuration.IPv6Addresses
+		}
+		if len(usedAddresses) == 0 {
 			continue
 		}
 		var virtualMachine *db.ManagedResource = resourcesByID[configuration.VirtualMachineID]
@@ -333,7 +378,7 @@ func (service *Service) GetAddressPoolRequest(actorID int, resourceID int) (reso
 				return
 			}
 		}
-		for _, address := range configuration.Addresses {
+		for _, address := range usedAddresses {
 			index, found := usageIndexes[address]
 			if !found {
 				continue
@@ -373,7 +418,7 @@ func (service *Service) DeleteAddressPoolRequest(actorID int, resourceID int) (e
 		if err = json.Unmarshal([]byte(candidate.ConfigurationJSON), &configuration); err != nil {
 			return
 		}
-		if configuration.AddressPoolRequestID == resourceID {
+		if configuration.AddressPoolRequestID == resourceID || configuration.IPv6AddressPoolRequestID == resourceID {
 			err = fmt.Errorf("%w: address allocation is still used by network attachment %q", ErrInvalidInput, candidate.Name)
 			return
 		}

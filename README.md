@@ -21,6 +21,17 @@ Organesson needs a cluster-wide Layer 2 network when VMs on different Proxmox no
 
 On current Proxmox VE nodes, SDN core is included. Before creating the zone, make sure every participating node has a stable IP address reachable by every other node over the existing underlay (for this lab, that is the node-to-node network on `vmbr0`) and that UDP port `4789` is allowed between those addresses in both directions. VXLAN does not encrypt traffic; keep the underlay trusted or protect it with a secure transport. VXLAN also adds 50 bytes of encapsulation overhead, so use an MTU of `1450` over a `1500`-byte underlay, or adjust both sides consistently for a different underlay MTU. Do not change `vmbr0` just to create the overlay.
 
+### Firewall preparation
+
+UDP `4789` is a **cluster prerequisite**, not a deployment resource. If the Proxmox host firewall or an upstream firewall filters node traffic, allow VXLAN only between the configured peer addresses. On each node, add both of these host-firewall rules for every peer:
+
+- **IN / ACCEPT:** protocol UDP, destination port `4789`, source `<peer-node-IP>`, destination `<this-node-IP>`.
+- **OUT / ACCEPT:** protocol UDP, destination port `4789`, source `<this-node-IP>`, destination `<peer-node-IP>`.
+
+In the Proxmox UI, host rules are under each node's **Firewall → Rules**. Keep the source and destination limited to the actual VXLAN peers; do not open UDP `4789` to arbitrary addresses. Apply matching allowances to any network firewall between the nodes. With more than two nodes, configure each participating peer pair. For this lab, the configured peer addresses are `10.0.0.4` and `10.0.0.5`; the corresponding narrow inbound/outbound node rules are already present. Organesson does not create, modify, or remove these cluster-level rules when managing VNets. Adding a node or changing the peer list requires an administrator to update the firewall rules as well.
+
+These rules only permit VXLAN transport. They do not make a VNet internet-connected or provide DHCP/DNS. Organesson-managed router VMs have separate per-network firewall rules, created with those resources, for the services they provide.
+
 Quick setup in the Proxmox web UI:
 
 1. Open **Datacenter → SDN → Zones → Create → VXLAN**.

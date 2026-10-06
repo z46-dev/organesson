@@ -20,15 +20,18 @@ const maxVXLANVNI uint32 = 16777215
 type (
 	// SDNNetworkRequest describes an isolated Proxmox SDN VNet and optional subnet.
 	SDNNetworkRequest struct {
-		Name           string `json:"name"`
-		Mode           string `json:"mode"`
-		Subnet         string `json:"subnet,omitempty"`
-		Gateway        string `json:"gateway,omitempty"`
-		DHCPEnabled    bool   `json:"dhcp_enabled"`
-		RouterVMID     int    `json:"router_vmid,omitempty"`
-		EgressPolicy   string `json:"egress_policy"`
-		OperationKey   string `json:"operation_key"`
-		VNetSourceZone string `json:"vnet_source_zone,omitempty"`
+		Name            string `json:"name"`
+		Mode            string `json:"mode"`
+		Subnet          string `json:"subnet,omitempty"`
+		Gateway         string `json:"gateway,omitempty"`
+		IPv6Subnet      string `json:"ipv6_subnet,omitempty"`
+		IPv6Gateway     string `json:"ipv6_gateway,omitempty"`
+		DHCPEnabled     bool   `json:"dhcp_enabled"`
+		IPv6DHCPEnabled bool   `json:"ipv6_dhcp_enabled,omitempty"`
+		RouterVMID      int    `json:"router_vmid,omitempty"`
+		EgressPolicy    string `json:"egress_policy"`
+		OperationKey    string `json:"operation_key"`
+		VNetSourceZone  string `json:"vnet_source_zone,omitempty"`
 	}
 
 	// SDNNetworkPlacement identifies the Organesson-owned PVE SDN configuration.
@@ -69,17 +72,28 @@ type (
 		LastPolledAt      time.Time                  `json:"last_polled_at,omitempty"`
 		DHCPRangeStart    string                     `json:"dhcp_range_start,omitempty"`
 		DHCPRangeEnd      string                     `json:"dhcp_range_end,omitempty"`
+		DHCPv6RangeStart  string                     `json:"dhcpv6_range_start,omitempty"`
+		DHCPv6RangeEnd    string                     `json:"dhcpv6_range_end,omitempty"`
 		Egress            *SDNRouterEgress           `json:"egress,omitempty"`
 		ObservedAddresses []SDNRouterObservedAddress `json:"observed_addresses"`
 	}
 
 	// SDNRouterEgress describes the router's configured NAT uplink as observed in the guest.
 	SDNRouterEgress struct {
-		Interface string   `json:"interface"`
-		MAC       string   `json:"mac,omitempty"`
-		Bridge    string   `json:"bridge,omitempty"`
-		Addresses []string `json:"addresses,omitempty"`
-		Gateway   string   `json:"gateway,omitempty"`
+		Interface     string   `json:"interface"`
+		MAC           string   `json:"mac,omitempty"`
+		Bridge        string   `json:"bridge,omitempty"`
+		Addresses     []string `json:"addresses,omitempty"`
+		IPv6Addresses []string `json:"ipv6_addresses,omitempty"`
+		Gateway       string   `json:"gateway,omitempty"`
+		IPv6Gateway   string   `json:"ipv6_gateway,omitempty"`
+	}
+
+	// SDNRouterDHCPReservation binds an allocated IPv4/IPv6 address to a VM NIC identity.
+	SDNRouterDHCPReservation struct {
+		MAC     string `json:"mac"`
+		DUID    string `json:"duid,omitempty"`
+		Address string `json:"address"`
 	}
 
 	SDNRouterPoller interface {
@@ -566,18 +580,52 @@ func validateSDNNetworkRequest(request SDNNetworkRequest) (err error) {
 	}
 	switch request.Mode {
 	case "unmanaged-layer-2":
-		if request.Subnet != "" || request.Gateway != "" || request.DHCPEnabled || request.RouterVMID != 0 {
+		if request.Subnet != "" || request.Gateway != "" || request.IPv6Subnet != "" || request.IPv6Gateway != "" || request.DHCPEnabled || request.IPv6DHCPEnabled || request.RouterVMID != 0 {
 			err = errors.New("unmanaged layer-2 network cannot configure a subnet, gateway, DHCP, or router polling")
 		}
 	case "managed":
-		var prefix netip.Prefix
-		if prefix, err = netip.ParsePrefix(request.Subnet); err != nil || prefix.Addr().Is6() || prefix != prefix.Masked() {
-			err = errors.New("managed SDN network requires a canonical IPv4 subnet")
+		if request.Subnet == "" && request.Gateway != "" || request.Subnet != "" && request.Gateway == "" {
+			err = errors.New("managed IPv4 subnet and gateway must be configured together")
 			return
 		}
-		var gateway netip.Addr
-		if gateway, err = netip.ParseAddr(request.Gateway); err != nil || !prefix.Contains(gateway) || gateway.Is6() {
-			err = errors.New("managed SDN network gateway must be inside its IPv4 subnet")
+		if request.IPv6Subnet == "" && request.IPv6Gateway != "" || request.IPv6Subnet != "" && request.IPv6Gateway == "" {
+			err = errors.New("managed IPv6 subnet and gateway must be configured together")
+			return
+		}
+		if request.Subnet == "" && request.IPv6Subnet == "" {
+			err = errors.New("managed SDN network requires at least one IPv4 or IPv6 subnet")
+			return
+		}
+		if request.DHCPEnabled && request.Subnet == "" {
+			err = errors.New("IPv4 DHCP requires an IPv4 subnet")
+			return
+		}
+		if request.IPv6DHCPEnabled && request.IPv6Subnet == "" {
+			err = errors.New("DHCPv6 requires an IPv6 subnet")
+			return
+		}
+		if request.Subnet != "" {
+			var prefix netip.Prefix
+			if prefix, err = netip.ParsePrefix(request.Subnet); err != nil || !prefix.Addr().Is4() || prefix != prefix.Masked() {
+				err = errors.New("managed IPv4 subnet must be a canonical IPv4 CIDR")
+				return
+			}
+			var gateway netip.Addr
+			if gateway, err = netip.ParseAddr(request.Gateway); err != nil || !gateway.Is4() || !prefix.Contains(gateway) {
+				err = errors.New("managed IPv4 gateway must be inside its IPv4 subnet")
+				return
+			}
+		}
+		if request.IPv6Subnet != "" {
+			var prefix netip.Prefix
+			if prefix, err = netip.ParsePrefix(request.IPv6Subnet); err != nil || !prefix.Addr().Is6() || prefix.Addr().Is4In6() || prefix != prefix.Masked() {
+				err = errors.New("managed IPv6 subnet must be a canonical IPv6 CIDR")
+				return
+			}
+			var gateway netip.Addr
+			if gateway, err = netip.ParseAddr(request.IPv6Gateway); err != nil || !gateway.Is6() || gateway.Is4In6() || !prefix.Contains(gateway) {
+				err = errors.New("managed IPv6 gateway must be inside its IPv6 subnet")
+			}
 		}
 	default:
 		err = fmt.Errorf("unsupported Organesson network mode %q", request.Mode)

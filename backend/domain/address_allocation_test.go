@@ -218,7 +218,10 @@ func TestManagedNetworkAddressPoolRequestsReserveUniqueHosts(t *testing.T) {
 	}
 	var networkConfiguration []byte
 	if networkConfiguration, err = json.Marshal(ManagedNetworkConfiguration{
-		Request: proxmox.SDNNetworkRequest{Name: "private", Mode: "managed", Subnet: "192.168.2.0/24", Gateway: "192.168.2.1"},
+		Request: proxmox.SDNNetworkRequest{
+			Name: "private", Mode: "managed", Subnet: "192.168.2.0/24", Gateway: "192.168.2.1",
+			IPv6Subnet: "2001:db8:2::/64", IPv6Gateway: "2001:db8:2::1",
+		},
 	}); err != nil {
 		t.Fatalf("encode network configuration: %v", err)
 	}
@@ -247,5 +250,17 @@ func TestManagedNetworkAddressPoolRequestsReserveUniqueHosts(t *testing.T) {
 	}
 	if next.Addresses[0] != "192.168.2.5" {
 		t.Fatalf("managed address request reused a reserved address: %v", next.Addresses)
+	}
+	request.Name = "student-ipv6-addresses"
+	request.AddressFamily = "ipv6"
+	request.RangeStart = "2001:db8:2::2"
+	request.RangeEnd = "2001:db8:2::10"
+	var ipv6 AddressPoolRequest
+	_, ipv6, err = service.ReserveAddressPoolRequest(admin.ID, request)
+	if err != nil {
+		t.Fatalf("reserve managed IPv6 addresses: %v", err)
+	}
+	if len(ipv6.Addresses) != 3 || ipv6.Addresses[0] != "2001:db8:2::2" || ipv6.Addresses[2] != "2001:db8:2::4" || ipv6.Prefix != "2001:db8:2::/64" || ipv6.Gateway != "2001:db8:2::1" {
+		t.Fatalf("unexpected managed IPv6 allocation: %#v", ipv6)
 	}
 }

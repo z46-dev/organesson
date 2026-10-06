@@ -87,6 +87,8 @@ type (
 				Mode         string `json:"mode"`
 				Subnet       string `json:"subnet"`
 				Gateway      string `json:"gateway"`
+				IPv6Subnet   string `json:"ipv6_subnet"`
+				IPv6Gateway  string `json:"ipv6_gateway"`
 				DHCPEnabled  bool   `json:"dhcp_enabled"`
 				EgressPolicy string `json:"egress_policy"`
 				RouterVMID   int    `json:"router_vmid"`
@@ -100,11 +102,16 @@ type (
 			PowerState string `json:"power_state"`
 		} `json:"resource"`
 		Configuration struct {
-			Addresses      []string `json:"addresses"`
-			AddressPrefix  string   `json:"address_prefix"`
-			AddressGateway string   `json:"address_gateway"`
-			AddressDNS     []string `json:"address_dns"`
-			Placement      struct {
+			Addresses          []string `json:"addresses"`
+			IPv6Addresses      []string `json:"ipv6_addresses"`
+			AddressFamily      string   `json:"address_family"`
+			AddressPrefix      string   `json:"address_prefix"`
+			AddressGateway     string   `json:"address_gateway"`
+			AddressDNS         []string `json:"address_dns"`
+			IPv6AddressPrefix  string   `json:"ipv6_address_prefix"`
+			IPv6AddressGateway string   `json:"ipv6_address_gateway"`
+			IPv6AddressDNS     []string `json:"ipv6_address_dns"`
+			Placement          struct {
 				Device string `json:"device"`
 				MAC    string `json:"mac"`
 			} `json:"placement"`
@@ -112,11 +119,16 @@ type (
 	}
 	guestNetworkConfigurationResult struct {
 		GuestNetwork struct {
-			Method       string   `json:"ipv4_method"`
-			Address      string   `json:"ipv4_address,omitempty"`
-			Gateway      string   `json:"ipv4_gateway,omitempty"`
-			DNS          []string `json:"ipv4_dns,omitempty"`
-			NeverDefault bool     `json:"ipv4_never_default,omitempty"`
+			Method           string   `json:"ipv4_method"`
+			Address          string   `json:"ipv4_address,omitempty"`
+			Gateway          string   `json:"ipv4_gateway,omitempty"`
+			DNS              []string `json:"ipv4_dns,omitempty"`
+			NeverDefault     bool     `json:"ipv4_never_default,omitempty"`
+			IPv6Method       string   `json:"ipv6_method,omitempty"`
+			IPv6Address      string   `json:"ipv6_address,omitempty"`
+			IPv6Gateway      string   `json:"ipv6_gateway,omitempty"`
+			IPv6DNS          []string `json:"ipv6_dns,omitempty"`
+			IPv6NeverDefault bool     `json:"ipv6_never_default,omitempty"`
 		} `json:"guest_network"`
 	}
 )
@@ -238,6 +250,7 @@ func networkOperations(mode string) (operations remoteResourceOperations) {
 		err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+deploymentID+"/networks", map[string]any{
 			"parent_node_id": parentNodeID, "name": data.Get("name").(string), "mode": mode,
 			"ipv4_subnet": data.Get("ipv4_subnet").(string), "ipv4_gateway": data.Get("ipv4_gateway").(string),
+			"ipv6_subnet": data.Get("ipv6_subnet").(string), "ipv6_gateway": data.Get("ipv6_gateway").(string),
 			"dhcp_enabled": data.Get("dhcp_enabled").(bool), "egress_policy": data.Get("egress_policy").(string),
 			"router_vmid": data.Get("router_vmid").(int),
 		}, &result)
@@ -263,6 +276,8 @@ func networkOperations(mode string) (operations remoteResourceOperations) {
 			_ = data.Set("name", result.Resource.Name)
 			_ = data.Set("ipv4_subnet", result.Configuration.Request.Subnet)
 			_ = data.Set("ipv4_gateway", result.Configuration.Request.Gateway)
+			_ = data.Set("ipv6_subnet", result.Configuration.Request.IPv6Subnet)
+			_ = data.Set("ipv6_gateway", result.Configuration.Request.IPv6Gateway)
 			_ = data.Set("dhcp_enabled", result.Configuration.Request.DHCPEnabled)
 			_ = data.Set("egress_policy", result.Configuration.Request.EgressPolicy)
 			_ = data.Set("router_vmid", result.Configuration.Request.RouterVMID)
@@ -290,11 +305,13 @@ func networkAttachmentOperations() (operations remoteResourceOperations) {
 			return
 		}
 		var body map[string]any = map[string]any{
-			"name":                    data.Get("name").(string),
-			"environment_network":     data.Get("environment_network").(string),
-			"address_pool_request_id": 0,
-			"requested_address_count": data.Get("requested_address_count").(int),
-			"logical_network_id":      0,
+			"name":                         data.Get("name").(string),
+			"environment_network":          data.Get("environment_network").(string),
+			"address_pool_request_id":      0,
+			"requested_address_count":      data.Get("requested_address_count").(int),
+			"ipv6_address_pool_request_id": 0,
+			"requested_ipv6_address_count": data.Get("requested_ipv6_address_count").(int),
+			"logical_network_id":           0,
 		}
 		if value := data.Get("logical_network_id").(string); value != "" {
 			if body["logical_network_id"], err = strconv.Atoi(value); err != nil {
@@ -306,6 +323,11 @@ func networkAttachmentOperations() (operations remoteResourceOperations) {
 				return
 			}
 		}
+		if value := data.Get("ipv6_address_pool_request_id").(string); value != "" {
+			if body["ipv6_address_pool_request_id"], err = strconv.Atoi(value); err != nil {
+				return
+			}
+		}
 		var result networkAttachmentResult
 		err = client.request(ctx, http.MethodPost, "/api/v1/virtual-machines/"+vmID+"/network-attachments", body, &result)
 		if err != nil {
@@ -313,9 +335,14 @@ func networkAttachmentOperations() (operations remoteResourceOperations) {
 		}
 		data.SetId(strconv.Itoa(result.Resource.ID))
 		_ = data.Set("addresses", result.Configuration.Addresses)
+		_ = data.Set("ipv6_addresses", result.Configuration.IPv6Addresses)
+		_ = data.Set("address_family", result.Configuration.AddressFamily)
 		_ = data.Set("address_prefix", result.Configuration.AddressPrefix)
 		_ = data.Set("address_gateway", result.Configuration.AddressGateway)
 		_ = data.Set("address_dns", result.Configuration.AddressDNS)
+		_ = data.Set("ipv6_address_prefix", result.Configuration.IPv6AddressPrefix)
+		_ = data.Set("ipv6_address_gateway", result.Configuration.IPv6AddressGateway)
+		_ = data.Set("ipv6_address_dns", result.Configuration.IPv6AddressDNS)
 		_ = data.Set("net_device", result.Configuration.Placement.Device)
 		_ = data.Set("mac_address", result.Configuration.Placement.MAC)
 		_ = data.Set("summary", fmt.Sprintf("attached %s to %s with MAC %s", result.Configuration.Placement.Device, data.Get("virtual_machine_id").(string), result.Configuration.Placement.MAC))
@@ -331,9 +358,14 @@ func networkAttachmentOperations() (operations remoteResourceOperations) {
 		if err == nil {
 			_ = data.Set("name", result.Resource.Name)
 			_ = data.Set("addresses", result.Configuration.Addresses)
+			_ = data.Set("ipv6_addresses", result.Configuration.IPv6Addresses)
+			_ = data.Set("address_family", result.Configuration.AddressFamily)
 			_ = data.Set("address_prefix", result.Configuration.AddressPrefix)
 			_ = data.Set("address_gateway", result.Configuration.AddressGateway)
 			_ = data.Set("address_dns", result.Configuration.AddressDNS)
+			_ = data.Set("ipv6_address_prefix", result.Configuration.IPv6AddressPrefix)
+			_ = data.Set("ipv6_address_gateway", result.Configuration.IPv6AddressGateway)
+			_ = data.Set("ipv6_address_dns", result.Configuration.IPv6AddressDNS)
 			_ = data.Set("net_device", result.Configuration.Placement.Device)
 			_ = data.Set("mac_address", result.Configuration.Placement.MAC)
 		}
@@ -360,11 +392,18 @@ func guestNetworkConfigurationOperations() (operations remoteResourceOperations)
 		for _, entry := range data.Get("ipv4_dns").([]interface{}) {
 			dns = append(dns, entry.(string))
 		}
+		var ipv6DNS []string
+		for _, entry := range data.Get("ipv6_dns").([]interface{}) {
+			ipv6DNS = append(ipv6DNS, entry.(string))
+		}
 		var result guestNetworkConfigurationResult
 		err = client.request(ctx, http.MethodPost, "/api/v1/network-attachments/"+attachmentID+"/guest-network-configuration", map[string]any{
 			"ipv4_method": data.Get("ipv4_method").(string), "ipv4_address": data.Get("ipv4_address").(string),
 			"ipv4_gateway": data.Get("ipv4_gateway").(string), "ipv4_dns": dns,
 			"ipv4_never_default": data.Get("ipv4_never_default").(bool),
+			"ipv6_method":        data.Get("ipv6_method").(string), "ipv6_address": data.Get("ipv6_address").(string),
+			"ipv6_gateway": data.Get("ipv6_gateway").(string), "ipv6_dns": ipv6DNS,
+			"ipv6_never_default": data.Get("ipv6_never_default").(bool),
 		}, &result)
 		if err != nil {
 			return
@@ -397,17 +436,27 @@ func guestNetworkConfigurationOperations() (operations remoteResourceOperations)
 }
 
 func setGuestNetworkConfiguration(data *schema.ResourceData, configuration struct {
-	Method       string   `json:"ipv4_method"`
-	Address      string   `json:"ipv4_address,omitempty"`
-	Gateway      string   `json:"ipv4_gateway,omitempty"`
-	DNS          []string `json:"ipv4_dns,omitempty"`
-	NeverDefault bool     `json:"ipv4_never_default,omitempty"`
+	Method           string   `json:"ipv4_method"`
+	Address          string   `json:"ipv4_address,omitempty"`
+	Gateway          string   `json:"ipv4_gateway,omitempty"`
+	DNS              []string `json:"ipv4_dns,omitempty"`
+	NeverDefault     bool     `json:"ipv4_never_default,omitempty"`
+	IPv6Method       string   `json:"ipv6_method,omitempty"`
+	IPv6Address      string   `json:"ipv6_address,omitempty"`
+	IPv6Gateway      string   `json:"ipv6_gateway,omitempty"`
+	IPv6DNS          []string `json:"ipv6_dns,omitempty"`
+	IPv6NeverDefault bool     `json:"ipv6_never_default,omitempty"`
 }) {
 	_ = data.Set("ipv4_method", configuration.Method)
 	_ = data.Set("ipv4_address", configuration.Address)
 	_ = data.Set("ipv4_gateway", configuration.Gateway)
 	_ = data.Set("ipv4_dns", configuration.DNS)
 	_ = data.Set("ipv4_never_default", configuration.NeverDefault)
+	_ = data.Set("ipv6_method", configuration.IPv6Method)
+	_ = data.Set("ipv6_address", configuration.IPv6Address)
+	_ = data.Set("ipv6_gateway", configuration.IPv6Gateway)
+	_ = data.Set("ipv6_dns", configuration.IPv6DNS)
+	_ = data.Set("ipv6_never_default", configuration.IPv6NeverDefault)
 	_ = data.Set("summary", fmt.Sprintf("configured %s IPv4 on attachment %q", configuration.Method, data.Get("network_attachment_id")))
 }
 

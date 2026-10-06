@@ -181,16 +181,16 @@ func ValidateResourcePolicy(policy ResourcePolicy, inventory *ResourceInventory)
 		for _, configuredSubnet := range configuredSubnets {
 			var subnet netip.Prefix
 			var parseErr error
-			if subnet, parseErr = netip.ParsePrefix(configuredSubnet.Prefix); parseErr != nil || subnet != subnet.Masked() || subnet.Addr().Is6() {
-				addIssue(fmt.Sprintf("Network %q subnet %q must be a canonical IPv4 CIDR.", network.Name, configuredSubnet.Prefix))
+			if subnet, parseErr = netip.ParsePrefix(configuredSubnet.Prefix); parseErr != nil || subnet != subnet.Masked() || subnet.Addr().Is4In6() {
+				addIssue(fmt.Sprintf("Network %q subnet %q must be a canonical IPv4 or IPv6 CIDR.", network.Name, configuredSubnet.Prefix))
 				continue
 			}
 			var gateway netip.Addr
 			if configuredSubnet.Gateway == "" && targetMode == "create" {
-				addIssue(fmt.Sprintf("Network %q subnet %q needs an IPv4 gateway inside that subnet.", network.Name, configuredSubnet.Prefix))
+				addIssue(fmt.Sprintf("Network %q subnet %q needs a gateway inside that subnet.", network.Name, configuredSubnet.Prefix))
 			} else if configuredSubnet.Gateway != "" {
-				if gateway, parseErr = netip.ParseAddr(configuredSubnet.Gateway); parseErr != nil || gateway.Is6() || !subnet.Contains(gateway) {
-					addIssue(fmt.Sprintf("Network %q subnet %q needs an IPv4 gateway inside that subnet.", network.Name, configuredSubnet.Prefix))
+				if gateway, parseErr = netip.ParseAddr(configuredSubnet.Gateway); parseErr != nil || gateway.Is4In6() || gateway.Is4() != subnet.Addr().Is4() || !subnet.Contains(gateway) {
+					addIssue(fmt.Sprintf("Network %q subnet %q needs a same-family gateway inside that subnet.", network.Name, configuredSubnet.Prefix))
 				}
 			}
 			subnets = append(subnets, subnet)

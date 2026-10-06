@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Boxes, Cable, ChevronDown, ChevronRight, CircleUserRound, FolderTree, ListTree, Network, RefreshCw, Router, Server, Users } from "lucide-react";
+import { Boxes, ChevronDown, ChevronRight, CircleUserRound, FolderTree, ListTree, Network, RefreshCw, Router, Server, Users } from "lucide-react";
 import type { ApiRequest } from "./api";
 import type { Deployment, DeploymentAccess, DeploymentDetail, Resource } from "./types";
 import { ResourcePowerControl } from "./ResourcePowerControl";
@@ -27,11 +27,11 @@ type AddressPoolDetails = {
 type ResourceLiveState = "verified" | "missing" | "unknown" | "unavailable";
 type ObservedRouterAddress = { address: string; mac?: string; hostname?: string; source?: string; last_seen?: string; lease_expires_at?: string; virtual_machine_id?: number; virtual_machine_name?: string };
 type StaticNetworkAddress = { address: string; mac?: string; network_attachment_id: number; network_attachment: string; virtual_machine_id?: number; virtual_machine?: string };
-type RouterPollingDetails = { state: "not_configured" | "available" | "unavailable"; router_vmid?: number; last_polled_at?: string; dhcp_range_start?: string; dhcp_range_end?: string; egress?: { interface: string; mac?: string; bridge?: string; addresses?: string[]; gateway?: string }; observed_addresses: ObservedRouterAddress[]; static_addresses: StaticNetworkAddress[] };
+type RouterPollingDetails = { state: "not_configured" | "available" | "unavailable"; router_vmid?: number; last_polled_at?: string; dhcp_range_start?: string; dhcp_range_end?: string; dhcpv6_range_start?: string; dhcpv6_range_end?: string; egress?: { interface: string; mac?: string; bridge?: string; addresses?: string[]; ipv6_addresses?: string[]; gateway?: string; ipv6_gateway?: string }; observed_addresses: ObservedRouterAddress[]; static_addresses: StaticNetworkAddress[] };
 type NetworkAddressRow = { address: string; mac?: string; virtual_machine_id?: number; virtual_machine_name?: string; lease_expires_at?: string; is_dhcp: boolean };
 type VMSpecification = { template_alias: string; sockets: number; cores: number; architecture: string; cpu_model: string; memory_mib: number; boot_disk_gib: number; pool: string; storage: string };
-type NetworkDetails = { request: { mode: string; subnet?: string; gateway?: string; dhcp_enabled: boolean; egress_policy: string; router_vmid?: number }; placement: { zone: string; vnet: string } };
-type AttachmentDetails = { request: { node: string; vmid: string; bridge: string }; placement: { device: string; mac: string }; addresses: string[]; environment_network?: string; logical_network_id?: number; address_pool_request_id?: number; requested_address_count?: number; address_prefix?: string; address_gateway?: string; address_dns?: string[]; guest_network?: { ipv4_method: string; ipv4_address?: string; ipv4_gateway?: string; ipv4_dns?: string[] } };
+type NetworkDetails = { request: { mode: string; subnet?: string; gateway?: string; ipv6_subnet?: string; ipv6_gateway?: string; dhcp_enabled: boolean; egress_policy: string; router_vmid?: number }; placement: { zone: string; vnet: string } };
+type AttachmentDetails = { request: { node: string; vmid: string; bridge: string }; placement: { device: string; mac: string }; addresses: string[]; ipv6_addresses?: string[]; environment_network?: string; logical_network_id?: number; address_pool_request_id?: number; requested_address_count?: number; ipv6_address_prefix?: string; ipv6_address_gateway?: string; ipv6_address_dns?: string[]; address_prefix?: string; address_gateway?: string; address_dns?: string[]; guest_network?: { ipv4_method: string; ipv4_address?: string; ipv4_gateway?: string; ipv4_dns?: string[]; ipv6_method?: string; ipv6_address?: string; ipv6_gateway?: string; ipv6_dns?: string[] } };
 type SelectedResourceDetails = { allocation?: AddressPoolDetails; configuration?: NetworkDetails | AttachmentDetails; specification?: VMSpecification; live_state?: ResourceLiveState; router_polling?: RouterPollingDetails };
 
 function formatCPUSpecification(specification?: VMSpecification) {
@@ -311,10 +311,11 @@ export function Dashboard({ request, onError }: Props) {
 
         return sortedOwnershipNodes.map(({ node, resource }) => {
             if (node.kind === 2) {
-                if (!resource) {
+                // Network interfaces are VM configuration, not standalone tree resources.
+                if (!resource || resource.kind === "network_attachment") {
                     return null;
                 }
-                const ResourceIcon = resource.kind === "virtual_machine" ? Server : resource.kind === "virtual_network" ? Router : resource.kind === "network_attachment" ? Cable : resource.kind === "address_pool_request" ? ListTree : Network;
+                const ResourceIcon = resource.kind === "virtual_machine" ? Server : resource.kind === "virtual_network" ? Router : resource.kind === "address_pool_request" ? ListTree : Network;
                 return <li key={node.id}><button className={`tree-resource${resource.id === selectedResourceID ? " is-current" : ""}`} type="button" onClick={() => { selectSection("resources"); setSelectedResourceID(resource.id); }}>
                     <span className="tree-resource-icon">{resource.kind === "virtual_machine" && <span className={`tree-resource-state${resource.power_state === "running" ? " is-running" : ""}`} aria-label={`VM ${resource.power_state}`} />}<ResourceIcon size={14} aria-hidden="true" /></span>
                     <span>{resource.name}</span>
@@ -348,7 +349,7 @@ export function Dashboard({ request, onError }: Props) {
                             {deployments.map((deployment) => {
                                 const isSelected = selectedDeploymentID === deployment.id;
                                 const isExpanded = isSelected && collapsedDeployments[deployment.id] !== true;
-                                const resources = isSelected ? selectedDeployment?.resources ?? [] : [];
+                                const resources = isSelected ? selectedDeployment?.resources.filter((resource) => resource.kind !== "network_attachment") ?? [] : [];
                                 return (
                                     <li className="tree-deployment" key={deployment.id}>
                                         <button className={`tree-deployment-button${isSelected ? " is-selected" : ""}`} type="button" aria-expanded={isExpanded} onClick={() => {
@@ -372,7 +373,7 @@ export function Dashboard({ request, onError }: Props) {
                                                         const key = `${deployment.id}:resources`;
                                                         const expanded = branchIsExpanded(key);
                                                         return <>
-                                                            <button className={`tree-category-button${selectedSection === "resources" ? " is-active" : ""}`} type="button" aria-expanded={expanded} onClick={() => { toggleBranch(key); selectSection("resources"); }}><span className="tree-branch-disclosure">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span><Server size={14} /><span>Resources</span><small>{selectedDeployment?.resources.length ?? "—"}</small></button>
+                                                            <button className={`tree-category-button${selectedSection === "resources" ? " is-active" : ""}`} type="button" aria-expanded={expanded} onClick={() => { toggleBranch(key); selectSection("resources"); }}><span className="tree-branch-disclosure">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span><Server size={14} /><span>Resources</span><small>{selectedDeployment ? selectedDeployment.resources.filter((resource) => resource.kind !== "network_attachment").length : "—"}</small></button>
                                                             {expanded && resources.length > 0 && selectedDeployment?.deployment.root_node_id !== null && selectedDeployment?.deployment.root_node_id !== undefined && <ul className="tree-resources">{renderOwnershipNodes(selectedDeployment.deployment.root_node_id)}</ul>}
                                                         </>;
                                                     })()}
@@ -453,21 +454,21 @@ export function Dashboard({ request, onError }: Props) {
                                     {selectedResource.kind === "virtual_network" && selectedResourceDetails?.configuration && "mode" in selectedResourceDetails.configuration.request && "vnet" in selectedResourceDetails.configuration.placement && <section className="typed-resource-details" aria-label="Virtual network details">
                                         <div className="network-property-columns">
                                             <table className="address-properties-table network-properties-table"><tbody>
-                                                <tr><th scope="row">Network mode</th><td>{selectedResourceDetails.configuration.request.mode === "managed" ? "Managed IPv4" : "Unmanaged Layer 2"}</td></tr>
+                                                <tr><th scope="row">Network mode</th><td>{selectedResourceDetails.configuration.request.mode === "managed" ? "Managed" : "Unmanaged Layer 2"}</td></tr>
                                                 {selectedResourceDetails.configuration.request.mode === "managed" && <>
-                                                    <tr><th scope="row">Subnet</th><td>{selectedResourceDetails.configuration.request.subnet || "—"}</td></tr>
-                                                    <tr><th scope="row">Gateway</th><td>{selectedResourceDetails.configuration.request.gateway || "—"}</td></tr>
+                                                    {(selectedResourceDetails.configuration.request.subnet || selectedResourceDetails.configuration.request.ipv6_subnet) && <tr><th scope="row">Subnet</th><td>{[selectedResourceDetails.configuration.request.subnet, selectedResourceDetails.configuration.request.ipv6_subnet].filter(Boolean).map((subnet) => <code key={subnet}>{subnet}</code>)}</td></tr>}
+                                                    {(selectedResourceDetails.configuration.request.gateway || selectedResourceDetails.configuration.request.ipv6_gateway) && <tr><th scope="row">Gateway</th><td>{[selectedResourceDetails.configuration.request.gateway, selectedResourceDetails.configuration.request.ipv6_gateway].filter(Boolean).map((gateway) => <code key={gateway}>{gateway}</code>)}</td></tr>}
                                                 </>}
                                                 <tr><th scope="row">Proxmox VNet</th><td>{selectedResourceDetails.configuration.placement.vnet}</td></tr>
                                                 <tr><th scope="row">SDN zone</th><td>{selectedResourceDetails.configuration.placement.zone}</td></tr>
                                             </tbody></table>
                                             <table className="address-properties-table network-properties-table"><tbody>
-                                                {selectedResourceDetails.configuration.request.mode === "managed" && <tr><th scope="row">DHCP</th><td><div className="network-dhcp-value"><span>{selectedResourceDetails.configuration.request.dhcp_enabled ? "Enabled" : "Disabled"}</span>{selectedResourceDetails.configuration.request.dhcp_enabled && selectedResourceDetails.router_polling?.dhcp_range_start && selectedResourceDetails.router_polling.dhcp_range_end ? <code>{selectedResourceDetails.router_polling.dhcp_range_start}–{selectedResourceDetails.router_polling.dhcp_range_end}</code> : null}</div></td></tr>}
+                                                {selectedResourceDetails.configuration.request.mode === "managed" && <tr><th scope="row">DHCP</th><td><div className="network-dhcp-value"><span>{selectedResourceDetails.configuration.request.dhcp_enabled ? "Enabled" : "Disabled"}</span>{selectedResourceDetails.configuration.request.dhcp_enabled && selectedResourceDetails.router_polling?.dhcp_range_start && selectedResourceDetails.router_polling.dhcp_range_end ? <code>v4 {selectedResourceDetails.router_polling.dhcp_range_start}–{selectedResourceDetails.router_polling.dhcp_range_end}</code> : null}{selectedResourceDetails.router_polling?.dhcpv6_range_start && selectedResourceDetails.router_polling.dhcpv6_range_end ? <code>v6 {selectedResourceDetails.router_polling.dhcpv6_range_start}–{selectedResourceDetails.router_polling.dhcpv6_range_end}</code> : null}</div></td></tr>}
                                                 <tr><th scope="row">Egress</th><td>{selectedResourceDetails.router_polling?.egress ? <table className="network-egress-table"><tbody>
                                                     <tr><th scope="row">SDN policy</th><td>{selectedResourceDetails.configuration.request.egress_policy === "isolated" ? "Isolated" : selectedResourceDetails.configuration.request.egress_policy}</td></tr>
                                                         <tr><th scope="row">NAT uplink</th><td>{[selectedResourceDetails.router_polling.egress.bridge, selectedResourceDetails.router_polling.egress.interface].filter(Boolean).join(" · ") || "Router interface"}</td></tr>
-                                                        {selectedResourceDetails.router_polling.egress.addresses?.length ? <tr><th scope="row">Address</th><td>{selectedResourceDetails.router_polling.egress.addresses.map((address) => <code key={address}>{address}</code>)}</td></tr> : null}
-                                                        {selectedResourceDetails.router_polling.egress.gateway ? <tr><th scope="row">Gateway</th><td><code>{selectedResourceDetails.router_polling.egress.gateway}</code></td></tr> : null}
+                                                        {selectedResourceDetails.router_polling.egress.addresses?.length || selectedResourceDetails.router_polling.egress.ipv6_addresses?.length ? <tr><th scope="row">Address</th><td>{[...(selectedResourceDetails.router_polling.egress.addresses ?? []), ...(selectedResourceDetails.router_polling.egress.ipv6_addresses ?? [])].map((address) => <code key={address}>{address}</code>)}</td></tr> : null}
+                                                        {(selectedResourceDetails.router_polling.egress.gateway || selectedResourceDetails.router_polling.egress.ipv6_gateway) ? <tr><th scope="row">Gateway</th><td>{[selectedResourceDetails.router_polling.egress.gateway, selectedResourceDetails.router_polling.egress.ipv6_gateway].filter(Boolean).map((gateway) => <code key={gateway}>{gateway}</code>)}</td></tr> : null}
                                                 </tbody></table> : selectedResourceDetails.configuration.request.egress_policy === "isolated" ? "Isolated" : selectedResourceDetails.configuration.request.egress_policy}</td></tr>
                                                 <tr><th scope="row">Proxmox state</th><td>{selectedResourceDetails.live_state ?? "unavailable"}</td></tr>
                                                 {selectedResourceDetails.configuration.request.router_vmid ? <tr><th scope="row">Router VM</th><td>{selectedResourceDetails.configuration.request.router_vmid}</td></tr> : null}
