@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
+	"reflect"
 	"strings"
 
 	"github.com/z46-dev/organesson/backend/db"
@@ -53,11 +55,21 @@ func (service *Service) ReserveSDNNetwork(actorID int, deploymentID int, parentN
 		return
 	}
 	request.VNetSourceZone = policy.VNetSourceZone
+	if request.ExternalVLAN != nil {
+		if request.ExternalVLAN.TrunkNode == "" || request.ExternalVLAN.TrunkBridge == "" || request.ExternalVLAN.VLANID < 1 || request.ExternalVLAN.VLANID > 4094 {
+			err = fmt.Errorf("%w: external VLAN needs an authorized trunk and a VLAN ID from 1 through 4094", ErrInvalidInput)
+			return
+		}
+		if request.ExternalVLAN.Nodes, err = proxmox.AuthorizeExternalVLAN(policy, request.ExternalVLAN); err != nil {
+			err = fmt.Errorf("%w: %v", ErrInvalidInput, err)
+			return
+		}
+	}
 	if err = proxmox.ValidateSDNNetworkRequest(request); err != nil {
 		err = fmt.Errorf("%w: %v", ErrInvalidInput, err)
 		return
 	}
-	var placement proxmox.SDNNetworkPlacement = proxmox.SDNNetworkNames(request.OperationKey, request.VNetSourceZone)
+	var placement proxmox.SDNNetworkPlacement = proxmox.SDNNetworkPlacementForRequest(request)
 	var configuration ManagedNetworkConfiguration = ManagedNetworkConfiguration{Request: request, Placement: placement}
 	var encoded []byte
 	if encoded, err = json.Marshal(configuration); err != nil {
@@ -75,7 +87,7 @@ func (service *Service) ReserveSDNNetwork(actorID int, deploymentID int, parentN
 		if err = json.Unmarshal([]byte(current.ConfigurationJSON), &existingConfiguration); err != nil {
 			return
 		}
-		if current.Kind != "virtual_network" || existingConfiguration.Request != request {
+		if current.Kind != "virtual_network" || !reflect.DeepEqual(existingConfiguration.Request, request) {
 			err = fmt.Errorf("%w: network %q already exists with different settings", ErrInvalidInput, request.Name)
 			return
 		}
@@ -140,10 +152,11 @@ func (service *Service) ReadySDNNetwork(actorID int, resourceID int, placement p
 	if err = json.Unmarshal([]byte(resource.ConfigurationJSON), &configuration); err != nil {
 		return
 	}
-	var expected proxmox.SDNNetworkPlacement = proxmox.SDNNetworkNames(resource.OperationKey, configuration.Request.VNetSourceZone)
+	var expected proxmox.SDNNetworkPlacement = proxmox.SDNNetworkPlacementForRequest(configuration.Request)
 	if placement.Zone != expected.Zone || placement.VNet != expected.VNet || resource.ExternalID != expected.VNet || resource.ExternalNode != expected.Zone ||
-		configuration.Request.VNetSourceZone == "" && placement.Tag != 0 ||
-		configuration.Request.VNetSourceZone != "" && (placement.Tag == 0 || placement.Tag > 16777215) {
+		configuration.Request.ExternalVLAN == nil && configuration.Request.VNetSourceZone == "" && placement.Tag != 0 ||
+		configuration.Request.ExternalVLAN == nil && configuration.Request.VNetSourceZone != "" && (placement.Tag == 0 || placement.Tag > 16777215) ||
+		configuration.Request.ExternalVLAN != nil && placement.Tag != uint32(configuration.Request.ExternalVLAN.VLANID) {
 		err = fmt.Errorf("%w: Proxmox SDN placement does not match the reserved resource", ErrInvalidInput)
 		return
 	}
@@ -237,20 +250,25 @@ func (service *Service) ListNetworkStaticAddresses(actorID int, network *db.Mana
 
 // FilterStaleRouterLeases drops DHCP leases superseded by a static address on the same NIC.
 func FilterStaleRouterLeases(staticAddresses []StaticNetworkAddress, observed []proxmox.SDNRouterObservedAddress) (filtered []proxmox.SDNRouterObservedAddress) {
-	var staticByMAC map[string]map[string]bool = make(map[string]map[string]bool)
+	var staticByMAC map[string]map[bool]bool = make(map[string]map[bool]bool)
 	for _, address := range staticAddresses {
 		var mac string = strings.ToLower(strings.TrimSpace(address.MAC))
 		if mac == "" {
 			continue
 		}
-		if staticByMAC[mac] == nil {
-			staticByMAC[mac] = make(map[string]bool)
+		var parsed netip.Addr
+		if parsed, _ = netip.ParseAddr(strings.Split(address.Address, "/")[0]); !parsed.IsValid() {
+			continue
 		}
-		staticByMAC[mac][strings.Split(address.Address, "/")[0]] = true
+		if staticByMAC[mac] == nil {
+			staticByMAC[mac] = make(map[bool]bool)
+		}
+		staticByMAC[mac][parsed.Is4()] = true
 	}
 	for _, address := range observed {
 		if strings.Contains(address.Source, "lease") {
-			if len(staticByMAC[strings.ToLower(strings.TrimSpace(address.MAC))]) > 0 {
+			var parsed netip.Addr
+			if parsed, _ = netip.ParseAddr(strings.Split(address.Address, "/")[0]); parsed.IsValid() && staticByMAC[strings.ToLower(strings.TrimSpace(address.MAC))][parsed.Is4()] {
 				continue
 			}
 		}

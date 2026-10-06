@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"sort"
 	"strings"
 )
 
@@ -21,6 +22,7 @@ type (
 		Storages         []string         `json:"storages"`
 		VNetSourceZone   string           `json:"vnet_source_zone"`
 		Networks         []PolicyNetwork  `json:"networks"`
+		VLANTrunks       []VLANTrunk      `json:"vlan_trunks"`
 	}
 
 	// CapacityLimits uses zero to mean that Organesson does not impose that global limit.
@@ -77,6 +79,19 @@ type (
 		DNS              []string `json:"dns"`
 	}
 
+	// VLANTrunk authorizes one node-local VLAN-aware bridge for external VNet exposure.
+	VLANTrunk struct {
+		Node              string      `json:"node"`
+		Bridge            string      `json:"bridge"`
+		AllowedVLANRanges []VLANRange `json:"allowed_vlan_ranges"`
+	}
+
+	// VLANRange is an inclusive range of permitted 802.1Q VLAN identifiers.
+	VLANRange struct {
+		Start int `json:"start"`
+		End   int `json:"end"`
+	}
+
 	// ResourceInventory contains the read-only resource names discovered from PVE.
 	ResourceInventory struct {
 		Pools       []string                  `json:"pools"`
@@ -85,6 +100,22 @@ type (
 		VNets       []string                  `json:"vnets"`
 		VNetSources []string                  `json:"vnet_sources"`
 		VNetSubnets map[string][]PolicySubnet `json:"vnet_subnets,omitempty"`
+		Nodes       []NodeNetworkInventory    `json:"nodes"`
+	}
+
+	// NodeNetworkInventory describes eligible link targets on one Proxmox node.
+	NodeNetworkInventory struct {
+		Name    string                   `json:"name"`
+		Status  string                   `json:"status"`
+		Bridges []BridgeNetworkInventory `json:"bridges"`
+	}
+
+	// BridgeNetworkInventory contains the bridge properties needed to validate a VLAN trunk.
+	BridgeNetworkInventory struct {
+		Name             string `json:"name"`
+		VLANAware        bool   `json:"vlan_aware"`
+		HasPhysicalPorts bool   `json:"has_physical_ports"`
+		HasIPConfig      bool   `json:"has_ip_config"`
 	}
 
 	// ResourcePolicyValidation identifies local issues and PVE inventory mismatches.
@@ -222,6 +253,103 @@ func ValidateResourcePolicy(policy ResourcePolicy, inventory *ResourceInventory)
 			}
 		}
 	}
+	seenTrunks := make(map[string]bool)
+	for _, trunk := range policy.VLANTrunks {
+		var node string = strings.TrimSpace(trunk.Node)
+		var bridge string = strings.TrimSpace(trunk.Bridge)
+		var key string = node + "\x00" + bridge
+		if node == "" || bridge == "" || seenTrunks[key] {
+			addIssue("VLAN trunks must have unique, non-empty node and bridge pairs.")
+			continue
+		}
+		seenTrunks[key] = true
+		if len(trunk.AllowedVLANRanges) == 0 {
+			addIssue(fmt.Sprintf("VLAN trunk %s:%s must allow at least one VLAN ID or range.", node, bridge))
+		}
+		for index, vlanRange := range trunk.AllowedVLANRanges {
+			if vlanRange.Start < 1 || vlanRange.End > 4094 || vlanRange.Start > vlanRange.End {
+				addIssue(fmt.Sprintf("VLAN trunk %s:%s has an invalid VLAN range %d-%d; use IDs from 1 through 4094.", node, bridge, vlanRange.Start, vlanRange.End))
+				continue
+			}
+			for _, otherRange := range trunk.AllowedVLANRanges[index+1:] {
+				if vlanRange.Start <= otherRange.End && otherRange.Start <= vlanRange.End {
+					addIssue(fmt.Sprintf("VLAN trunk %s:%s has overlapping VLAN ranges.", node, bridge))
+					break
+				}
+			}
+		}
+		if inventory == nil {
+			continue
+		}
+		var matchedNode *NodeNetworkInventory
+		for index := range inventory.Nodes {
+			if inventory.Nodes[index].Name == node {
+				matchedNode = &inventory.Nodes[index]
+				break
+			}
+		}
+		if matchedNode == nil || matchedNode.Status != "online" {
+			addIssue(fmt.Sprintf("VLAN trunk node %q was not found online in the Proxmox inventory.", node))
+			continue
+		}
+		var matchedBridge *BridgeNetworkInventory
+		for index := range matchedNode.Bridges {
+			if matchedNode.Bridges[index].Name == bridge {
+				matchedBridge = &matchedNode.Bridges[index]
+				break
+			}
+		}
+		if matchedBridge == nil {
+			addIssue(fmt.Sprintf("Bridge %q was not found on Proxmox node %q.", bridge, node))
+			continue
+		}
+		if !matchedBridge.VLANAware {
+			addIssue(fmt.Sprintf("Bridge %q on node %q must be VLAN-aware.", bridge, node))
+		}
+		if !matchedBridge.HasPhysicalPorts {
+			addIssue(fmt.Sprintf("Bridge %q on node %q must have a physical or bonded trunk port.", bridge, node))
+		}
+		if matchedBridge.HasIPConfig {
+			addIssue(fmt.Sprintf("Bridge %q on node %q must not have host IP addresses or gateways.", bridge, node))
+		}
+	}
+	return
+}
+
+// AuthorizeExternalVLAN validates an exposure against platform policy and returns every configured node using that bridge and VLAN.
+func AuthorizeExternalVLAN(policy ResourcePolicy, exposure *SDNExternalVLANExposure) (nodes []string, err error) {
+	if exposure == nil {
+		return
+	}
+	var selectedAuthorized bool
+	var allowedNodes map[string]bool = make(map[string]bool)
+	for _, trunk := range policy.VLANTrunks {
+		if trunk.Bridge != exposure.TrunkBridge {
+			continue
+		}
+		var vlanAllowed bool
+		for _, vlanRange := range trunk.AllowedVLANRanges {
+			if exposure.VLANID >= vlanRange.Start && exposure.VLANID <= vlanRange.End {
+				vlanAllowed = true
+				break
+			}
+		}
+		if !vlanAllowed {
+			continue
+		}
+		allowedNodes[trunk.Node] = true
+		if trunk.Node == exposure.TrunkNode {
+			selectedAuthorized = true
+		}
+	}
+	if !selectedAuthorized {
+		err = fmt.Errorf("VLAN %d is not authorized on trunk %s:%s", exposure.VLANID, exposure.TrunkNode, exposure.TrunkBridge)
+		return
+	}
+	for node := range allowedNodes {
+		nodes = append(nodes, node)
+	}
+	sort.Strings(nodes)
 	return
 }
 

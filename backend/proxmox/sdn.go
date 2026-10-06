@@ -20,18 +20,27 @@ const maxVXLANVNI uint32 = 16777215
 type (
 	// SDNNetworkRequest describes an isolated Proxmox SDN VNet and optional subnet.
 	SDNNetworkRequest struct {
-		Name            string `json:"name"`
-		Mode            string `json:"mode"`
-		Subnet          string `json:"subnet,omitempty"`
-		Gateway         string `json:"gateway,omitempty"`
-		IPv6Subnet      string `json:"ipv6_subnet,omitempty"`
-		IPv6Gateway     string `json:"ipv6_gateway,omitempty"`
-		DHCPEnabled     bool   `json:"dhcp_enabled"`
-		IPv6DHCPEnabled bool   `json:"ipv6_dhcp_enabled,omitempty"`
-		RouterVMID      int    `json:"router_vmid,omitempty"`
-		EgressPolicy    string `json:"egress_policy"`
-		OperationKey    string `json:"operation_key"`
-		VNetSourceZone  string `json:"vnet_source_zone,omitempty"`
+		Name            string                   `json:"name"`
+		Mode            string                   `json:"mode"`
+		Subnet          string                   `json:"subnet,omitempty"`
+		Gateway         string                   `json:"gateway,omitempty"`
+		IPv6Subnet      string                   `json:"ipv6_subnet,omitempty"`
+		IPv6Gateway     string                   `json:"ipv6_gateway,omitempty"`
+		DHCPEnabled     bool                     `json:"dhcp_enabled"`
+		IPv6DHCPEnabled bool                     `json:"ipv6_dhcp_enabled,omitempty"`
+		RouterVMID      int                      `json:"router_vmid,omitempty"`
+		EgressPolicy    string                   `json:"egress_policy"`
+		OperationKey    string                   `json:"operation_key"`
+		VNetSourceZone  string                   `json:"vnet_source_zone,omitempty"`
+		ExternalVLAN    *SDNExternalVLANExposure `json:"external_vlan,omitempty"`
+	}
+
+	// SDNExternalVLANExposure places this VNet on an authorized physical VLAN fabric.
+	SDNExternalVLANExposure struct {
+		TrunkNode   string   `json:"trunk_node"`
+		TrunkBridge string   `json:"trunk_bridge"`
+		VLANID      int      `json:"vlan_id"`
+		Nodes       []string `json:"nodes,omitempty"`
 	}
 
 	// SDNNetworkPlacement identifies the Organesson-owned PVE SDN configuration.
@@ -187,14 +196,14 @@ func (service *Service) ReadSDNNetworkIPAM(ctx context.Context, request SDNNetwo
 }
 
 // DeleteSDNNetwork removes a network only when its VNet ownership marker matches.
-func (service *Service) DeleteSDNNetwork(ctx context.Context, vnet string, operationKey string, sourceZone string) (err error) {
+func (service *Service) DeleteSDNNetwork(ctx context.Context, request SDNNetworkRequest, placement SDNNetworkPlacement) (err error) {
 	if service == nil || service.sdnNetworkDriver == nil || !service.Configured() {
 		err = ErrNotConfigured
 		return
 	}
 	service.lifecycleLock.Lock()
 	defer service.lifecycleLock.Unlock()
-	err = service.sdnNetworkDriver.Delete(ctx, vnet, operationKey, sourceZone)
+	err = service.sdnNetworkDriver.Delete(ctx, request, placement)
 	return
 }
 
@@ -203,7 +212,7 @@ func (driver *apiSDNNetworkDriver) Create(ctx context.Context, request SDNNetwor
 	if err = validateSDNNetworkRequest(request); err != nil {
 		return
 	}
-	placement = namesForSDNNetwork(request.OperationKey, request.VNetSourceZone)
+	placement = placementForSDNNetwork(request)
 	var marker string = "organesson:" + request.OperationKey
 	var client *pve.Client
 	if client, err = newAPIClient(driver.settings); err != nil {
@@ -224,7 +233,17 @@ func (driver *apiSDNNetworkDriver) Create(ctx context.Context, request SDNNetwor
 			break
 		}
 	}
-	if request.VNetSourceZone != "" {
+	if request.ExternalVLAN != nil {
+		if existingZone != nil {
+			if existingZone.Type != "vlan" || strings.Join([]string(existingZone.Nodes), ",") != strings.Join(request.ExternalVLAN.Nodes, ",") {
+				err = fmt.Errorf("Proxmox VLAN zone %q exists with different trunk settings", placement.Zone)
+				return
+			}
+			if err = verifyVLANZoneBridge(ctx, client, placement.Zone, request.ExternalVLAN.TrunkBridge); err != nil {
+				return
+			}
+		}
+	} else if request.VNetSourceZone != "" {
 		if existingZone == nil || existingZone.Type != "vxlan" {
 			err = fmt.Errorf("configured Proxmox VNet source zone %q is missing or is not VXLAN", placement.Zone)
 			return
@@ -248,7 +267,13 @@ func (driver *apiSDNNetworkDriver) Create(ctx context.Context, request SDNNetwor
 		err = fmt.Errorf("Proxmox VNet %q exists but is not owned by this Organesson resource", placement.VNet)
 		return
 	}
-	if request.VNetSourceZone != "" {
+	if request.ExternalVLAN != nil {
+		placement.Tag = uint32(request.ExternalVLAN.VLANID)
+		if existingVNet != nil && existingVNet.Tag != placement.Tag {
+			err = fmt.Errorf("Proxmox VNet %q exists with a different VLAN tag", placement.VNet)
+			return
+		}
+	} else if request.VNetSourceZone != "" {
 		if existingVNet != nil {
 			placement.Tag = existingVNet.Tag
 			if placement.Tag == 0 || placement.Tag > maxVXLANVNI {
@@ -260,7 +285,15 @@ func (driver *apiSDNNetworkDriver) Create(ctx context.Context, request SDNNetwor
 		}
 	}
 	var changed bool
-	if request.VNetSourceZone == "" && existingZone == nil {
+	if request.ExternalVLAN != nil && existingZone == nil {
+		if err = cluster.NewSDNZone(ctx, &pve.SDNZoneOptions{
+			Name: placement.Zone, Type: "vlan", Bridge: request.ExternalVLAN.TrunkBridge,
+			Nodes: strings.Join(request.ExternalVLAN.Nodes, ","),
+		}); err != nil {
+			return
+		}
+		changed = true
+	} else if request.ExternalVLAN == nil && request.VNetSourceZone == "" && existingZone == nil {
 		var zoneOptions *pve.SDNZoneOptions = &pve.SDNZoneOptions{Name: placement.Zone, Type: "simple", IPAM: "pve"}
 		if request.DHCPEnabled {
 			zoneOptions.DHCP = "dnsmasq"
@@ -269,7 +302,7 @@ func (driver *apiSDNNetworkDriver) Create(ctx context.Context, request SDNNetwor
 			return
 		}
 		changed = true
-	} else if request.VNetSourceZone == "" {
+	} else if request.ExternalVLAN == nil && request.VNetSourceZone == "" {
 		var expectedDHCP string
 		if request.DHCPEnabled {
 			expectedDHCP = "dnsmasq"
@@ -318,7 +351,7 @@ func (driver *apiSDNNetworkDriver) Read(ctx context.Context, request SDNNetworkR
 	if err = validateSDNNetworkRequest(request); err != nil {
 		return
 	}
-	var expected SDNNetworkPlacement = namesForSDNNetwork(request.OperationKey, request.VNetSourceZone)
+	var expected SDNNetworkPlacement = placementForSDNNetwork(request)
 	if placement.Zone != expected.Zone || placement.VNet != expected.VNet {
 		err = errors.New("stored Proxmox SDN placement does not match its operation key")
 		return
@@ -339,6 +372,17 @@ func (driver *apiSDNNetworkDriver) Read(ctx context.Context, request SDNNetworkR
 	for _, zone := range zones {
 		if zone == nil || zone.Name != expected.Zone {
 			continue
+		}
+		if request.ExternalVLAN != nil {
+			if zone.Type != "vlan" || strings.Join([]string(zone.Nodes), ",") != strings.Join(request.ExternalVLAN.Nodes, ",") {
+				err = errors.New("Proxmox VLAN zone no longer matches the authorized external trunk")
+				return
+			}
+			if err = verifyVLANZoneBridge(ctx, client, expected.Zone, request.ExternalVLAN.TrunkBridge); err != nil {
+				return
+			}
+			zoneFound = true
+			break
 		}
 		if request.VNetSourceZone != "" {
 			if zone.Type != "vxlan" {
@@ -376,7 +420,7 @@ func (driver *apiSDNNetworkDriver) Read(ctx context.Context, request SDNNetworkR
 		if vnet == nil || vnet.Name != expected.VNet {
 			continue
 		}
-		if vnet.Alias != "organesson:"+request.OperationKey || vnet.Zone != expected.Zone || request.VNetSourceZone != "" && (vnet.Tag == 0 || placement.Tag != 0 && vnet.Tag != placement.Tag) {
+		if vnet.Alias != "organesson:"+request.OperationKey || vnet.Zone != expected.Zone || request.ExternalVLAN != nil && vnet.Tag != uint32(request.ExternalVLAN.VLANID) || request.ExternalVLAN == nil && request.VNetSourceZone != "" && (vnet.Tag == 0 || placement.Tag != 0 && vnet.Tag != placement.Tag) {
 			err = errors.New("Proxmox VNet ownership marker or zone does not match the Organesson resource")
 			return
 		}
@@ -407,7 +451,7 @@ func (driver *apiSDNNetworkDriver) ReadIPAM(ctx context.Context, request SDNNetw
 		state = "unavailable"
 		return
 	}
-	var expected SDNNetworkPlacement = namesForSDNNetwork(request.OperationKey, request.VNetSourceZone)
+	var expected SDNNetworkPlacement = placementForSDNNetwork(request)
 	if placement.Zone != expected.Zone || placement.VNet != expected.VNet {
 		state = "unavailable"
 		err = errors.New("stored Proxmox SDN placement does not match its operation key")
@@ -465,6 +509,18 @@ func (driver *apiSDNNetworkDriver) ReadIPAM(ctx context.Context, request SDNNetw
 	return
 }
 
+// verifyVLANZoneBridge confirms the bridge stored by Proxmox because go-proxmox omits it from SDNZone.
+func verifyVLANZoneBridge(ctx context.Context, client *pve.Client, zone string, expectedBridge string) (err error) {
+	var configuration map[string]any
+	if err = client.Get(ctx, "/cluster/sdn/zones/"+zone, &configuration); err != nil {
+		return
+	}
+	if bridge, _ := configuration["bridge"].(string); bridge != expectedBridge {
+		err = fmt.Errorf("Proxmox VLAN zone %q uses bridge %q, not authorized bridge %q", zone, bridge, expectedBridge)
+	}
+	return
+}
+
 // ipamString converts optional API fields to displayable strings.
 func ipamString(value any) (result string) {
 	if value != nil {
@@ -474,9 +530,10 @@ func ipamString(value any) (result string) {
 }
 
 // Delete removes the marked VNet and its subnet, and removes a dedicated Simple zone only when Organesson created it.
-func (driver *apiSDNNetworkDriver) Delete(ctx context.Context, vnetName string, operationKey string, sourceZone string) (err error) {
-	var expected SDNNetworkPlacement = namesForSDNNetwork(operationKey, sourceZone)
-	if vnetName != expected.VNet || operationKey == "" {
+
+func (driver *apiSDNNetworkDriver) Delete(ctx context.Context, request SDNNetworkRequest, placement SDNNetworkPlacement) (err error) {
+	var expected SDNNetworkPlacement = placementForSDNNetwork(request)
+	if placement.VNet != expected.VNet || placement.Zone != expected.Zone || request.OperationKey == "" {
 		err = errors.New("Proxmox VNet identifier does not match its Organesson operation key")
 		return
 	}
@@ -495,7 +552,7 @@ func (driver *apiSDNNetworkDriver) Delete(ctx context.Context, vnetName string, 
 	var owned bool
 	for _, vnet := range vnets {
 		if vnet != nil && vnet.Name == expected.VNet {
-			if vnet.Alias != "organesson:"+operationKey || vnet.Zone != expected.Zone {
+			if vnet.Alias != "organesson:"+request.OperationKey || vnet.Zone != expected.Zone || request.ExternalVLAN != nil && vnet.Tag != uint32(request.ExternalVLAN.VLANID) {
 				err = errors.New("refusing to delete a Proxmox VNet not owned by this Organesson resource")
 				return
 			}
@@ -523,7 +580,37 @@ func (driver *apiSDNNetworkDriver) Delete(ctx context.Context, vnetName string, 
 			return
 		}
 	}
-	if sourceZone != "" {
+	if request.ExternalVLAN != nil {
+		if !owned {
+			return
+		}
+		var zones []*pve.SDNZone
+		if zones, err = cluster.SDNZones(ctx); err != nil {
+			return
+		}
+		for _, zone := range zones {
+			if zone == nil || zone.Name != expected.Zone {
+				continue
+			}
+			if zone.Type != "vlan" || strings.Join([]string(zone.Nodes), ",") != strings.Join(request.ExternalVLAN.Nodes, ",") {
+				err = errors.New("refusing to delete a Proxmox VLAN zone with unexpected trunk configuration")
+				return
+			}
+			if err = verifyVLANZoneBridge(ctx, client, expected.Zone, request.ExternalVLAN.TrunkBridge); err != nil {
+				return
+			}
+			if err = cluster.DeleteSDNZone(ctx, expected.Zone); err != nil {
+				return
+			}
+			break
+		}
+		var task *pve.Task
+		if task, err = cluster.SDNApply(ctx); err != nil {
+			return
+		}
+		err = waitTask(ctx, client, task)
+		return
+	} else if request.VNetSourceZone != "" {
 		if !owned {
 			return
 		}
@@ -577,6 +664,27 @@ func validateSDNNetworkRequest(request SDNNetworkRequest) (err error) {
 	if request.RouterVMID < 0 {
 		err = errors.New("router VMID cannot be negative")
 		return
+	}
+	if request.ExternalVLAN != nil {
+		var exposure *SDNExternalVLANExposure = request.ExternalVLAN
+		if strings.TrimSpace(exposure.TrunkNode) == "" || strings.TrimSpace(exposure.TrunkBridge) == "" || strings.ContainsAny(exposure.TrunkBridge, ",=") || exposure.VLANID < 1 || exposure.VLANID > 4094 {
+			err = errors.New("external VLAN requires a trunk node, bridge, and VLAN ID from 1 through 4094")
+			return
+		}
+		var foundSelectedNode bool
+		var seenNodes map[string]bool = make(map[string]bool)
+		for _, node := range exposure.Nodes {
+			if strings.TrimSpace(node) == "" || seenNodes[node] {
+				err = errors.New("external VLAN node list must contain unique non-empty node names")
+				return
+			}
+			seenNodes[node] = true
+			foundSelectedNode = foundSelectedNode || node == exposure.TrunkNode
+		}
+		if !foundSelectedNode {
+			err = errors.New("external VLAN node list must include its selected trunk node")
+			return
+		}
 	}
 	switch request.Mode {
 	case "unmanaged-layer-2":
@@ -647,6 +755,23 @@ func namesForSDNNetwork(operationKey string, sourceZones ...string) (placement S
 	if len(sourceZones) > 0 && sourceZones[0] != "" {
 		placement.Zone = sourceZones[0]
 	}
+	return
+}
+
+// placementForSDNNetwork selects a dedicated VLAN zone when external exposure is requested.
+func placementForSDNNetwork(request SDNNetworkRequest) (placement SDNNetworkPlacement) {
+	placement = namesForSDNNetwork(request.OperationKey, request.VNetSourceZone)
+	if request.ExternalVLAN != nil {
+		var digest [sha256.Size]byte = sha256.Sum256([]byte("organesson-external-vlan:" + request.OperationKey))
+		placement.Zone = "ov" + hex.EncodeToString(digest[:])[:6]
+		placement.Tag = uint32(request.ExternalVLAN.VLANID)
+	}
+	return
+}
+
+// SDNNetworkPlacementForRequest returns the deterministic Proxmox placement for a network request.
+func SDNNetworkPlacementForRequest(request SDNNetworkRequest) (placement SDNNetworkPlacement) {
+	placement = placementForSDNNetwork(request)
 	return
 }
 

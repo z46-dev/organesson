@@ -110,6 +110,10 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 		if err = json.Unmarshal([]byte(network.ConfigurationJSON), &networkConfiguration); err != nil {
 			return
 		}
+		if exposure := networkConfiguration.Request.ExternalVLAN; exposure != nil && !containsString(exposure.Nodes, vm.ExternalNode) {
+			err = fmt.Errorf("%w: external VLAN %d is not available on VM node %q", ErrInvalidInput, exposure.VLANID, vm.ExternalNode)
+			return
+		}
 		configuration.NetworkDHCPEnabled = networkConfiguration.Request.DHCPEnabled
 		configuration.NetworkIPv6DHCPEnabled = networkConfiguration.Request.IPv6DHCPEnabled
 		managedIPv4Subnet = networkConfiguration.Request.Subnet

@@ -72,6 +72,12 @@ type (
 			DNS                []string `json:"dns"`
 		} `json:"allocation"`
 	}
+	networkExternalVLANResult struct {
+		TrunkNode   string   `json:"trunk_node"`
+		TrunkBridge string   `json:"trunk_bridge"`
+		VLANID      int      `json:"vlan_id"`
+		Nodes       []string `json:"nodes,omitempty"`
+	}
 	networkResult struct {
 		Resource struct {
 			ID           int    `json:"id"`
@@ -83,15 +89,16 @@ type (
 		} `json:"resource"`
 		Configuration struct {
 			Request struct {
-				Name         string `json:"name"`
-				Mode         string `json:"mode"`
-				Subnet       string `json:"subnet"`
-				Gateway      string `json:"gateway"`
-				IPv6Subnet   string `json:"ipv6_subnet"`
-				IPv6Gateway  string `json:"ipv6_gateway"`
-				DHCPEnabled  bool   `json:"dhcp_enabled"`
-				EgressPolicy string `json:"egress_policy"`
-				RouterVMID   int    `json:"router_vmid"`
+				Name         string                     `json:"name"`
+				Mode         string                     `json:"mode"`
+				Subnet       string                     `json:"subnet"`
+				Gateway      string                     `json:"gateway"`
+				IPv6Subnet   string                     `json:"ipv6_subnet"`
+				IPv6Gateway  string                     `json:"ipv6_gateway"`
+				DHCPEnabled  bool                       `json:"dhcp_enabled"`
+				EgressPolicy string                     `json:"egress_policy"`
+				RouterVMID   int                        `json:"router_vmid"`
+				ExternalVLAN *networkExternalVLANResult `json:"external_vlan,omitempty"`
 			} `json:"request"`
 		} `json:"configuration"`
 	}
@@ -252,7 +259,7 @@ func networkOperations(mode string) (operations remoteResourceOperations) {
 			"ipv4_subnet": data.Get("ipv4_subnet").(string), "ipv4_gateway": data.Get("ipv4_gateway").(string),
 			"ipv6_subnet": data.Get("ipv6_subnet").(string), "ipv6_gateway": data.Get("ipv6_gateway").(string),
 			"dhcp_enabled": data.Get("dhcp_enabled").(bool), "egress_policy": data.Get("egress_policy").(string),
-			"router_vmid": data.Get("router_vmid").(int),
+			"router_vmid": data.Get("router_vmid").(int), "external_vlan": externalVLANRequest(data),
 		}, &result)
 		if err != nil {
 			return
@@ -262,6 +269,7 @@ func networkOperations(mode string) (operations remoteResourceOperations) {
 		_ = data.Set("proxmox_vnet", result.Resource.ExternalID)
 		_ = data.Set("proxmox_zone", result.Resource.ExternalNode)
 		_ = data.Set("router_vmid", result.Configuration.Request.RouterVMID)
+		_ = data.Set("external_vlan", externalVLANState(result.Configuration.Request.ExternalVLAN))
 		_ = data.Set("summary", fmt.Sprintf("created isolated Proxmox SDN VNet %q in zone %q", result.Resource.ExternalID, result.Resource.ExternalNode))
 		return
 	}
@@ -281,6 +289,7 @@ func networkOperations(mode string) (operations remoteResourceOperations) {
 			_ = data.Set("dhcp_enabled", result.Configuration.Request.DHCPEnabled)
 			_ = data.Set("egress_policy", result.Configuration.Request.EgressPolicy)
 			_ = data.Set("router_vmid", result.Configuration.Request.RouterVMID)
+			_ = data.Set("external_vlan", externalVLANState(result.Configuration.Request.ExternalVLAN))
 			_ = data.Set("power_state", result.Resource.PowerState)
 			_ = data.Set("proxmox_vnet", result.Resource.ExternalID)
 			_ = data.Set("proxmox_zone", result.Resource.ExternalNode)
@@ -294,6 +303,31 @@ func networkOperations(mode string) (operations remoteResourceOperations) {
 		}
 		return client.request(ctx, http.MethodDelete, "/api/v1/networks/"+id, nil, nil)
 	}
+	return
+}
+
+// externalVLANRequest converts the optional Terraform block into the network creation API shape.
+func externalVLANRequest(data *schema.ResourceData) (configuration map[string]any) {
+	var blocks []interface{} = data.Get("external_vlan").([]interface{})
+	if len(blocks) == 0 {
+		return
+	}
+	var block map[string]interface{} = blocks[0].(map[string]interface{})
+	configuration = map[string]any{
+		"trunk_node": block["trunk_node"], "trunk_bridge": block["trunk_bridge"], "vlan_id": block["vlan_id"],
+	}
+	return
+}
+
+// externalVLANState restores the user-declared portion of a persisted VLAN exposure.
+func externalVLANState(exposure *networkExternalVLANResult) (state []interface{}) {
+	if exposure == nil {
+		state = []interface{}{}
+		return
+	}
+	state = []interface{}{map[string]interface{}{
+		"trunk_node": exposure.TrunkNode, "trunk_bridge": exposure.TrunkBridge, "vlan_id": exposure.VLANID,
+	}}
 	return
 }
 

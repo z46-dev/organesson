@@ -110,10 +110,11 @@ func resourceNetworkMode(mode string) (resource *schema.Resource) {
 			ValidateFunc: validation.StringInSlice([]string{"isolated"}, false),
 			Description:  "The network's explicit egress policy.",
 		},
-		"ipv4_gateway": {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The managed IPv4 gateway address."},
-		"ipv4_subnet":  {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The managed IPv4 subnet in CIDR notation."},
-		"ipv6_gateway": {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The managed IPv6 gateway address."},
-		"ipv6_subnet":  {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The managed IPv6 subnet in CIDR notation."},
+		"external_vlan": externalVLANExposureSchema(),
+		"ipv4_gateway":  {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The managed IPv4 gateway address."},
+		"ipv4_subnet":   {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The managed IPv4 subnet in CIDR notation."},
+		"ipv6_gateway":  {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The managed IPv6 gateway address."},
+		"ipv6_subnet":   {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The managed IPv6 subnet in CIDR notation."},
 		"logical_group_id": {
 			Type:         schema.TypeString,
 			Optional:     true,
@@ -129,6 +130,24 @@ func resourceNetworkMode(mode string) (resource *schema.Resource) {
 		"summary":      summarySchema(),
 	}
 	resource = apiResource(fields, networkOperations(mode))
+
+	return
+}
+
+// externalVLANExposureSchema declares an optional single VLAN exposure over an authorized physical trunk.
+func externalVLANExposureSchema() (field *schema.Schema) {
+	field = &schema.Schema{
+		Type:     schema.TypeList,
+		Optional: true,
+		ForceNew: true,
+		MaxItems: 1,
+		Elem: &schema.Resource{Schema: map[string]*schema.Schema{
+			"trunk_node":   {Type: schema.TypeString, Required: true, Description: "Proxmox node hosting the authorized trunk."},
+			"trunk_bridge": {Type: schema.TypeString, Required: true, Description: "Authorized host bridge on that node."},
+			"vlan_id":      {Type: schema.TypeInt, Required: true, ValidateFunc: validation.IntBetween(1, 4094), Description: "VLAN tag to expose on the trunk."},
+		}},
+		Description: "Optional external VLAN exposure over an administrator-authorized trunk. The VNet is attached to the Proxmox VLAN zone for that bridge and tag.",
+	}
 
 	return
 }

@@ -45,7 +45,7 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 	if err = validateSDNNetworkRequest(request); err != nil {
 		return
 	}
-	var expected SDNNetworkPlacement = namesForSDNNetwork(request.OperationKey, request.VNetSourceZone)
+	var expected SDNNetworkPlacement = placementForSDNNetwork(request)
 	if placement.Zone != expected.Zone || placement.VNet != expected.VNet {
 		err = errors.New("stored Proxmox SDN placement does not match its operation key")
 		return

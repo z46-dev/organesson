@@ -73,6 +73,70 @@ func TestValidateResourcePolicyAllowsCreatedVNetAndConstrainsItsAddressPools(t *
 	}
 }
 
+func TestValidateResourcePolicyValidatesNodeScopedVLANTrunks(t *testing.T) {
+	var policy ResourcePolicy = ResourcePolicy{
+		ResourcePools: []string{"students"},
+		Storages:      []string{"laas"},
+		VLANTrunks: []VLANTrunk{
+			{Node: "tungsten", Bridge: "ogtrunk", AllowedVLANRanges: []VLANRange{{Start: 4091, End: 4091}}},
+			{Node: "osmium", Bridge: "ogtrunk", AllowedVLANRanges: []VLANRange{{Start: 4000, End: 4094}}},
+		},
+	}
+	var inventory ResourceInventory = ResourceInventory{
+		Pools:    []string{"students"},
+		Storages: []string{"laas"},
+		Nodes: []NodeNetworkInventory{
+			{Name: "tungsten", Status: "online", Bridges: []BridgeNetworkInventory{{Name: "ogtrunk", VLANAware: true, HasPhysicalPorts: true}}},
+			{Name: "osmium", Status: "online", Bridges: []BridgeNetworkInventory{{Name: "ogtrunk", VLANAware: true, HasPhysicalPorts: true}}},
+		},
+	}
+	if result := ValidateResourcePolicy(policy, &inventory); !result.Valid {
+		t.Fatalf("same bridge name on separate nodes should be valid: %#v", result.Issues)
+	}
+	policy.VLANTrunks = append(policy.VLANTrunks, policy.VLANTrunks[0])
+	if result := ValidateResourcePolicy(policy, &inventory); result.Valid {
+		t.Fatal("duplicate node and bridge trunk was accepted")
+	}
+	policy.VLANTrunks = policy.VLANTrunks[:2]
+	policy.VLANTrunks[0].AllowedVLANRanges[0] = VLANRange{Start: 0, End: 4095}
+	if result := ValidateResourcePolicy(policy, &inventory); result.Valid {
+		t.Fatal("reserved or out-of-range VLAN IDs were accepted")
+	}
+	policy.VLANTrunks[0].AllowedVLANRanges[0] = VLANRange{Start: 4091, End: 4091}
+	inventory.Nodes[0].Bridges[0].VLANAware = false
+	if result := ValidateResourcePolicy(policy, &inventory); result.Valid {
+		t.Fatal("non-VLAN-aware trunk bridge was accepted")
+	}
+	if len(inventory.Nodes[0].Bridges) > 0 {
+		inventory.Nodes[0].Bridges[0].VLANAware = true
+		inventory.Nodes[0].Bridges[0].HasIPConfig = true
+	}
+	if result := ValidateResourcePolicy(policy, &inventory); result.Valid {
+		t.Fatal("trunk bridge with host IP configuration was accepted")
+	}
+}
+
+func TestAuthorizeExternalVLANCollectsMatchingTrunksAcrossNodes(t *testing.T) {
+	var policy ResourcePolicy = ResourcePolicy{VLANTrunks: []VLANTrunk{
+		{Node: "tungsten", Bridge: "ogtrunk", AllowedVLANRanges: []VLANRange{{Start: 2000, End: 2100}}},
+		{Node: "osmium", Bridge: "ogtrunk", AllowedVLANRanges: []VLANRange{{Start: 2048, End: 2048}}},
+		{Node: "other", Bridge: "other-trunk", AllowedVLANRanges: []VLANRange{{Start: 2000, End: 2100}}},
+	}}
+	var exposure *SDNExternalVLANExposure = &SDNExternalVLANExposure{TrunkNode: "tungsten", TrunkBridge: "ogtrunk", VLANID: 2048}
+	var nodes []string
+	var err error
+	if nodes, err = AuthorizeExternalVLAN(policy, exposure); err != nil {
+		t.Fatalf("authorize VLAN exposure: %v", err)
+	}
+	if len(nodes) != 2 || nodes[0] != "osmium" || nodes[1] != "tungsten" {
+		t.Fatalf("expected only matching nodes sorted by name, got %#v", nodes)
+	}
+	exposure.VLANID = 3000
+	if _, err = AuthorizeExternalVLAN(policy, exposure); err == nil {
+		t.Fatal("VLAN outside the authorized range was accepted")
+	}
+}
+
 func TestValidateResourcePolicyAcceptsIPv6SubnetsAndPools(t *testing.T) {
 	var policy ResourcePolicy = ResourcePolicy{
 		ResourcePools:  []string{"students"},

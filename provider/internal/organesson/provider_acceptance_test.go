@@ -41,6 +41,16 @@ func TestProviderSeparatesManagedAndUnmanagedNetworkDefinitions(t *testing.T) {
 	if _, exists := unmanaged.Schema["mode"]; exists {
 		t.Fatal("unmanaged network requires an unnecessary mode selector")
 	}
+	for _, network := range []*schema.Resource{managed, unmanaged} {
+		var exposure *schema.Schema = network.Schema["external_vlan"]
+		if exposure == nil || exposure.Type != schema.TypeList || !exposure.Optional || exposure.MaxItems != 1 {
+			t.Fatal("network must allow zero or one external VLAN exposure")
+		}
+		var nested map[string]*schema.Schema = exposure.Elem.(*schema.Resource).Schema
+		if nested["trunk_node"] == nil || nested["trunk_bridge"] == nil || nested["vlan_id"] == nil {
+			t.Fatal("external VLAN exposure must identify a node, bridge, and VLAN ID")
+		}
+	}
 	if _, exists := provider.ResourcesMap["organesson_internal_group"]; exists {
 		t.Fatal("provider should keep internal ownership groups inside composite resources")
 	}
@@ -269,6 +279,11 @@ func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {
 	var addressPolicy proxmox.ResourcePolicy = proxmox.ResourcePolicy{
 		ResourcePools: []string{"students"}, Storages: []string{"local-lvm"},
 		DeploymentLimits: proxmox.DeploymentLimits{MaxSDNNetworks: 1},
+		VNetSourceZone:   "ogvxlan",
+		VLANTrunks: []proxmox.VLANTrunk{
+			{Node: "tungsten", Bridge: "ogtrunk", AllowedVLANRanges: []proxmox.VLANRange{{Start: 2000, End: 2100}}},
+			{Node: "osmium", Bridge: "ogtrunk", AllowedVLANRanges: []proxmox.VLANRange{{Start: 2000, End: 2100}}},
+		},
 		Networks: []proxmox.PolicyNetwork{{Name: "cyber.lab", Kind: "bridge", PVEName: "vmbr0", AddressPools: []proxmox.AddressPool{{
 			Name: "test-pool", Prefix: "10.0.0.0/8", AllocationPrefix: "10.192.0.0/29", Gateway: "10.0.0.1", DNS: []string{"10.0.0.2"},
 		}}}},
@@ -301,12 +316,18 @@ func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {
 	var network *schema.ResourceData = schema.TestResourceDataRaw(t, networkResource.Schema, map[string]interface{}{
 		"deployment_id": deployment.Id(), "name": "shared-lan", "ipv4_subnet": "192.168.100.0/24",
 		"ipv4_gateway": "192.168.100.1", "dhcp_enabled": true, "egress_policy": "isolated",
-		"router_vmid": 158,
+		"router_vmid": 158, "external_vlan": []interface{}{map[string]interface{}{
+			"trunk_node": "tungsten", "trunk_bridge": "ogtrunk", "vlan_id": 2048,
+		}},
 	})
 	createRemoteResource(t, ctx, networkResource, network, client)
 	readRemoteResource(t, ctx, networkResource, network, client)
 	if network.Get("proxmox_vnet") == "" || network.Get("power_state") != "ready" || network.Get("router_vmid") != 158 || networkDriver.request.RouterVMID != 158 {
 		t.Fatalf("network refresh did not restore Proxmox placement: %#v", network.Get("proxmox_vnet"))
+	}
+	var externalVLAN []interface{} = network.Get("external_vlan").([]interface{})
+	if len(externalVLAN) != 1 || networkDriver.request.ExternalVLAN == nil || len(networkDriver.request.ExternalVLAN.Nodes) != 2 || networkDriver.request.ExternalVLAN.VLANID != 2048 {
+		t.Fatalf("external VLAN declaration was not authorized and restored: state=%#v request=%#v", externalVLAN, networkDriver.request.ExternalVLAN)
 	}
 	if err = deployment.Set("description", "updated description"); err != nil {
 		t.Fatalf("set deployment description: %v", err)
@@ -610,7 +631,7 @@ func (driver *acceptanceNetworkAttachmentDriver) Detach(_ context.Context, _ pro
 
 func (driver *acceptanceSDNNetworkDriver) Create(_ context.Context, request proxmox.SDNNetworkRequest) (placement proxmox.SDNNetworkPlacement, err error) {
 	driver.request = request
-	placement = proxmox.SDNNetworkNames(request.OperationKey)
+	placement = proxmox.SDNNetworkPlacementForRequest(request)
 	return
 }
 
@@ -618,7 +639,7 @@ func (driver *acceptanceSDNNetworkDriver) Read(_ context.Context, _ proxmox.SDNN
 	return
 }
 
-func (driver *acceptanceSDNNetworkDriver) Delete(_ context.Context, _ string, _ string, _ string) (err error) {
+func (driver *acceptanceSDNNetworkDriver) Delete(_ context.Context, _ proxmox.SDNNetworkRequest, _ proxmox.SDNNetworkPlacement) (err error) {
 	driver.deleted = true
 	return
 }

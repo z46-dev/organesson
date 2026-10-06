@@ -137,6 +137,9 @@ func (driver *apiNetworkAttachmentDriver) Attach(ctx context.Context, request Ne
 				}
 			}
 			if len(request.AllowedClientSubnets) > 0 {
+				if err = ensureVMInterfaceRouterForwardingRules(ctx, vm, device, request); err != nil {
+					return
+				}
 				if err = ensureVMInterfaceRouterDNSRules(ctx, vm, device, request); err != nil {
 					return
 				}
@@ -179,6 +182,9 @@ func (driver *apiNetworkAttachmentDriver) Attach(ctx context.Context, request Ne
 		}
 	}
 	if len(request.AllowedClientSubnets) > 0 {
+		if err = ensureVMInterfaceRouterForwardingRules(ctx, vm, device, request); err != nil {
+			return
+		}
 		if err = ensureVMInterfaceRouterDNSRules(ctx, vm, device, request); err != nil {
 			return
 		}
@@ -260,6 +266,9 @@ func (driver *apiNetworkAttachmentDriver) Read(ctx context.Context, request Netw
 		}
 	}
 	if len(request.AllowedClientSubnets) > 0 {
+		if err = verifyVMInterfaceRouterForwardingRules(ctx, vm, placement.Device, request); err != nil {
+			return
+		}
 		if err = verifyVMInterfaceRouterDNSRules(ctx, vm, placement.Device, request); err != nil {
 			return
 		}
@@ -311,6 +320,9 @@ func (driver *apiNetworkAttachmentDriver) Detach(ctx context.Context, request Ne
 		}
 	}
 	if len(request.AllowedClientSubnets) > 0 {
+		if err = removeVMInterfaceRouterForwardingRules(ctx, vm, device, request); err != nil {
+			return
+		}
 		if err = removeVMInterfaceRouterDNSRules(ctx, vm, device, request); err != nil {
 			return
 		}
@@ -393,20 +405,67 @@ func routerDNSFirewallRules(device string, request NetworkAttachmentRequest) (ru
 	return
 }
 
+// routerForwardingFirewallRules permits validated client-subnet traffic to reach the managed router.
+func routerForwardingFirewallRules(device string, request NetworkAttachmentRequest) (rules []*pve.FirewallRule) {
+	for _, subnet := range request.AllowedClientSubnets {
+		rules = append(rules, &pve.FirewallRule{
+			Type: "in", Action: "ACCEPT", Enable: 1, Iface: device, Source: subnet,
+			Comment: "Organesson router forwarding " + request.AttachmentOperationKey + " " + subnet,
+		})
+	}
+	return
+}
+
+// ensureVMInterfaceRouterForwardingRules allows only configured client subnets through the PVE NIC firewall.
+func ensureVMInterfaceRouterForwardingRules(ctx context.Context, vm *pve.VirtualMachine, device string, request NetworkAttachmentRequest) (err error) {
+	err = ensureVMInterfaceFirewallRules(ctx, vm, routerForwardingFirewallRules(device, request), "router forwarding")
+	return
+}
+
+// verifyVMInterfaceRouterForwardingRules confirms PVE allows configured client subnets to reach the router.
+func verifyVMInterfaceRouterForwardingRules(ctx context.Context, vm *pve.VirtualMachine, device string, request NetworkAttachmentRequest) (err error) {
+	err = verifyVMInterfaceFirewallRules(ctx, vm, routerForwardingFirewallRules(device, request), "router forwarding")
+	return
+}
+
+// removeVMInterfaceRouterForwardingRules removes only rules owned by this router LAN attachment.
+func removeVMInterfaceRouterForwardingRules(ctx context.Context, vm *pve.VirtualMachine, device string, request NetworkAttachmentRequest) (err error) {
+	err = removeVMInterfaceFirewallRules(ctx, vm, routerForwardingFirewallRules(device, request), "router forwarding")
+	return
+}
+
 // ensureVMInterfaceRouterDNSRules idempotently permits LAN clients to query router DNS.
 func ensureVMInterfaceRouterDNSRules(ctx context.Context, vm *pve.VirtualMachine, device string, request NetworkAttachmentRequest) (err error) {
+	err = ensureVMInterfaceFirewallRules(ctx, vm, routerDNSFirewallRules(device, request), "router DNS")
+	return
+}
+
+// verifyVMInterfaceRouterDNSRules checks the exact router DNS ingress allowances.
+func verifyVMInterfaceRouterDNSRules(ctx context.Context, vm *pve.VirtualMachine, device string, request NetworkAttachmentRequest) (err error) {
+	err = verifyVMInterfaceFirewallRules(ctx, vm, routerDNSFirewallRules(device, request), "router DNS")
+	return
+}
+
+// removeVMInterfaceRouterDNSRules removes only the DNS allowances owned by this LAN attachment.
+func removeVMInterfaceRouterDNSRules(ctx context.Context, vm *pve.VirtualMachine, device string, request NetworkAttachmentRequest) (err error) {
+	err = removeVMInterfaceFirewallRules(ctx, vm, routerDNSFirewallRules(device, request), "router DNS")
+	return
+}
+
+// ensureVMInterfaceFirewallRules creates the exact marked rules required by an attachment.
+func ensureVMInterfaceFirewallRules(ctx context.Context, vm *pve.VirtualMachine, expectedRules []*pve.FirewallRule, purpose string) (err error) {
 	var existing []*pve.FirewallRule
 	if existing, err = vm.FirewallRules(ctx); err != nil {
 		return
 	}
-	for _, expected := range routerDNSFirewallRules(device, request) {
+	for _, expected := range expectedRules {
 		var found bool
 		for _, actual := range existing {
 			if actual == nil || actual.Comment != expected.Comment {
 				continue
 			}
 			if !firewallRulesEqual(actual, expected) {
-				err = fmt.Errorf("Organesson router DNS firewall rule %q conflicts with its desired configuration", expected.Comment)
+				err = fmt.Errorf("Organesson %s firewall rule %q conflicts with its desired configuration", purpose, expected.Comment)
 				return
 			}
 			found = true
@@ -421,45 +480,46 @@ func ensureVMInterfaceRouterDNSRules(ctx context.Context, vm *pve.VirtualMachine
 	return
 }
 
-// verifyVMInterfaceRouterDNSRules checks the exact router DNS ingress allowances.
-func verifyVMInterfaceRouterDNSRules(ctx context.Context, vm *pve.VirtualMachine, device string, request NetworkAttachmentRequest) (err error) {
+// verifyVMInterfaceFirewallRules confirms all expected marked rules still match their configured purpose.
+func verifyVMInterfaceFirewallRules(ctx context.Context, vm *pve.VirtualMachine, expectedRules []*pve.FirewallRule, purpose string) (err error) {
 	var existing []*pve.FirewallRule
 	if existing, err = vm.FirewallRules(ctx); err != nil {
 		return
 	}
-	for _, expected := range routerDNSFirewallRules(device, request) {
+	for _, expected := range expectedRules {
 		var found bool
 		for _, actual := range existing {
-			if actual != nil && actual.Comment == expected.Comment {
-				if !firewallRulesEqual(actual, expected) {
-					err = fmt.Errorf("Organesson router DNS firewall rule %q differs from its expected configuration", expected.Comment)
-					return
-				}
-				found = true
-				break
+			if actual == nil || actual.Comment != expected.Comment {
+				continue
 			}
+			if !firewallRulesEqual(actual, expected) {
+				err = fmt.Errorf("Organesson %s firewall rule %q differs from its expected configuration", purpose, expected.Comment)
+				return
+			}
+			found = true
+			break
 		}
 		if !found {
-			err = fmt.Errorf("Organesson router DNS firewall rule %q is missing", expected.Comment)
+			err = fmt.Errorf("Organesson %s firewall rule %q is missing", purpose, expected.Comment)
 			return
 		}
 	}
 	return
 }
 
-// removeVMInterfaceRouterDNSRules removes only the DNS allowances owned by this LAN attachment.
-func removeVMInterfaceRouterDNSRules(ctx context.Context, vm *pve.VirtualMachine, device string, request NetworkAttachmentRequest) (err error) {
+// removeVMInterfaceFirewallRules deletes only the expected marked rules for an attachment.
+func removeVMInterfaceFirewallRules(ctx context.Context, vm *pve.VirtualMachine, expectedRules []*pve.FirewallRule, purpose string) (err error) {
 	var existing []*pve.FirewallRule
 	if existing, err = vm.FirewallRules(ctx); err != nil {
 		return
 	}
-	for _, expected := range routerDNSFirewallRules(device, request) {
+	for _, expected := range expectedRules {
 		for _, actual := range existing {
 			if actual == nil || actual.Comment != expected.Comment {
 				continue
 			}
 			if !firewallRulesEqual(actual, expected) {
-				err = fmt.Errorf("refusing to remove modified Organesson router DNS rule %q", expected.Comment)
+				err = fmt.Errorf("refusing to remove modified Organesson %s firewall rule %q", purpose, expected.Comment)
 				return
 			}
 			if err = actual.Delete(ctx); err != nil {
@@ -647,8 +707,9 @@ func (driver *apiNetworkAttachmentDriver) ensureVMInterfaceIPFilter(ctx context.
 		return
 	}
 	var marker string = "organesson:" + request.AttachmentOperationKey
-	var desired map[string]bool = make(map[string]bool, len(request.AllowedAddresses))
-	for _, address := range request.AllowedAddresses {
+	var allowedEntries []string = networkAttachmentIPFilterEntries(request)
+	var desired map[string]bool = make(map[string]bool, len(allowedEntries))
+	for _, address := range allowedEntries {
 		var parsed netip.Prefix
 		if parsed, err = parseIPSetEntry(address); err != nil {
 			return
@@ -730,8 +791,9 @@ func verifyVMInterfaceIPFilter(ctx context.Context, client *pve.Client, vm *pve.
 	if entries, err = vm.GetFirewallIPSetEntries(ctx, "ipfilter-"+device); err != nil {
 		return
 	}
-	var expected map[string]bool = make(map[string]bool, len(request.AllowedAddresses))
-	for _, address := range request.AllowedAddresses {
+	var allowedEntries []string = networkAttachmentIPFilterEntries(request)
+	var expected map[string]bool = make(map[string]bool, len(allowedEntries))
+	for _, address := range allowedEntries {
 		var parsed netip.Prefix
 		if parsed, err = parseIPSetEntry(address); err != nil {
 			return
@@ -765,6 +827,13 @@ func verifyVMInterfaceIPFilter(ctx context.Context, client *pve.Client, vm *pve.
 			return
 		}
 	}
+	return
+}
+
+// networkAttachmentIPFilterEntries combines a guest's own addresses with router client source scopes.
+func networkAttachmentIPFilterEntries(request NetworkAttachmentRequest) (entries []string) {
+	entries = append(entries, request.AllowedAddresses...)
+	entries = append(entries, request.AllowedClientSubnets...)
 	return
 }
 

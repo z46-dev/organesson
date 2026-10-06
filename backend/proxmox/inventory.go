@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"sort"
+	"strings"
 
 	pve "github.com/luthermonson/go-proxmox"
 	"github.com/z46-dev/organesson/backend/config"
@@ -55,7 +56,12 @@ func (reader *apiResourceInventory) ReadResourceInventory(ctx context.Context) (
 	}
 	var bridges = make(map[string]bool)
 	for _, status := range nodes {
-		if status == nil || status.Node == "" || status.Status != "online" {
+		if status == nil || status.Node == "" {
+			continue
+		}
+		var nodeInventory NodeNetworkInventory = NodeNetworkInventory{Name: status.Node, Status: status.Status}
+		if status.Status != "online" {
+			inventory.Nodes = append(inventory.Nodes, nodeInventory)
 			continue
 		}
 		var node *pve.Node
@@ -69,9 +75,27 @@ func (reader *apiResourceInventory) ReadResourceInventory(ctx context.Context) (
 		for _, network := range networks {
 			if network != nil && network.Iface != "" {
 				bridges[network.Iface] = true
+				nodeInventory.Bridges = append(nodeInventory.Bridges, BridgeNetworkInventory{
+					Name:             network.Iface,
+					VLANAware:        network.BridgeVLANAware == 1,
+					HasPhysicalPorts: strings.TrimSpace(network.BridgePorts) != "" && strings.TrimSpace(network.BridgePorts) != "none",
+					HasIPConfig: network.CIDR != "" ||
+						network.CIDR6 != "" ||
+						network.Gateway != "" ||
+						network.Gateway6 != "" ||
+						(network.Method != "" && network.Method != "manual") ||
+						(network.Method6 != "" && network.Method6 != "manual"),
+				})
 			}
 		}
+		sort.Slice(nodeInventory.Bridges, func(left int, right int) bool {
+			return nodeInventory.Bridges[left].Name < nodeInventory.Bridges[right].Name
+		})
+		inventory.Nodes = append(inventory.Nodes, nodeInventory)
 	}
+	sort.Slice(inventory.Nodes, func(left int, right int) bool {
+		return inventory.Nodes[left].Name < inventory.Nodes[right].Name
+	})
 	for bridge := range bridges {
 		inventory.Bridges = append(inventory.Bridges, bridge)
 	}

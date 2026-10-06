@@ -824,6 +824,82 @@ button:disabled {
     overflow-wrap: anywhere;
 }
 
+.trunk-management {
+    display: grid;
+    min-width: 0;
+    gap: 10px;
+    padding-top: 16px;
+    border-top: 1px solid var(--theme-border-soft);
+}
+
+.trunk-management-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.trunk-management-heading h3 {
+    margin: 0;
+    color: var(--theme-text);
+    font-size: 14px;
+    font-weight: 650;
+}
+
+.trunk-management-heading p,
+.trunk-mapping-note,
+.empty-trunk-list {
+    margin: 4px 0 0;
+    color: var(--theme-muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.trunk-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: auto;
+    font-size: 12px;
+}
+
+.trunk-table th,
+.trunk-table td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--theme-border-soft);
+    text-align: left;
+    vertical-align: top;
+}
+
+.trunk-table thead th {
+    color: var(--theme-muted);
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.045em;
+    text-transform: uppercase;
+}
+
+.trunk-table tbody th {
+    color: var(--theme-text);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.trunk-table tbody td {
+    color: var(--theme-muted);
+    overflow-wrap: anywhere;
+}
+
+.trunk-mapping {
+    display: block;
+}
+
+.trunk-field-note {
+    display: block;
+    margin-top: 5px;
+    color: var(--theme-muted);
+    font-size: 11px;
+}
+
 .address-pool-row {
     min-height: 36px;
     padding: 3px 0 3px 8px;

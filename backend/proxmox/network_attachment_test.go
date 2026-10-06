@@ -174,6 +174,25 @@ func TestRouterDNSFirewallRulesAreLimitedToLANSubnetsAndDNS(t *testing.T) {
 	}
 }
 
+func TestRouterForwardingFirewallRulesAreLimitedToClientSubnets(t *testing.T) {
+	var request NetworkAttachmentRequest = NetworkAttachmentRequest{
+		AttachmentOperationKey: "router-lan", AllowedClientSubnets: []string{"192.0.2.0/24", "2001:db8:2::/64"},
+	}
+	var rules []*pve.FirewallRule = routerForwardingFirewallRules("net0", request)
+	if len(rules) != 2 {
+		t.Fatalf("expected one forwarding allowance per client subnet, got %d", len(rules))
+	}
+	for index, rule := range rules {
+		if rule.Type != "in" || rule.Action != "ACCEPT" || rule.Enable != 1 || rule.Iface != "net0" || rule.Source != request.AllowedClientSubnets[index] || rule.Proto != "" || rule.Dport != "" {
+			t.Fatalf("router forwarding rule is broader or differently scoped than expected: %+v", rule)
+		}
+	}
+	var entries []string = networkAttachmentIPFilterEntries(request)
+	if len(entries) != 2 || entries[0] != "192.0.2.0/24" || entries[1] != "2001:db8:2::/64" {
+		t.Fatalf("router source filter entries = %v, want configured client subnets", entries)
+	}
+}
+
 func TestParseIPSetEntryAcceptsHostsAndCanonicalSubnets(t *testing.T) {
 	for _, value := range []string{"192.0.2.10", "192.0.2.10/32", "2001:db8::10", "2001:db8::10/128", "192.0.2.0/24", "2001:db8::/64"} {
 		if _, err := parseIPSetEntry(value); err != nil {

@@ -45,6 +45,11 @@ locals {
       egress_environment_network     = var.shared_router_egress_enabled ? var.cyber_environment_network : null
       egress_address_pool_request_id = var.shared_router_egress_enabled ? organesson_address_pool_request.cyber_ipv4["class"].id : null
       egress_ipv4_method             = var.router_egress_ipv4_method
+      external_vlan = {
+        trunk_node   = "tungsten"
+        trunk_bridge = "ogtrunk"
+        vlan_id      = 2048
+      }
     }
     }, {
     for student in local.students : "${student}-private" => {

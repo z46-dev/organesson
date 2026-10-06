@@ -32,6 +32,16 @@ resource "organesson_managed_network" "managed" {
   egress_environment_network     = each.value.egress_environment_network
   egress_address_pool_request_id = each.value.egress_address_pool_request_id
   egress_ipv4_method             = each.value.egress_ipv4_method
+
+  dynamic "external_vlan" {
+    for_each = try(each.value.external_vlan, null) == null ? [] : [each.value.external_vlan]
+
+    content {
+      trunk_node   = external_vlan.value.trunk_node
+      trunk_bridge = external_vlan.value.trunk_bridge
+      vlan_id      = external_vlan.value.vlan_id
+    }
+  }
 }
 
 resource "organesson_unmanaged_network" "f1_f3_link" {

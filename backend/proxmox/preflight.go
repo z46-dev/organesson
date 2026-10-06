@@ -61,7 +61,7 @@ type (
 	SDNNetworkDriver interface {
 		Create(context.Context, SDNNetworkRequest) (SDNNetworkPlacement, error)
 		Read(context.Context, SDNNetworkRequest, SDNNetworkPlacement) error
-		Delete(context.Context, string, string, string) error
+		Delete(context.Context, SDNNetworkRequest, SDNNetworkPlacement) error
 	}
 
 	// SDNNetworkIPAMReader reads address records associated with one SDN VNet.

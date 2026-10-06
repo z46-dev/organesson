@@ -49,6 +49,7 @@ func resourceManagedNetwork() (resource *schema.Resource) {
 			"egress_environment_network":     {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Authorized environment network used as the router's WAN."},
 			"egress_address_pool_request_id": {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Optional reserved address request for static router egress."},
 			"egress_ipv4_method":             {Type: schema.TypeString, Optional: true, Default: "dhcp", ForceNew: true, ValidateFunc: validation.StringInSlice([]string{"dhcp", "static"}, false), Description: "IPv4 configuration method for the router WAN."},
+			"external_vlan":                  externalVLANExposureSchema(),
 			"power_state":                    {Type: schema.TypeString, Computed: true, Description: "Proxmox SDN provisioning state."},
 			"proxmox_vnet":                   {Type: schema.TypeString, Computed: true, Description: "Organesson-owned Proxmox SDN VNet identifier."},
 			"proxmox_zone":                   {Type: schema.TypeString, Computed: true, Description: "Proxmox SDN zone containing this VNet."},
@@ -213,7 +214,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 		"parent_node_id": networkParentID, "name": data.Get("name").(string), "mode": "managed",
 		"ipv4_subnet": subnetText, "ipv4_gateway": gatewayText, "dhcp_enabled": data.Get("ipv4_dhcp_enabled").(bool),
 		"ipv6_subnet": ipv6SubnetText, "ipv6_gateway": ipv6GatewayText, "ipv6_dhcp_enabled": data.Get("ipv6_dhcp_enabled").(bool),
-		"egress_policy": "isolated", "router_vmid": vmID,
+		"egress_policy": "isolated", "router_vmid": vmID, "external_vlan": externalVLANRequest(data),
 	}, &network); err != nil {
 		managedNetworkRollback(ctx, client, "", "", "", vmResourceID, groupID)
 		diagnostics = diag.FromErr(err)
@@ -312,6 +313,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 	_ = data.Set("power_state", network.Resource.PowerState)
 	_ = data.Set("proxmox_vnet", network.Resource.ExternalID)
 	_ = data.Set("proxmox_zone", network.Resource.ExternalNode)
+	_ = data.Set("external_vlan", externalVLANState(network.Configuration.Request.ExternalVLAN))
 	_ = data.Set("summary", fmt.Sprintf("managed VNet %q with platform-owned router, DHCP, DNS, and configured egress", data.Get("name")))
 	return
 }
@@ -479,6 +481,7 @@ func managedNetworkRead(ctx context.Context, data *schema.ResourceData, meta int
 	_ = data.Set("proxmox_vnet", result.Resource.ExternalID)
 	_ = data.Set("proxmox_zone", result.Resource.ExternalNode)
 	_ = data.Set("router_vmid", result.Configuration.Request.RouterVMID)
+	_ = data.Set("external_vlan", externalVLANState(result.Configuration.Request.ExternalVLAN))
 	return
 }
 

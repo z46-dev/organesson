@@ -63,6 +63,20 @@ func TestValidateSDNNetworkRequestRejectsNonCanonicalOrInvalidSubnet(t *testing.
 	}
 }
 
+func TestValidateSDNNetworkRequestChecksExternalVLANPlacement(t *testing.T) {
+	var request SDNNetworkRequest = SDNNetworkRequest{
+		Name: "shared", Mode: "unmanaged-layer-2", EgressPolicy: "isolated", OperationKey: "og-vlan",
+		ExternalVLAN: &SDNExternalVLANExposure{TrunkNode: "tungsten", TrunkBridge: "ogtrunk", VLANID: 2048, Nodes: []string{"osmium", "tungsten"}},
+	}
+	if err := validateSDNNetworkRequest(request); err != nil {
+		t.Fatalf("valid external VLAN request rejected: %v", err)
+	}
+	request.ExternalVLAN.Nodes = []string{"osmium"}
+	if err := validateSDNNetworkRequest(request); err == nil {
+		t.Fatal("external VLAN node list without selected trunk node was accepted")
+	}
+}
+
 func TestSDNNetworkIdentifiersAreStableAndShort(t *testing.T) {
 	var first SDNNetworkPlacement = namesForSDNNetwork("deployment:network")
 	var second SDNNetworkPlacement = namesForSDNNetwork("deployment:network")
@@ -88,7 +102,7 @@ func (driver *testSDNNetworkDriver) Read(_ context.Context, _ SDNNetworkRequest,
 	return
 }
 
-func (driver *testSDNNetworkDriver) Delete(_ context.Context, _ string, _ string, _ string) (err error) {
+func (driver *testSDNNetworkDriver) Delete(_ context.Context, _ SDNNetworkRequest, _ SDNNetworkPlacement) (err error) {
 	driver.deleted = true
 	return
 }
@@ -104,7 +118,7 @@ func TestServiceSDNNetworkLifecycleUsesDriver(t *testing.T) {
 	if placement.VNet != driver.placement.VNet {
 		t.Fatalf("unexpected placement: %#v", placement)
 	}
-	if err = service.DeleteSDNNetwork(context.Background(), placement.VNet, "test", ""); err != nil || !driver.deleted {
+	if err = service.DeleteSDNNetwork(context.Background(), SDNNetworkRequest{OperationKey: "test"}, placement); err != nil || !driver.deleted {
 		t.Fatalf("delete SDN network: deleted=%t err=%v", driver.deleted, err)
 	}
 }
@@ -131,10 +145,15 @@ func TestAPISDNNetworkDriverCreatesOnlyIsolatedSimpleZoneAndDeletesIt(t *testing
 			}
 			data = result
 		case request.Method == http.MethodPost && path == "/cluster/sdn/zones":
-			if body["type"] != "simple" || body["bridge"] != nil {
-				t.Errorf("zone was not an isolated Simple zone: %#v", body)
+			if body["type"] == "simple" && body["bridge"] != nil {
+				t.Errorf("Simple zone unexpectedly has a bridge: %#v", body)
+			}
+			if body["type"] == "vlan" && (body["bridge"] != "ogtrunk" || body["nodes"] != "osmium,tungsten") {
+				t.Errorf("VLAN zone did not use the authorized trunk placement: %#v", body)
 			}
 			zones[body["zone"].(string)] = body
+		case request.Method == http.MethodGet && strings.HasPrefix(path, "/cluster/sdn/zones/"):
+			data = zones[strings.TrimPrefix(path, "/cluster/sdn/zones/")]
 		case request.Method == http.MethodGet && path == "/cluster/sdn/vnets":
 			var result []map[string]any
 			for _, vnet := range vnets {
@@ -245,7 +264,7 @@ func TestAPISDNNetworkDriverCreatesOnlyIsolatedSimpleZoneAndDeletesIt(t *testing
 		t.Fatal("SDN zone DHCP drift was not detected")
 	}
 	zones[placement.Zone]["dhcp"] = "dnsmasq"
-	if err = driver.Delete(context.Background(), placement.VNet, request.OperationKey, ""); err != nil {
+	if err = driver.Delete(context.Background(), request, placement); err != nil {
 		t.Fatalf("delete isolated SDN network: %v", err)
 	}
 	if len(zones) != 0 || len(vnets) != 0 || len(subnets[placement.VNet]) != 0 {
@@ -263,11 +282,31 @@ func TestAPISDNNetworkDriverCreatesOnlyIsolatedSimpleZoneAndDeletesIt(t *testing
 	if err = driver.Read(context.Background(), request, placement); err != nil {
 		t.Fatalf("read VNet in imported VXLAN source: %v", err)
 	}
-	if err = driver.Delete(context.Background(), placement.VNet, request.OperationKey, "ogvxlan"); err != nil {
+	if err = driver.Delete(context.Background(), request, placement); err != nil {
 		t.Fatalf("delete VNet from imported VXLAN source: %v", err)
 	}
 	if len(zones) != 1 || zones["ogvxlan"]["type"] != "vxlan" || len(vnets) != 0 {
 		t.Fatalf("deleting Organesson VNet affected imported zone: zones=%#v vnets=%#v", zones, vnets)
+	}
+	request = SDNNetworkRequest{
+		Name: "shared", Mode: "managed", Subnet: "192.168.1.0/24", Gateway: "192.168.1.1",
+		DHCPEnabled: true, EgressPolicy: "isolated", OperationKey: "og-shared-vlan", VNetSourceZone: "ogvxlan",
+		ExternalVLAN: &SDNExternalVLANExposure{TrunkNode: "tungsten", TrunkBridge: "ogtrunk", VLANID: 2048, Nodes: []string{"osmium", "tungsten"}},
+	}
+	if placement, err = driver.Create(context.Background(), request); err != nil {
+		t.Fatalf("create externally exposed VLAN network: %v", err)
+	}
+	if placement.Zone == "ogvxlan" || placement.Tag != 2048 || zones[placement.Zone]["type"] != "vlan" || zones[placement.Zone]["bridge"] != "ogtrunk" || vnets[placement.VNet]["zone"] != placement.Zone || uint32(vnets[placement.VNet]["tag"].(float64)) != 2048 {
+		t.Fatalf("external VLAN was not represented by a dedicated tagged VLAN zone: placement=%#v zones=%#v vnets=%#v", placement, zones, vnets)
+	}
+	if err = driver.Read(context.Background(), request, placement); err != nil {
+		t.Fatalf("read externally exposed VLAN network: %v", err)
+	}
+	if err = driver.Delete(context.Background(), request, placement); err != nil {
+		t.Fatalf("delete externally exposed VLAN network: %v", err)
+	}
+	if len(zones) != 1 || zones["ogvxlan"]["type"] != "vxlan" || len(vnets) != 0 {
+		t.Fatalf("external VLAN cleanup affected the imported VXLAN zone: zones=%#v vnets=%#v", zones, vnets)
 	}
 }
 

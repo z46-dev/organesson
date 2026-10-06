@@ -20,7 +20,7 @@ func (driver *testRouterPollingDriver) Read(context.Context, SDNNetworkRequest, 
 	return nil
 }
 
-func (driver *testRouterPollingDriver) Delete(context.Context, string, string, string) error {
+func (driver *testRouterPollingDriver) Delete(context.Context, SDNNetworkRequest, SDNNetworkPlacement) error {
 	return nil
 }
 

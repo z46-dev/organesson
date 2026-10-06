@@ -21,6 +21,12 @@ type PolicyNetwork = {
     address_pools: AddressPool[];
 };
 
+type VLANRange = { start: number; end: number };
+type VLANTrunk = { node: string; bridge: string; allowed_vlan_ranges: VLANRange[] };
+type VLANTrunkMapping = { node: string; bridge: string; vlan_id: number; deployment_name: string; vnet_name: string };
+type BridgeInventory = { name: string; vlan_aware: boolean; has_physical_ports: boolean; has_ip_config: boolean };
+type NodeInventory = { name: string; status: string; bridges: BridgeInventory[] };
+
 type Policy = {
     limits: { max_deployments: number; max_sdn_networks: number; virtual_cpus: number; memory_mib: number; storage_gib: number; snapshot_storage_gib: number };
     deployment_limits: { max_resources: number; max_sdn_networks: number; virtual_cpus: number; memory_mib: number; storage_gib: number; snapshot_storage_gib: number };
@@ -28,16 +34,17 @@ type Policy = {
     resource_pools: string[];
     storages: string[];
     networks: PolicyNetwork[];
+    vlan_trunks: VLANTrunk[];
 };
 
-type Inventory = { pools: string[]; storages: string[]; bridges: string[]; vnets: string[]; vnet_subnets?: Record<string, PolicySubnet[]> };
+type Inventory = { pools: string[]; storages: string[]; bridges: string[]; vnets: string[]; vnet_subnets?: Record<string, PolicySubnet[]>; nodes: NodeInventory[] };
 type Props = { request: ApiRequest; section: "capacity" | "networks"; onError: (message: string) => void; onNotice: (message: string) => void };
 
 const emptyPolicy: Policy = {
     limits: { max_deployments: 0, max_sdn_networks: 0, virtual_cpus: 0, memory_mib: 0, storage_gib: 0, snapshot_storage_gib: 0 },
     deployment_limits: { max_resources: 0, max_sdn_networks: 0, virtual_cpus: 0, memory_mib: 0, storage_gib: 0, snapshot_storage_gib: 0 },
     vm_limits: { virtual_cpus: 0, memory_mib: 0, storage_gib: 0, snapshot_storage_gib: 0 },
-    resource_pools: [], storages: [], networks: []
+    resource_pools: [], storages: [], networks: [], vlan_trunks: []
 };
 
 type QuotaScope = "limits" | "deployment_limits" | "vm_limits";
@@ -90,6 +97,9 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
     const [networkEditor, setNetworkEditor] = useState<{ networkIndex: number | null; value: PolicyNetwork } | null>(null);
     const [poolEditor, setPoolEditor] = useState<{ poolIndex: number | null; value: AddressPool } | null>(null);
     const [poolIssue, setPoolIssue] = useState("");
+    const [trunkEditor, setTrunkEditor] = useState<{ node: string; bridge: string; vlanRanges: string } | null>(null);
+    const [trunkIssue, setTrunkIssue] = useState("");
+    const [trunkMappings, setTrunkMappings] = useState<VLANTrunkMapping[]>([]);
 
     useEffect(() => {
         request<{ policy?: Policy; inventory?: Inventory; configured: boolean; validated_at?: string; inventory_error?: string }>("/admin/proxmox/resources")
@@ -105,9 +115,11 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
                         target_mode: network.target_mode ?? "existing",
                         subnets: network.subnets ?? [],
                         address_pools: network.address_pools ?? []
-                    }))
+                    })),
+                    vlan_trunks: result.policy?.vlan_trunks ?? []
                 });
                 setInventory(result.inventory ?? null);
+                setTrunkMappings([]);
                 setConfigured(result.configured);
                 setValidatedAt(result.validated_at ?? null);
                 setInventoryError(result.inventory_error ?? "");
@@ -191,6 +203,49 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
         setPoolEditor({ poolIndex, value });
     };
     const removePool = (poolIndex: number) => setNetworkEditor((current) => current ? { ...current, value: { ...current.value, address_pools: current.value.address_pools.filter((_, index) => index !== poolIndex) } } : current);
+    const openTrunkEditor = () => {
+        const firstNode = inventory?.nodes.find((node) => node.status === "online" && node.bridges.length > 0);
+        setTrunkIssue("");
+        setTrunkEditor({ node: firstNode?.name ?? "", bridge: firstNode?.bridges[0]?.name ?? "", vlanRanges: "" });
+    };
+    const selectedTrunkNode = inventory?.nodes.find((node) => node.name === trunkEditor?.node);
+    const addTrunk = () => {
+        if (!trunkEditor) return;
+        const ranges: VLANRange[] = [];
+        for (const part of trunkEditor.vlanRanges.split(",")) {
+            const match = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+            if (!match) {
+                setTrunkIssue("Enter VLAN IDs or ranges such as 300, 400-450, 4091.");
+                return;
+            }
+            const start = Number(match[1]);
+            const end = Number(match[2] ?? match[1]);
+            if (start < 1 || end > 4094 || start > end || ranges.some((range) => start <= range.end && range.start <= end)) {
+                setTrunkIssue("VLAN ranges must be unique and between 1 and 4094.");
+                return;
+            }
+            ranges.push({ start, end });
+        }
+        if (!trunkEditor.node || !trunkEditor.bridge || ranges.length === 0) {
+            setTrunkIssue("Select a node and bridge, then specify at least one VLAN ID.");
+            return;
+        }
+        if (policy.vlan_trunks.some((trunk) => trunk.node === trunkEditor.node && trunk.bridge === trunkEditor.bridge)) {
+            setTrunkIssue("That bridge is already registered on this node.");
+            return;
+        }
+        setPolicy((current) => ({ ...current, vlan_trunks: [...current.vlan_trunks, { node: trunkEditor.node, bridge: trunkEditor.bridge, allowed_vlan_ranges: ranges }] }));
+        setTrunkEditor(null);
+        setTrunkIssue("");
+        setIssues([]);
+        setValidatedAt(null);
+    };
+    const removeTrunk = (node: string, bridge: string) => {
+        setPolicy((current) => ({ ...current, vlan_trunks: current.vlan_trunks.filter((trunk) => trunk.node !== node || trunk.bridge !== bridge) }));
+        setValidatedAt(null);
+        setIssues([]);
+    };
+    const vlanRangeText = (ranges: VLANRange[]) => ranges.map((range) => range.start === range.end ? `${range.start}` : `${range.start}-${range.end}`).join(", ");
 
     return (
         <form className="panel resource-policy" aria-labelledby="resource-policy-heading" onSubmit={save}>
@@ -246,6 +301,14 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
                     </div>
                 </fieldset>)}
             </div>}
+            {section === "networks" && <section className="trunk-management" aria-labelledby="vlan-trunks-heading">
+                <div className="trunk-management-heading"><div><h3 id="vlan-trunks-heading">External VLAN trunks</h3><p>Approved node bridges and VLAN ranges for future VNet exposure.</p></div><button className="icon-action" type="button" aria-label="Add VLAN trunk" title="Add VLAN trunk" onClick={openTrunkEditor}><Plus size={17} /></button></div>
+                {policy.vlan_trunks.length === 0 ? <p className="empty-trunk-list">No external VLAN trunks configured.</p> : <div className="address-pool-table-wrap"><table className="trunk-table"><thead><tr><th scope="col">Node</th><th scope="col">Bridge</th><th scope="col">Allowed VLANs</th><th scope="col">Used VLANs</th><th scope="col">Deployment / VNet</th><th scope="col"><span className="visually-hidden">Actions</span></th></tr></thead><tbody>{policy.vlan_trunks.map((trunk) => {
+                    const mappings = trunkMappings.filter((mapping) => mapping.node === trunk.node && mapping.bridge === trunk.bridge);
+                    return <tr key={`${trunk.node}/${trunk.bridge}`}><th scope="row">{trunk.node}</th><td>{trunk.bridge}</td><td>{vlanRangeText(trunk.allowed_vlan_ranges)}</td><td>{mappings.length === 0 ? "—" : [...new Set(mappings.map((mapping) => mapping.vlan_id))].sort((left, right) => left - right).join(", ")}</td><td>{mappings.length === 0 ? "—" : mappings.map((mapping) => <span className="trunk-mapping" key={`${mapping.vlan_id}/${mapping.vnet_name}`}>VLAN {mapping.vlan_id} · {mapping.deployment_name} / {mapping.vnet_name}</span>)}</td><td><button className="icon-action danger-action" type="button" aria-label={`Remove ${trunk.node} ${trunk.bridge} trunk`} onClick={() => removeTrunk(trunk.node, trunk.bridge)}><Trash2 size={14} /></button></td></tr>;
+                })}</tbody></table></div>}
+                {policy.vlan_trunks.length > 0 && trunkMappings.length === 0 && <p className="trunk-mapping-note">No VNet exports are using these trunks yet.</p>}
+            </section>}
             {issues.length > 0 && <ul className="policy-issues">{issues.map((issue) => <li key={issue}>{issue}</li>)}</ul>}
             <div className="policy-footer"><span>{validatedAt ? `Last verified ${new Date(validatedAt).toLocaleString()}` : "Policy must pass PVE validation before it can be used."}</span><button className="primary-action" type="submit" disabled={busy || !configured}>{busy ? "Checking…" : "Validate and save"}</button></div>
             {networkEditor && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setNetworkEditor(null); }}><section className="pool-editor-modal network-editor-modal" role="dialog" aria-modal="true" aria-labelledby="network-editor-title"><header><h3 id="network-editor-title">{networkEditor.networkIndex === null ? "Add network" : "Edit network"}</h3><button className="icon-action" type="button" aria-label="Close" onClick={() => setNetworkEditor(null)}><X size={17} /></button></header><div><table className="policy-config-table"><tbody>
@@ -268,6 +331,14 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
                 <tr><th scope="row">Gateway</th><td><input value={poolEditor.value.gateway} onChange={(event) => setPoolEditor({ ...poolEditor, value: { ...poolEditor.value, gateway: event.target.value } })} /></td></tr>
                 <tr><th scope="row">DNS</th><td><input placeholder="Comma-separated addresses" value={poolEditor.value.dns.join(", ")} onChange={(event) => setPoolEditor({ ...poolEditor, value: { ...poolEditor.value, dns: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) } })} /></td></tr>
             </tbody></table>{poolIssue && <p className="policy-warning">{poolIssue}</p>}<footer><button className="secondary-action" type="button" onClick={() => setPoolEditor(null)}>Cancel</button><button className="primary-action" type="button" onClick={savePool}>Save pool</button></footer></div></section></div>}
+            {trunkEditor && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTrunkEditor(null); }}><section className="pool-editor-modal trunk-editor-modal" role="dialog" aria-modal="true" aria-labelledby="trunk-editor-title"><header><h3 id="trunk-editor-title">Add VLAN trunk</h3><button className="icon-action" type="button" aria-label="Close" onClick={() => setTrunkEditor(null)}><X size={17} /></button></header><div><table className="policy-config-table"><tbody>
+                <tr><th scope="row">Proxmox node</th><td><select autoFocus value={trunkEditor.node} onChange={(event) => {
+                    const node = inventory?.nodes.find((item) => item.name === event.target.value);
+                    setTrunkEditor({ ...trunkEditor, node: event.target.value, bridge: node?.bridges[0]?.name ?? "" });
+                }}><option value="">Select node</option>{(inventory?.nodes ?? []).map((node) => <option key={node.name} value={node.name} disabled={node.status !== "online"}>{node.name}{node.status !== "online" ? ` · ${node.status}` : ""}</option>)}</select></td></tr>
+                <tr><th scope="row">Bridge</th><td><select value={trunkEditor.bridge} onChange={(event) => setTrunkEditor({ ...trunkEditor, bridge: event.target.value })}><option value="">Select bridge</option>{(selectedTrunkNode?.bridges ?? []).map((bridge) => <option key={bridge.name} value={bridge.name}>{bridge.name}{!bridge.vlan_aware ? " · not VLAN-aware" : bridge.has_ip_config ? " · has host IP config" : !bridge.has_physical_ports ? " · no bridge ports" : ""}</option>)}</select></td></tr>
+                <tr><th scope="row">Allowed VLAN IDs</th><td><input placeholder="300, 400-450, 4091" value={trunkEditor.vlanRanges} onChange={(event) => setTrunkEditor({ ...trunkEditor, vlanRanges: event.target.value })} /><small className="trunk-field-note">Use comma-separated IDs or inclusive ranges (1–4094).</small></td></tr>
+            </tbody></table>{trunkIssue && <p className="policy-warning">{trunkIssue}</p>}<footer><button className="secondary-action" type="button" onClick={() => setTrunkEditor(null)}>Cancel</button><button className="primary-action" type="button" onClick={addTrunk}>Add trunk</button></footer></div></section></div>}
         </form>
     );
 }

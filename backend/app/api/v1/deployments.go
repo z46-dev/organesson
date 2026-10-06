@@ -41,17 +41,18 @@ type (
 	}
 
 	createNetworkRequest struct {
-		ParentNodeID    int    `json:"parent_node_id"`
-		Name            string `json:"name"`
-		Mode            string `json:"mode"`
-		Subnet          string `json:"ipv4_subnet"`
-		Gateway         string `json:"ipv4_gateway"`
-		IPv6Subnet      string `json:"ipv6_subnet"`
-		IPv6Gateway     string `json:"ipv6_gateway"`
-		DHCPEnabled     bool   `json:"dhcp_enabled"`
-		IPv6DHCPEnabled bool   `json:"ipv6_dhcp_enabled"`
-		EgressPolicy    string `json:"egress_policy"`
-		RouterVMID      int    `json:"router_vmid"`
+		ParentNodeID    int                              `json:"parent_node_id"`
+		Name            string                           `json:"name"`
+		Mode            string                           `json:"mode"`
+		Subnet          string                           `json:"ipv4_subnet"`
+		Gateway         string                           `json:"ipv4_gateway"`
+		IPv6Subnet      string                           `json:"ipv6_subnet"`
+		IPv6Gateway     string                           `json:"ipv6_gateway"`
+		DHCPEnabled     bool                             `json:"dhcp_enabled"`
+		IPv6DHCPEnabled bool                             `json:"ipv6_dhcp_enabled"`
+		EgressPolicy    string                           `json:"egress_policy"`
+		RouterVMID      int                              `json:"router_vmid"`
+		ExternalVLAN    *proxmox.SDNExternalVLANExposure `json:"external_vlan,omitempty"`
 	}
 
 	createNetworkAttachmentRequest struct {
@@ -353,7 +354,7 @@ func createNetworkHandler(services common.Services) (handler fiber.Handler) {
 		}
 		var networkRequest proxmox.SDNNetworkRequest = proxmox.SDNNetworkRequest{
 			Name: request.Name, Mode: request.Mode, Subnet: request.Subnet, Gateway: request.Gateway, IPv6Subnet: request.IPv6Subnet, IPv6Gateway: request.IPv6Gateway,
-			DHCPEnabled: request.DHCPEnabled, IPv6DHCPEnabled: request.IPv6DHCPEnabled, EgressPolicy: request.EgressPolicy, RouterVMID: request.RouterVMID,
+			DHCPEnabled: request.DHCPEnabled, IPv6DHCPEnabled: request.IPv6DHCPEnabled, EgressPolicy: request.EgressPolicy, RouterVMID: request.RouterVMID, ExternalVLAN: request.ExternalVLAN,
 		}
 		var resource *db.ManagedResource
 		if resource, err = services.Domain.ReserveSDNNetwork(actorID, deploymentID, request.ParentNodeID, networkRequest); err != nil {
@@ -468,7 +469,7 @@ func deleteNetworkHandler(services common.Services) (handler fiber.Handler) {
 		if services.Proxmox == nil || !services.Proxmox.Configured() {
 			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; the network record was retained."})
 		}
-		if err = services.Proxmox.DeleteSDNNetwork(ctx, resource.ExternalID, configuration.Request.OperationKey, configuration.Request.VNetSourceZone); err != nil {
+		if err = services.Proxmox.DeleteSDNNetwork(ctx, configuration.Request, configuration.Placement); err != nil {
 			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm network deletion; the Organesson record was retained."})
 		}
 		if err = services.Domain.DeleteSDNNetworkRecord(actorID, resourceID); err != nil {

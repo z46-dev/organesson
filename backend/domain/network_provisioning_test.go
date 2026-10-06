@@ -26,3 +26,17 @@ func TestFilterStaleRouterLeasesKeepsCurrentAddressAndOtherNICs(t *testing.T) {
 		}
 	}
 }
+
+func TestFilterStaleRouterLeasesPreservesOtherAddressFamily(t *testing.T) {
+	var staticAddresses []StaticNetworkAddress = []StaticNetworkAddress{
+		{Address: "fd42:1::20/64", MAC: "02:aa:bb:cc:dd:ee"},
+	}
+	var observed []proxmox.SDNRouterObservedAddress = []proxmox.SDNRouterObservedAddress{
+		{Address: "192.168.1.30", MAC: "02:aa:bb:cc:dd:ee", Source: "lease"},
+		{Address: "fd42:1::21", MAC: "02:aa:bb:cc:dd:ee", Source: "lease"},
+	}
+	var filtered []proxmox.SDNRouterObservedAddress = FilterStaleRouterLeases(staticAddresses, observed)
+	if len(filtered) != 1 || filtered[0].Address != "192.168.1.30" {
+		t.Fatalf("filtered addresses = %#v, want IPv4 lease retained and stale IPv6 lease removed", filtered)
+	}
+}
