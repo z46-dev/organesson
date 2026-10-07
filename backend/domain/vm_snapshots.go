@@ -60,18 +60,38 @@ func (service *Service) ReserveVMSnapshot(actorID int, resourceID int, descripti
 		err = fmt.Errorf("%w: Proxmox resource policy is not valid", ErrInvalidInput)
 		return
 	}
-	var used int64
+	var globalReservedGiB int64
+	var deploymentReservedGiB int64
+	var vmSnapshotCount int
 	var snapshots []*db.ManagedVMSnapshot
 	if snapshots, err = service.store.ManagedVMSnapshots.SelectAll(); err != nil {
 		return
 	}
 	for _, current := range snapshots {
 		if current.State == "creating" || current.State == "ready" || current.State == "deleting" {
-			used += int64(current.ReservedGiB)
+			globalReservedGiB += int64(current.ReservedGiB)
+			if current.ResourceID == resource.ID {
+				vmSnapshotCount++
+			}
+			var currentResource *db.ManagedResource
+			if currentResource, err = service.store.ManagedResources.Select(current.ResourceID); err != nil {
+				return
+			}
+			if currentResource != nil && currentResource.DeploymentID == resource.DeploymentID {
+				deploymentReservedGiB += int64(current.ReservedGiB)
+			}
 		}
 	}
-	if policy.Limits.SnapshotStorageGiB > 0 && used+int64(request.BootDiskGiB) > policy.Limits.SnapshotStorageGiB {
-		err = fmt.Errorf("%w: snapshot reservation exceeds the configured platform capacity limit", ErrInvalidInput)
+	if policy.Limits.SnapshotStorageGiB > 0 && globalReservedGiB+int64(request.BootDiskGiB) > policy.Limits.SnapshotStorageGiB {
+		err = fmt.Errorf("%w: snapshot reservation exceeds the configured platform storage limit", ErrInvalidInput)
+		return
+	}
+	if policy.DeploymentLimits.SnapshotStorageGiB > 0 && deploymentReservedGiB+int64(request.BootDiskGiB) > policy.DeploymentLimits.SnapshotStorageGiB {
+		err = fmt.Errorf("%w: snapshot reservation exceeds the configured deployment storage limit", ErrInvalidInput)
+		return
+	}
+	if policy.VMLimits.MaxSnapshots > 0 && vmSnapshotCount >= policy.VMLimits.MaxSnapshots {
+		err = fmt.Errorf("%w: VM snapshot count exceeds the configured per-VM limit", ErrInvalidInput)
 		return
 	}
 	var keyBytes [12]byte

@@ -66,7 +66,7 @@ func main() {
 	defer store.Close()
 
 	var authentication *localauth.Service
-	if authentication, err = localauth.New(store); err != nil {
+	if authentication, err = localauth.New(store, config.Cfg.Authentication.EncryptionKey); err != nil {
 		log.Panicf("Failed to initialize authentication: %v\n", err)
 	}
 

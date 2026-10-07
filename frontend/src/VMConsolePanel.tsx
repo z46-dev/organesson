@@ -9,6 +9,7 @@ export function VMConsolePanel({ resourceID, resourceName, allowed, powerState, 
     const target = useRef<HTMLDivElement>(null);
     const panel = useRef<HTMLElement>(null);
     const client = useRef<RFB | null>(null);
+    const consoleCursor = useRef<string | null>(null);
     const canConnect = powerState === "running";
     const [connectionRequested, setConnectionRequested] = useState(detached && canConnect);
     const [connected, setConnected] = useState(false);
@@ -137,6 +138,24 @@ export function VMConsolePanel({ resourceID, resourceName, allowed, powerState, 
         }
     }
 
+    function showLocalCursor() {
+        const canvas = target.current?.querySelector("canvas");
+        if (!canvas) {
+            return;
+        }
+        consoleCursor.current = canvas.style.cursor;
+        canvas.style.cursor = "default";
+    }
+
+    function restoreConsoleCursor() {
+        const canvas = target.current?.querySelector("canvas");
+        if (!canvas || consoleCursor.current === null) {
+            return;
+        }
+        canvas.style.cursor = consoleCursor.current;
+        consoleCursor.current = null;
+    }
+
     return (
         <section className={`vm-console-panel${detached ? " is-detached" : ""}`} ref={panel} aria-label="Virtual machine console">
             <header className="console-toolbar">
@@ -147,13 +166,14 @@ export function VMConsolePanel({ resourceID, resourceName, allowed, powerState, 
                     <div className="console-toolbar-actions">
                         <span className="visually-hidden" role="status" aria-live="polite">{state}</span>
                         {allowed && (connectionRequested ? <button className="quiet-button console-control" type="button" onClick={() => setConnectionRequested(false)}><Unplug size={14} />Disconnect</button> : <button className="quiet-button console-control console-connect-control" type="button" onClick={() => { setConnectionError(""); setConnectionRequested(true); }} disabled={!canConnect} title={!canConnect ? "Start the VM before connecting to its console." : "Connect to the VM console"}><Plug size={14} />Connect</button>)}
+                        {allowed && <button className="quiet-button console-control" type="button" onClick={() => client.current?.sendKey(0xffeb, "MetaLeft")} disabled={!connected} title="Send the Super (Windows/Meta) key">Super</button>}
                         {allowed && <button className="icon-button console-icon-control" type="button" onClick={() => client.current?.sendCtrlAltDel()} aria-label="Send Ctrl+Alt+Delete" title="Send Ctrl+Alt+Delete" disabled={!connected}><span className="console-key-hint">Ctrl<br />Alt<br />Del</span></button>}
                         {allowed && <button className="icon-button console-icon-control" type="button" onClick={toggleFullscreen} aria-label="Toggle console fullscreen" title="Fullscreen"><Maximize2 size={15} /></button>}
                         <button className="icon-button console-icon-control" type="button" onClick={detach} aria-label={detached ? "Detach and close window" : "Detach console"} title="Detach">{detached ? <Unplug size={15} /> : <ArrowUpRight size={16} />}</button>
                     </div>
                 </>}
             </header>
-            {!detached && !canEmbedConsole ? null : allowed ? <div className="console-screen-wrap">
+            {!detached && !canEmbedConsole ? null : allowed ? <div className="console-screen-wrap" onMouseLeave={showLocalCursor} onMouseEnter={restoreConsoleCursor}>
                 <div className="console-screen" ref={target} />
                 {!connectionRequested && connectionError && <div className="console-error-overlay" role="alert">{connectionError}</div>}
             </div> : <div className="console-screen-wrap"><div className="console-placeholder">Your account does not have console access to this VM.</div></div>}

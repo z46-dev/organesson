@@ -10,6 +10,14 @@ import "./index.css";
 
 type ViewMode = "login" | "bootstrap" | "activate";
 type Theme = "light" | "dark";
+type Accent = "green" | "blue" | "violet" | "amber";
+
+const accentOptions: { name: Accent; swatch: string }[] = [
+    { name: "green", swatch: "#26734f" },
+    { name: "blue", swatch: "#3475c5" },
+    { name: "violet", swatch: "#8054c6" },
+    { name: "amber", swatch: "#bd740d" }
+];
 
 // Owns authentication, shared application chrome, and top-level navigation.
 export function App() {
@@ -24,6 +32,11 @@ export function App() {
     const [oneTimeToken, setOneTimeToken] = useState("");
     const [newPassword, setNewPassword] = useState("");
     const [theme, setTheme] = useState<Theme>(() => localStorage.getItem("organesson-theme") === "dark" ? "dark" : "light");
+    const [accent, setAccent] = useState<Accent>(() => {
+        const savedAccent = localStorage.getItem("organesson-accent");
+        return savedAccent === "blue" || savedAccent === "violet" || savedAccent === "amber" ? savedAccent : "green";
+    });
+    const profileMenu = useRef<HTMLDetailsElement>(null);
     const nextToastID = useRef(0);
 
     const pushToast = useCallback((kind: ToastNotice["kind"], message: string) => {
@@ -65,6 +78,32 @@ export function App() {
         document.documentElement.dataset.theme = theme;
         localStorage.setItem("organesson-theme", theme);
     }, [theme]);
+
+    useEffect(() => {
+        document.documentElement.dataset.accent = accent;
+        localStorage.setItem("organesson-accent", accent);
+    }, [accent]);
+
+    useEffect(() => {
+        function closeProfileMenu(event: PointerEvent) {
+            if (profileMenu.current && !profileMenu.current.contains(event.target as Node)) {
+                profileMenu.current.open = false;
+            }
+        }
+
+        function closeProfileMenuOnEscape(event: KeyboardEvent) {
+            if (event.key === "Escape" && profileMenu.current?.open) {
+                profileMenu.current.open = false;
+            }
+        }
+
+        document.addEventListener("pointerdown", closeProfileMenu);
+        document.addEventListener("keydown", closeProfileMenuOnEscape);
+        return () => {
+            document.removeEventListener("pointerdown", closeProfileMenu);
+            document.removeEventListener("keydown", closeProfileMenuOnEscape);
+        };
+    }, []);
 
     useEffect(() => {
         function updatePath() {
@@ -149,11 +188,18 @@ export function App() {
                             <a className="nav-link" href="/" aria-current={route === "dashboard" ? "page" : undefined} onClick={(event) => handleNavigation(event, "/")}>Dashboard</a>
                             {account.platform_administrator && <a className="nav-link" href="/admin" aria-current={route === "admin" ? "page" : undefined} onClick={(event) => handleNavigation(event, "/admin")}>Administration</a>}
                         </nav>
-                        <details className="profile-menu">
+                        <details className="profile-menu" ref={profileMenu}>
                             <summary><span className="profile-icon" aria-hidden="true">{account.display_name.slice(0, 1).toUpperCase()}</span>{account.qualified_name}</summary>
                             <div className="profile-popover">
                                 <span>{account.qualified_name}</span>
-                                <div className="theme-control"><span>Theme</span><div role="group" aria-label="Color theme"><button type="button" aria-pressed={theme === "light"} onClick={() => setTheme("light")}>Light</button><button type="button" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>Dark</button></div></div>
+                                <div className="theme-control">
+                                    <span>Theme</span>
+                                    <div role="group" aria-label="Color theme"><button type="button" aria-pressed={theme === "light"} onClick={() => setTheme("light")}>Light</button><button type="button" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>Dark</button></div>
+                                    <span>Accent</span>
+                                    <div className="accent-options" role="group" aria-label="Accent color">
+                                        {accentOptions.map((option) => <button className="accent-swatch" key={option.name} type="button" aria-label={`${option.name} accent`} aria-pressed={accent === option.name} style={{ backgroundColor: option.swatch }} onClick={() => setAccent(option.name)} />)}
+                                    </div>
+                                </div>
                                 <button className="quiet-button" type="button" onClick={signOut}>Sign out</button>
                             </div>
                         </details>

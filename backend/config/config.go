@@ -18,6 +18,10 @@ type (
 		InsecureSkipVerify      bool   `toml:"insecure_skip_verify" default:"false"`
 	}
 
+	AuthenticationConfiguration struct {
+		EncryptionKey string `toml:"encryption_key" default:""` // Base64-encoded 32-byte key used to encrypt stored authentication secrets.
+	}
+
 	Configuration struct {
 		WebServer struct {
 			Address            string   `toml:"address" default:":6800" validate:"required"` // Listen address for the web application server e.g. ":6800" or "0.0.0.0:6800"
@@ -30,6 +34,8 @@ type (
 		} `toml:"database"` // Database configuration
 
 		Proxmox ProxmoxConfiguration `toml:"proxmox"`
+
+		Authentication AuthenticationConfiguration `toml:"authentication"`
 
 		Development struct {
 			EnableTestFixtures bool `toml:"enable_test_fixtures" default:"false"` // Explicitly permit local test fixture commands.

@@ -6,6 +6,7 @@ declare module "@novnc/novnc" {
         focusOnClick: boolean;
         focus(options?: FocusOptions): void;
         disconnect(): void;
+        sendKey(keysym: number, code: string, down?: boolean): void;
         sendCtrlAltDel(): void;
         sendCredentials(credentials: { password?: string }): void;
         addEventListener(type: string, listener: (event: Event) => void): void;

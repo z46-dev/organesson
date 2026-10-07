@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Boxes, ChevronDown, ChevronRight, CircleUserRound, FolderTree, ListTree, Network, RefreshCw, Router, Server, Users } from "lucide-react";
 import type { ApiRequest } from "./api";
 import type { Deployment, DeploymentAccess, DeploymentDetail, Resource } from "./types";
@@ -96,8 +96,20 @@ type Props = {
 
 // Shows deployments in a resource tree and opens selected items in the workspace.
 export function Dashboard({ request, onError }: Props) {
+    const initialResourceLink = useRef<{ deploymentID: number; resourceID: number } | null>(null);
+    if (initialResourceLink.current === null) {
+        const parameters = new URLSearchParams(window.location.search);
+        const deploymentID = Number(parameters.get("deployment"));
+        const resourceID = Number(parameters.get("resource"));
+        if (Number.isInteger(deploymentID) && deploymentID > 0 && Number.isInteger(resourceID) && resourceID > 0) {
+            initialResourceLink.current = { deploymentID, resourceID };
+        }
+    }
     const [deployments, setDeployments] = useState<Deployment[]>([]);
-    const [selectedDeploymentID, setSelectedDeploymentID] = useState<number | null>(null);
+    const [selectedDeploymentID, setSelectedDeploymentID] = useState<number | null>(() => {
+        const requestedID = Number(new URLSearchParams(window.location.search).get("deployment"));
+        return Number.isInteger(requestedID) && requestedID > 0 ? requestedID : null;
+    });
     const [selectedDeployment, setSelectedDeployment] = useState<DeploymentDetail | null>(null);
     const [deploymentAccess, setDeploymentAccess] = useState<DeploymentAccess | null>(null);
     const [selectedResourceID, setSelectedResourceID] = useState<number | null>(null);
@@ -148,7 +160,15 @@ export function Dashboard({ request, onError }: Props) {
         setSelectedGroupID(null);
         setLoadingDetails(true);
         request<DeploymentDetail>(`/deployments/${selectedDeploymentID}`)
-            .then((result) => active && setSelectedDeployment(result))
+            .then((result) => {
+                if (!active) return;
+                setSelectedDeployment(result);
+                if (initialResourceLink.current?.deploymentID === selectedDeploymentID && result.resources.some((resource) => resource.id === initialResourceLink.current?.resourceID)) {
+                    setSelectedResourceID(initialResourceLink.current.resourceID);
+                    initialResourceLink.current = null;
+                    window.history.replaceState({}, "", "/");
+                }
+            })
             .catch((requestError: Error) => active && onError(requestError.message))
             .finally(() => active && setLoadingDetails(false));
         return () => {
@@ -447,7 +467,7 @@ export function Dashboard({ request, onError }: Props) {
                                                 <tr><th scope="row">Boot disk</th><td>{selectedResourceDetails?.specification?.boot_disk_gib ? `${selectedResourceDetails.specification.boot_disk_gib} GiB` : "—"}</td></tr>
                                             </tbody></table>
                                         </section>
-                                        {selectedResource.can_snapshot_control && <VMSnapshotPanel resourceID={selectedResource.id} reservedGiB={selectedResourceDetails?.specification?.boot_disk_gib} request={request} onError={onError} />}
+                                        {selectedResource.can_snapshot_control && <VMSnapshotPanel resourceID={selectedResource.id} request={request} onError={onError} />}
                                     </section>}
                                     {resourceDetailsLoading && <p className="resource-detail-loading" role="status">Loading resource details…</p>}
                                     {resourceDetailsError && <p className="resource-detail-error" role="alert">{resourceDetailsError}</p>}

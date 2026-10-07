@@ -40,7 +40,7 @@ type (
 		TrunkNode   string   `json:"trunk_node"`
 		TrunkBridge string   `json:"trunk_bridge"`
 		VLANID      int      `json:"vlan_id"`
-		Nodes       []string `json:"nodes,omitempty"`
+		Nodes       []string `json:"nodes,omitempty"` // Internal Proxmox zone placement; always the single selected trunk node.
 	}
 
 	// SDNNetworkPlacement identifies the Organesson-owned PVE SDN configuration.
@@ -671,18 +671,8 @@ func validateSDNNetworkRequest(request SDNNetworkRequest) (err error) {
 			err = errors.New("external VLAN requires a trunk node, bridge, and VLAN ID from 1 through 4094")
 			return
 		}
-		var foundSelectedNode bool
-		var seenNodes map[string]bool = make(map[string]bool)
-		for _, node := range exposure.Nodes {
-			if strings.TrimSpace(node) == "" || seenNodes[node] {
-				err = errors.New("external VLAN node list must contain unique non-empty node names")
-				return
-			}
-			seenNodes[node] = true
-			foundSelectedNode = foundSelectedNode || node == exposure.TrunkNode
-		}
-		if !foundSelectedNode {
-			err = errors.New("external VLAN node list must include its selected trunk node")
+		if len(exposure.Nodes) != 1 || exposure.Nodes[0] != exposure.TrunkNode {
+			err = errors.New("external VLAN must be exposed on only its selected trunk node")
 			return
 		}
 	}

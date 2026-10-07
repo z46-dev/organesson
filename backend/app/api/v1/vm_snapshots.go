@@ -28,17 +28,13 @@ func listVMSnapshots(services common.Services) (handler fiber.Handler) {
 		if snapshots, _, err = services.Domain.ListVMSnapshots(actorID, resourceID); err != nil {
 			return common.DomainError(ctx, err)
 		}
-		var allSnapshots []*db.ManagedVMSnapshot
-		if allSnapshots, err = services.Store.ManagedVMSnapshots.SelectAll(); err != nil {
-			return common.DomainError(ctx, err)
-		}
-		var usedGiB int64
-		for _, snapshot := range allSnapshots {
+		var vmSnapshotCount int
+		for _, snapshot := range snapshots {
 			if snapshot.State == "creating" || snapshot.State == "ready" || snapshot.State == "deleting" {
-				usedGiB += int64(snapshot.ReservedGiB)
+				vmSnapshotCount++
 			}
 		}
-		var snapshotCapacity = fiber.Map{"used_gib": usedGiB, "limit_gib": int64(0), "validated": false}
+		var snapshotQuota = fiber.Map{"vm_snapshots": vmSnapshotCount, "vm_max_snapshots": 0, "validated": false}
 		var policyRecord *db.ProxmoxResourcePolicy
 		if policyRecord, err = services.Store.ProxmoxResourcePolicies.Select(1); err != nil {
 			return common.DomainError(ctx, err)
@@ -48,9 +44,9 @@ func listVMSnapshots(services common.Services) (handler fiber.Handler) {
 			if err = json.Unmarshal([]byte(policyRecord.ConfigurationJSON), &policy); err != nil {
 				return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Stored Proxmox resource policy is invalid."})
 			}
-			snapshotCapacity = fiber.Map{"used_gib": usedGiB, "limit_gib": policy.Limits.SnapshotStorageGiB, "validated": policyRecord.ValidatedAt != nil}
+			snapshotQuota = fiber.Map{"vm_snapshots": vmSnapshotCount, "vm_max_snapshots": policy.VMLimits.MaxSnapshots, "validated": policyRecord.ValidatedAt != nil}
 		}
-		err = ctx.JSON(fiber.Map{"snapshots": snapshots, "snapshot_capacity": snapshotCapacity})
+		err = ctx.JSON(fiber.Map{"snapshots": snapshots, "snapshot_quota": snapshotQuota})
 		return
 	}
 	return

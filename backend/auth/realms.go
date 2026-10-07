@@ -29,14 +29,15 @@ var (
 type (
 	// LDAPRealmConfiguration contains searchable LDAP connection settings without bind credentials.
 	LDAPRealmConfiguration struct {
-		URL                  string `json:"url"`
-		BaseDN               string `json:"base_dn"`
-		UserFilter           string `json:"user_filter"`
-		UsernameAttribute    string `json:"username_attribute"`
-		DisplayNameAttribute string `json:"display_name_attribute"`
-		EmailAttribute       string `json:"email_attribute,omitempty"`
-		BindDN               string `json:"bind_dn"`
-		CACertificatePEM     string `json:"ca_certificate_pem,omitempty"`
+		URL                         string `json:"url"`
+		BaseDN                      string `json:"base_dn"`
+		UserFilter                  string `json:"user_filter"`
+		UsernameAttribute           string `json:"username_attribute"`
+		DisplayNameAttribute        string `json:"display_name_attribute"`
+		EmailAttribute              string `json:"email_attribute,omitempty"`
+		BindDN                      string `json:"bind_dn"`
+		CACertificatePEM            string `json:"ca_certificate_pem,omitempty"`
+		SkipCertificateVerification bool   `json:"skip_certificate_verification,omitempty"`
 	}
 
 	// AuthenticationRealm describes a configured login namespace without exposing secret material.
@@ -254,9 +255,13 @@ func (service *Service) TestLDAPRealm(alias string) (err error) {
 	defer connection.Close()
 	connection.SetTimeout(10 * time.Second)
 	if err = connection.Bind(configuration.BindDN, password); err != nil {
-		return errors.New("LDAP service bind failed")
+		err = fmt.Errorf("LDAP service bind failed: %w", err)
+		return
 	}
 	_, err = connection.Search(ldap.NewSearchRequest(configuration.BaseDN, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 10, false, "(objectClass=*)", []string{"dn"}, nil))
+	if err != nil {
+		err = fmt.Errorf("LDAP base DN search failed: %w", err)
+	}
 	return
 }
 
@@ -442,7 +447,7 @@ func (service *Service) decryptBindPassword(provider *db.AuthenticationProvider)
 	}
 	var plaintext []byte
 	if plaintext, err = gcm.Open(nil, nonce, ciphertext, []byte(provider.Alias)); err != nil {
-		err = errors.New("stored LDAP bind credential cannot be decrypted; verify ORGANESSON_AUTH_ENCRYPTION_KEY")
+		err = errors.New("stored LDAP bind credential cannot be decrypted; verify authentication.encryption_key in config.toml")
 		return
 	}
 	password = string(plaintext)
@@ -488,7 +493,7 @@ func validateLDAPRealm(configuration LDAPRealmConfiguration) (err error) {
 }
 
 func dialLDAP(configuration LDAPRealmConfiguration) (connection *ldap.Conn, err error) {
-	var tlsConfiguration *tls.Config = &tls.Config{MinVersion: tls.VersionTLS12}
+	var tlsConfiguration *tls.Config = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: configuration.SkipCertificateVerification} // #nosec G402 -- Explicit per-realm lab option; TLS encryption remains enabled.
 	if configuration.CACertificatePEM != "" {
 		tlsConfiguration.RootCAs = x509.NewCertPool()
 		if !tlsConfiguration.RootCAs.AppendCertsFromPEM([]byte(configuration.CACertificatePEM)) {

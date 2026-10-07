@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"sort"
 	"strings"
 )
 
@@ -47,10 +46,10 @@ type (
 
 	// VMLimits define optional caps for each virtual machine.
 	VMLimits struct {
-		VirtualCPUs        int   `json:"virtual_cpus"`
-		MemoryMiB          int64 `json:"memory_mib"`
-		StorageGiB         int64 `json:"storage_gib"`
-		SnapshotStorageGiB int64 `json:"snapshot_storage_gib"`
+		VirtualCPUs  int   `json:"virtual_cpus"`
+		MemoryMiB    int64 `json:"memory_mib"`
+		StorageGiB   int64 `json:"storage_gib"`
+		MaxSnapshots int   `json:"max_snapshots"`
 	}
 
 	// PolicyNetwork maps an Organesson label to a bridge or Proxmox SDN VNet.
@@ -134,7 +133,7 @@ func ValidateResourcePolicy(policy ResourcePolicy, inventory *ResourceInventory)
 	}
 	if policy.Limits.MaxDeployments < 0 || policy.Limits.MaxSDNNetworks < 0 || policy.Limits.VirtualCPUs < 0 || policy.Limits.MemoryMiB < 0 || policy.Limits.StorageGiB < 0 || policy.Limits.SnapshotStorageGiB < 0 ||
 		policy.DeploymentLimits.MaxResources < 0 || policy.DeploymentLimits.MaxSDNNetworks < 0 || policy.DeploymentLimits.VirtualCPUs < 0 || policy.DeploymentLimits.MemoryMiB < 0 || policy.DeploymentLimits.StorageGiB < 0 || policy.DeploymentLimits.SnapshotStorageGiB < 0 ||
-		policy.VMLimits.VirtualCPUs < 0 || policy.VMLimits.MemoryMiB < 0 || policy.VMLimits.StorageGiB < 0 || policy.VMLimits.SnapshotStorageGiB < 0 {
+		policy.VMLimits.VirtualCPUs < 0 || policy.VMLimits.MemoryMiB < 0 || policy.VMLimits.StorageGiB < 0 || policy.VMLimits.MaxSnapshots < 0 {
 		addIssue("Capacity limits must be zero (unlimited) or a positive value.")
 	}
 	if len(policy.ResourcePools) == 0 {
@@ -316,15 +315,14 @@ func ValidateResourcePolicy(policy ResourcePolicy, inventory *ResourceInventory)
 	return
 }
 
-// AuthorizeExternalVLAN validates an exposure against platform policy and returns every configured node using that bridge and VLAN.
+// AuthorizeExternalVLAN validates an exposure against the selected node's authorized trunk and returns only that node.
 func AuthorizeExternalVLAN(policy ResourcePolicy, exposure *SDNExternalVLANExposure) (nodes []string, err error) {
 	if exposure == nil {
 		return
 	}
 	var selectedAuthorized bool
-	var allowedNodes map[string]bool = make(map[string]bool)
 	for _, trunk := range policy.VLANTrunks {
-		if trunk.Bridge != exposure.TrunkBridge {
+		if trunk.Node != exposure.TrunkNode || trunk.Bridge != exposure.TrunkBridge {
 			continue
 		}
 		var vlanAllowed bool
@@ -337,19 +335,14 @@ func AuthorizeExternalVLAN(policy ResourcePolicy, exposure *SDNExternalVLANExpos
 		if !vlanAllowed {
 			continue
 		}
-		allowedNodes[trunk.Node] = true
-		if trunk.Node == exposure.TrunkNode {
-			selectedAuthorized = true
-		}
+		selectedAuthorized = true
+		break
 	}
 	if !selectedAuthorized {
 		err = fmt.Errorf("VLAN %d is not authorized on trunk %s:%s", exposure.VLANID, exposure.TrunkNode, exposure.TrunkBridge)
 		return
 	}
-	for node := range allowedNodes {
-		nodes = append(nodes, node)
-	}
-	sort.Strings(nodes)
+	nodes = []string{exposure.TrunkNode}
 	return
 }
 

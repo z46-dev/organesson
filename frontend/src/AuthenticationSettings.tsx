@@ -1,5 +1,5 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { Check, RefreshCw, Server, ShieldCheck } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Check, Pencil, Plus, RefreshCw, Server, ShieldCheck, X } from "lucide-react";
 import type { ApiRequest } from "./api";
 
 type LDAPConfiguration = {
@@ -11,6 +11,7 @@ type LDAPConfiguration = {
     email_attribute?: string;
     bind_dn: string;
     ca_certificate_pem?: string;
+    skip_certificate_verification: boolean;
 };
 
 type Realm = {
@@ -37,7 +38,8 @@ const newRealm: RealmForm = {
     email_attribute: "mail",
     bind_dn: "",
     bind_password: "",
-    ca_certificate_pem: ""
+    ca_certificate_pem: "",
+    skip_certificate_verification: false
 };
 
 // Lists and configures local or LDAP login realms without returning stored credentials.
@@ -47,6 +49,9 @@ export function AuthenticationSettings({ request, onError, onNotice }: Props) {
     const [form, setForm] = useState<RealmForm>(newRealm);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [formOpen, setFormOpen] = useState(false);
+    const [editingAlias, setEditingAlias] = useState<string | null>(null);
+    const formDialog = useRef<HTMLDialogElement>(null);
 
     async function loadRealms() {
         setLoading(true);
@@ -65,14 +70,55 @@ export function AuthenticationSettings({ request, onError, onNotice }: Props) {
         loadRealms();
     }, [request, onError]);
 
+    useEffect(() => {
+        const dialog = formDialog.current;
+        if (formOpen && dialog && !dialog.open) {
+            dialog.showModal();
+        } else if (!formOpen && dialog?.open) {
+            dialog.close();
+        }
+    }, [formOpen]);
+
+    function closeForm() {
+        setFormOpen(false);
+        setEditingAlias(null);
+        setForm(newRealm);
+    }
+
+    function openCreateForm() {
+        setEditingAlias(null);
+        setForm(newRealm);
+        setFormOpen(true);
+    }
+
+    function openEditForm(realm: Realm) {
+        if (!realm.configuration) return;
+        setEditingAlias(realm.alias);
+        setForm({
+            ...newRealm,
+            ...realm.configuration,
+            alias: realm.alias,
+            enabled: realm.enabled,
+            email_attribute: realm.configuration.email_attribute ?? "",
+            ca_certificate_pem: realm.configuration.ca_certificate_pem ?? "",
+            bind_password: ""
+        });
+        setFormOpen(true);
+    }
+
     async function saveRealm(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
+        const isEditing = editingAlias !== null;
         setSaving(true);
         try {
-            await request("/auth/admin/realms/ldap", "POST", form);
-            setForm(newRealm);
+            if (editingAlias === null) {
+                await request("/auth/admin/realms/ldap", "POST", form);
+            } else {
+                await request(`/auth/admin/realms/ldap/${encodeURIComponent(editingAlias)}`, "PUT", form);
+            }
+            closeForm();
             await loadRealms();
-            onNotice("LDAP realm added.");
+            onNotice(isEditing ? "LDAP realm updated." : "LDAP realm added.");
         } catch (error) {
             onError((error as Error).message);
         } finally {
@@ -120,43 +166,52 @@ export function AuthenticationSettings({ request, onError, onNotice }: Props) {
     return (
         <section className="auth-settings" aria-label="Authentication realms">
             <div className="settings-section-heading">
-                <div><p className="eyebrow">Identity</p><h2>Authentication realms</h2></div>
-                <button className="icon-button" type="button" aria-label="Refresh authentication realms" onClick={loadRealms} disabled={loading}><RefreshCw size={15} /></button>
+                <h2>Authentication</h2>
+                <div className="auth-toolbar">
+                    <button className="secondary-action" type="button" onClick={openCreateForm} disabled={!encryptionReady}><Plus size={15} />Add LDAP realm</button>
+                    <button className="icon-button" type="button" aria-label="Refresh authentication realms" onClick={loadRealms} disabled={loading}><RefreshCw size={15} /></button>
+                </div>
             </div>
-            <p className="settings-description">Choose which identity sources can sign in. Directory users are mapped into Organesson the first time they authenticate.</p>
-            {loading ? <p className="settings-empty">Loading realms…</p> : <div className="realm-list">
+            {!encryptionReady && <p className="realm-warning" role="note">Set <code>authentication.encryption_key</code> in <code>backend/config.toml</code> to add LDAP realms.</p>}
+            {loading ? <p className="settings-empty">Loading…</p> : <div className="realm-list">
+                <div className="realm-list-heading"><span>Realm</span><span>Source</span><span>Status</span><span>Actions</span></div>
                 {realms.map((realm) => <article className="realm-card" key={realm.alias}>
                     <div className="realm-card-heading">
                         <span className="panel-icon">{realm.kind === "local" ? <ShieldCheck size={17} /> : <Server size={17} />}</span>
-                        <div><h3>{realm.alias}</h3><p>{realm.kind === "local" ? "Organesson local passwords" : `${realm.configuration?.url ?? "LDAP"} · ${realm.configuration?.base_dn ?? ""}`}</p></div>
+                        <div className="realm-name"><h3>{realm.alias}</h3><p>{realm.kind === "local" ? "Local accounts" : realm.configuration?.url ?? "LDAP"}</p></div>
+                        <span className="realm-source">{realm.kind === "local" ? "Local" : "LDAP"}</span>
                         <span className={`realm-state${realm.enabled ? " is-enabled" : ""}`}>{realm.enabled ? "Enabled" : "Disabled"}</span>
+                        <div className="realm-actions">
+                            {realm.kind === "ldap" && <button className="secondary-action" type="button" disabled={saving} onClick={() => testRealm(realm)}><Check size={14} />Test</button>}
+                            {realm.kind === "ldap" && <button className="icon-button" type="button" aria-label={`Edit ${realm.alias} realm`} title="Edit realm" disabled={saving} onClick={() => openEditForm(realm)}><Pencil size={14} /></button>}
+                            <button className="text-action" type="button" disabled={saving} onClick={() => setEnabled(realm, !realm.enabled)}>{realm.enabled ? "Disable" : "Enable"}</button>
+                        </div>
                     </div>
-                    {realm.kind === "ldap" && <div className="realm-card-actions">
-                        <button className="secondary-action" type="button" disabled={saving} onClick={() => testRealm(realm)}><Check size={14} />Test connection</button>
-                        <button className="text-action" type="button" disabled={saving} onClick={() => setEnabled(realm, !realm.enabled)}>{realm.enabled ? "Disable" : "Enable"}</button>
-                        {realm.has_bind_password && <span>Bind credential stored</span>}
-                    </div>}
-                    {realm.kind === "local" && <div className="realm-card-actions"><span>Local users and passwords are managed separately.</span><button className="text-action" type="button" disabled={saving} onClick={() => setEnabled(realm, !realm.enabled)}>{realm.enabled ? "Disable local login" : "Enable local login"}</button></div>}
                 </article>)}
+                {realms.length === 0 && <p className="settings-empty">No authentication realms configured.</p>}
             </div>}
 
-            <form className="panel realm-form" onSubmit={saveRealm}>
-                <div><p className="eyebrow">Add identity source</p><h3>LDAP realm</h3></div>
-                {!encryptionReady && <p className="realm-warning" role="note">Set <code>ORGANESSON_AUTH_ENCRYPTION_KEY</code> before adding a realm. Use a base64-encoded 32-byte key and keep it stable across restarts.</p>}
-                <div className="realm-form-grid">
-                    <label>Realm name<input autoComplete="off" value={form.alias} onChange={(event) => updateForm("alias", event.target.value)} placeholder="cyber" required /></label>
-                    <label>LDAP URL<input value={form.url} onChange={(event) => updateForm("url", event.target.value)} placeholder="ldaps://ipa.example.org:636" required /></label>
-                    <label>Base DN<input value={form.base_dn} onChange={(event) => updateForm("base_dn", event.target.value)} placeholder="cn=users,dc=example,dc=org" required /></label>
-                    <label>User search filter<input value={form.user_filter} onChange={(event) => updateForm("user_filter", event.target.value)} placeholder="(uid={username})" required /></label>
-                    <label>Username attribute<input value={form.username_attribute} onChange={(event) => updateForm("username_attribute", event.target.value)} required /></label>
-                    <label>Display name attribute<input value={form.display_name_attribute} onChange={(event) => updateForm("display_name_attribute", event.target.value)} required /></label>
-                    <label>Email attribute<input value={form.email_attribute} onChange={(event) => updateForm("email_attribute", event.target.value)} /></label>
-                    <label>Service bind DN<input value={form.bind_dn} onChange={(event) => updateForm("bind_dn", event.target.value)} required /></label>
-                    <label>Service bind password<input autoComplete="new-password" type="password" value={form.bind_password} onChange={(event) => updateForm("bind_password", event.target.value)} required /></label>
-                    <label className="realm-ca-field">Custom CA certificate (PEM)<textarea rows={4} value={form.ca_certificate_pem} onChange={(event) => updateForm("ca_certificate_pem", event.target.value)} placeholder="Optional; system trust is used otherwise." /></label>
-                </div>
-                <div className="realm-form-footer"><label className="realm-enabled"><input type="checkbox" checked={form.enabled} onChange={(event) => updateForm("enabled", event.target.checked)} />Enable after adding</label><button className="primary-action" type="submit" disabled={saving || !encryptionReady}>{saving ? "Saving…" : "Add LDAP realm"}</button></div>
-            </form>
+            <dialog className="realm-form-dialog" ref={formDialog} onClose={closeForm} onClick={(event) => {
+                if (event.target === event.currentTarget) closeForm();
+            }}>
+                <form className="realm-form" onSubmit={saveRealm}>
+                    <div className="realm-form-heading"><div><p className="eyebrow">Authentication</p><h3>{editingAlias === null ? "Add LDAP realm" : `Edit ${editingAlias}`}</h3></div><button className="icon-button" type="button" aria-label="Close" onClick={closeForm}><X size={16} /></button></div>
+                    <div className="realm-form-grid">
+                        <label>Realm name<input autoComplete="off" value={form.alias} onChange={(event) => updateForm("alias", event.target.value)} placeholder="cyber" readOnly={editingAlias !== null} required /></label>
+                        <label>LDAP URL<input value={form.url} onChange={(event) => updateForm("url", event.target.value)} placeholder="ldaps://ipa.example.org:636" required /></label>
+                        <label>Base DN<input value={form.base_dn} onChange={(event) => updateForm("base_dn", event.target.value)} placeholder="cn=users,dc=example,dc=org" required /></label>
+                        <label>User search filter<input value={form.user_filter} onChange={(event) => updateForm("user_filter", event.target.value)} placeholder="(uid={username})" required /></label>
+                        <label>Username attribute<input value={form.username_attribute} onChange={(event) => updateForm("username_attribute", event.target.value)} required /></label>
+                        <label>Display name attribute<input value={form.display_name_attribute} onChange={(event) => updateForm("display_name_attribute", event.target.value)} required /></label>
+                        <label>Email attribute<input value={form.email_attribute} onChange={(event) => updateForm("email_attribute", event.target.value)} /></label>
+                        <label>Service bind DN<input value={form.bind_dn} onChange={(event) => updateForm("bind_dn", event.target.value)} required /></label>
+                        <label>{editingAlias === null ? "Service bind password" : "New service bind password (optional)"}<input autoComplete="new-password" type="password" value={form.bind_password} onChange={(event) => updateForm("bind_password", event.target.value)} required={editingAlias === null} /></label>
+                        <label className="realm-tls-option"><span><input type="checkbox" checked={form.skip_certificate_verification} onChange={(event) => updateForm("skip_certificate_verification", event.target.checked)} />Skip certificate verification</span><small>Use only for lab certificates. LDAP traffic remains encrypted.</small></label>
+                        <label className="realm-ca-field">Custom CA certificate<textarea rows={4} value={form.ca_certificate_pem} onChange={(event) => updateForm("ca_certificate_pem", event.target.value)} placeholder="Optional; system trust is used otherwise." /></label>
+                    </div>
+                    <div className="realm-form-footer"><label className="realm-enabled"><input type="checkbox" checked={form.enabled} onChange={(event) => updateForm("enabled", event.target.checked)} />{editingAlias === null ? "Enable after adding" : "Enabled"}</label><div><button className="secondary-action" type="button" onClick={closeForm} disabled={saving}>Cancel</button><button className="primary-action" type="submit" disabled={saving || (editingAlias === null && !encryptionReady)}>{saving ? "Saving…" : editingAlias === null ? "Add realm" : "Save changes"}</button></div></div>
+                </form>
+            </dialog>
         </section>
     );
 }

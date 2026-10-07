@@ -326,7 +326,7 @@ func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {
 		t.Fatalf("network refresh did not restore Proxmox placement: %#v", network.Get("proxmox_vnet"))
 	}
 	var externalVLAN []interface{} = network.Get("external_vlan").([]interface{})
-	if len(externalVLAN) != 1 || networkDriver.request.ExternalVLAN == nil || len(networkDriver.request.ExternalVLAN.Nodes) != 2 || networkDriver.request.ExternalVLAN.VLANID != 2048 {
+	if len(externalVLAN) != 1 || networkDriver.request.ExternalVLAN == nil || len(networkDriver.request.ExternalVLAN.Nodes) != 1 || networkDriver.request.ExternalVLAN.Nodes[0] != "tungsten" || networkDriver.request.ExternalVLAN.VLANID != 2048 {
 		t.Fatalf("external VLAN declaration was not authorized and restored: state=%#v request=%#v", externalVLAN, networkDriver.request.ExternalVLAN)
 	}
 	if err = deployment.Set("description", "updated description"); err != nil {

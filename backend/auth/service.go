@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,7 +38,7 @@ var (
 	ErrForbidden             = errors.New("permission denied")
 	ErrInvalidInput          = errors.New("invalid input")
 	ErrConflict              = errors.New("account already exists")
-	ErrEncryptionKeyRequired = errors.New("ORGANESSON_AUTH_ENCRYPTION_KEY must be set to manage LDAP bind credentials")
+	ErrEncryptionKeyRequired = errors.New("authentication.encryption_key must be set to manage LDAP bind credentials")
 )
 
 type (
@@ -64,20 +63,32 @@ type (
 		Token  *db.APIToken
 		Secret string
 	}
+
+	APITokenSummary struct {
+		ID                 int        `json:"id"`
+		AccountID          int        `json:"account_id"`
+		OwnerDisplayName   string     `json:"owner_display_name"`
+		OwnerQualifiedName string     `json:"owner_qualified_name"`
+		Name               string     `json:"name"`
+		CreatedAt          time.Time  `json:"created_at"`
+		ExpiresAt          *time.Time `json:"expires_at"`
+		LastUsedAt         *time.Time `json:"last_used_at"`
+		RevokedAt          *time.Time `json:"revoked_at"`
+	}
 )
 
 // New creates a local authentication service with a timing equalization hash.
-func New(store *db.Store) (service *Service, err error) {
+func New(store *db.Store, encodedKey string) (service *Service, err error) {
 	var salt [passwordSaltLength]byte
 	if _, err = rand.Read(salt[:]); err != nil {
 		return
 	}
 
 	service = &Service{store: store, now: time.Now}
-	if encodedKey, exists := os.LookupEnv("ORGANESSON_AUTH_ENCRYPTION_KEY"); exists && strings.TrimSpace(encodedKey) != "" {
+	if strings.TrimSpace(encodedKey) != "" {
 		if service.encryptionKey, err = base64.StdEncoding.DecodeString(strings.TrimSpace(encodedKey)); err != nil || len(service.encryptionKey) != 32 {
 			service = nil
-			err = errors.New("ORGANESSON_AUTH_ENCRYPTION_KEY must be base64-encoded 32-byte key material")
+			err = errors.New("authentication.encryption_key must be base64-encoded 32-byte key material")
 			return
 		}
 	}
@@ -346,8 +357,16 @@ func (service *Service) ResetInitialAdministratorLink() (token string, err error
 	return
 }
 
-// CreateAPIToken creates a bounded-lifetime bearer credential for an active account.
-func (service *Service) CreateAPIToken(accountID int, name string, lifetime time.Duration) (credential *APITokenCredential, err error) {
+// CreateAPIToken creates a bounded-lifetime token for an account under administrator authority.
+func (service *Service) CreateAPIToken(actorID int, accountID int, name string, lifetime time.Duration) (credential *APITokenCredential, err error) {
+	var actor *db.Account
+	if actor, err = service.AccountByID(actorID); err != nil {
+		return
+	}
+	if actor == nil || !actor.PlatformAdministrator {
+		err = ErrForbidden
+		return
+	}
 	var account *db.Account
 	if account, err = service.AccountByID(accountID); err != nil {
 		return
@@ -381,7 +400,7 @@ func (service *Service) CreateAPIToken(accountID int, name string, lifetime time
 	if err = service.store.APITokens.Insert(token); err != nil {
 		return
 	}
-	var actorIDPointer *int = &accountID
+	var actorIDPointer *int = &actorID
 	if err = service.store.AuditEvents.Insert(&db.AuditEvent{
 		ActorAccountID: actorIDPointer,
 		Action:         "api_token.create",
@@ -394,6 +413,122 @@ func (service *Service) CreateAPIToken(accountID int, name string, lifetime time
 		return
 	}
 	credential = &APITokenCredential{Token: token, Secret: secret}
+	return
+}
+
+// ListAPITokens returns token metadata with owner identity and no secret material.
+func (service *Service) ListAPITokens() (summaries []APITokenSummary, err error) {
+	var tokens []*db.APIToken
+	if tokens, err = service.store.APITokens.SelectAll(); err != nil {
+		return
+	}
+	var accounts []*db.Account
+	if accounts, err = service.store.Accounts.SelectAll(); err != nil {
+		return
+	}
+	var identities []*db.AccountIdentity
+	if identities, err = service.store.AccountIdentities.SelectAll(); err != nil {
+		return
+	}
+	var accountByID map[int]*db.Account = make(map[int]*db.Account, len(accounts))
+	var identityByAccount map[int][]string = make(map[int][]string)
+	for _, account := range accounts {
+		accountByID[account.ID] = account
+	}
+	for _, identity := range identities {
+		identityByAccount[identity.AccountID] = append(identityByAccount[identity.AccountID], identity.QualifiedName)
+	}
+	summaries = make([]APITokenSummary, 0, len(tokens))
+	for _, token := range tokens {
+		var summary APITokenSummary = APITokenSummary{
+			ID: token.ID, AccountID: token.AccountID, Name: token.Name,
+			CreatedAt: token.CreatedAt, ExpiresAt: token.ExpiresAt, LastUsedAt: token.LastUsedAt, RevokedAt: token.RevokedAt,
+		}
+		if account := accountByID[token.AccountID]; account != nil {
+			summary.OwnerDisplayName = account.DisplayName
+		}
+		if names := identityByAccount[token.AccountID]; len(names) > 0 {
+			sort.Strings(names)
+			summary.OwnerQualifiedName = names[0]
+		}
+		summaries = append(summaries, summary)
+	}
+	sort.Slice(summaries, func(left int, right int) bool {
+		if summaries[left].CreatedAt.Equal(summaries[right].CreatedAt) {
+			return summaries[left].ID > summaries[right].ID
+		}
+		return summaries[left].CreatedAt.After(summaries[right].CreatedAt)
+	})
+	return
+}
+
+// PruneExpiredAPITokens permanently removes bearer tokens whose expiry time has passed.
+func (service *Service) PruneExpiredAPITokens(actorID int) (pruned int, err error) {
+	var actor *db.Account
+	if actor, err = service.AccountByID(actorID); err != nil {
+		return
+	}
+	if actor == nil || !actor.PlatformAdministrator {
+		err = ErrForbidden
+		return
+	}
+	var tokens []*db.APIToken
+	if tokens, err = service.store.APITokens.SelectAll(); err != nil {
+		return
+	}
+	var now time.Time = service.now()
+	var expired []*db.APIToken
+	for _, token := range tokens {
+		if token.ExpiresAt == nil || !token.ExpiresAt.After(now) {
+			expired = append(expired, token)
+		}
+	}
+	if len(expired) == 0 {
+		return
+	}
+	for _, token := range expired {
+		if err = service.store.APITokens.Delete(token.ID); err != nil {
+			return
+		}
+		pruned++
+	}
+	var actorIDPointer *int = &actorID
+	err = service.store.AuditEvents.Insert(&db.AuditEvent{
+		ActorAccountID: actorIDPointer,
+		Action:         "api_token.prune_expired",
+		Target:         "api_tokens",
+		Result:         "succeeded",
+		DetailsJSON:    fmt.Sprintf("{\"count\":%d}", pruned),
+		CreatedAt:      now,
+	})
+	return
+}
+
+// RenewAPIToken rotates a token and expires the previous credential.
+func (service *Service) RenewAPIToken(actorID int, tokenID int, lifetime time.Duration) (credential *APITokenCredential, err error) {
+	var actor *db.Account
+	if actor, err = service.AccountByID(actorID); err != nil {
+		return
+	}
+	if actor == nil || !actor.PlatformAdministrator {
+		err = ErrForbidden
+		return
+	}
+	var token *db.APIToken
+	if token, err = service.store.APITokens.Select(tokenID); err != nil {
+		return
+	}
+	if token == nil {
+		err = ErrInvalidToken
+		return
+	}
+	if credential, err = service.CreateAPIToken(actorID, token.AccountID, token.Name, lifetime); err != nil {
+		return
+	}
+	if err = service.expireAPIToken(actorID, tokenID, "api_token.renew"); err != nil {
+		_ = service.store.APITokens.Delete(credential.Token.ID)
+		credential = nil
+	}
 	return
 }
 
@@ -444,15 +579,43 @@ func (service *Service) RevokeAPIToken(accountID int, tokenID int) (err error) {
 		err = ErrInvalidToken
 		return
 	}
+	err = service.expireAPIToken(accountID, tokenID, "api_token.revoke")
+	return
+}
+
+// ExpireAPIToken allows an administrator to revoke any account's API token.
+func (service *Service) ExpireAPIToken(actorID int, tokenID int) (err error) {
+	var actor *db.Account
+	if actor, err = service.AccountByID(actorID); err != nil {
+		return
+	}
+	if actor == nil || !actor.PlatformAdministrator {
+		err = ErrForbidden
+		return
+	}
+	err = service.expireAPIToken(actorID, tokenID, "api_token.expire")
+	return
+}
+
+// expireAPIToken records token expiration and its audit event.
+func (service *Service) expireAPIToken(actorID int, tokenID int, action string) (err error) {
+	var token *db.APIToken
+	if token, err = service.store.APITokens.Select(tokenID); err != nil {
+		return
+	}
+	if token == nil || token.RevokedAt != nil {
+		err = ErrInvalidToken
+		return
+	}
 	var now time.Time = service.now()
 	token.RevokedAt = &now
 	if err = service.store.APITokens.Update(token); err != nil {
 		return
 	}
-	var actorIDPointer *int = &accountID
+	var actorIDPointer *int = &actorID
 	err = service.store.AuditEvents.Insert(&db.AuditEvent{
 		ActorAccountID: actorIDPointer,
-		Action:         "api_token.revoke",
+		Action:         action,
 		Target:         fmt.Sprintf("api_token:%d", tokenID),
 		Result:         "succeeded",
 		DetailsJSON:    "{}",

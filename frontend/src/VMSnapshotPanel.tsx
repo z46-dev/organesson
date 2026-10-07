@@ -3,14 +3,14 @@ import { Plus, RotateCcw, Trash2, X } from "lucide-react";
 import type { FormEvent } from "react";
 import type { ApiRequest } from "./api";
 
-type Snapshot = { id: number; name: string; description: string; reserved_gib: number; state: string; created_at: string };
-type SnapshotCapacity = { used_gib: number; limit_gib: number; validated: boolean };
-type Props = { resourceID: number; reservedGiB?: number; request: ApiRequest; onError: (message: string) => void };
+type Snapshot = { id: number; name: string; description: string; state: string; created_at: string };
+type SnapshotQuota = { vm_snapshots: number; vm_max_snapshots: number; validated: boolean };
+type Props = { resourceID: number; request: ApiRequest; onError: (message: string) => void };
 
 // Provides the managed snapshot lifecycle and platform capacity for one VM.
-export function VMSnapshotPanel({ resourceID, reservedGiB, request, onError }: Props) {
+export function VMSnapshotPanel({ resourceID, request, onError }: Props) {
     const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-    const [capacity, setCapacity] = useState<SnapshotCapacity | null>(null);
+    const [quota, setQuota] = useState<SnapshotQuota | null>(null);
     const [description, setDescription] = useState("");
     const [createOpen, setCreateOpen] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -18,9 +18,9 @@ export function VMSnapshotPanel({ resourceID, reservedGiB, request, onError }: P
 
     async function loadSnapshots() {
         try {
-            const result = await request<{ snapshots: Snapshot[]; snapshot_capacity?: SnapshotCapacity }>(`/virtual-machines/${resourceID}/snapshots`);
+            const result = await request<{ snapshots: Snapshot[]; snapshot_quota?: SnapshotQuota }>(`/virtual-machines/${resourceID}/snapshots`);
             setSnapshots(result.snapshots ?? []);
-            setCapacity(result.snapshot_capacity ?? null);
+            setQuota(result.snapshot_quota ?? null);
         } catch (error) {
             onError((error as Error).message);
         }
@@ -85,24 +85,20 @@ export function VMSnapshotPanel({ resourceID, reservedGiB, request, onError }: P
         }
     }
 
-    const quotaPercent = capacity && capacity.limit_gib > 0 ? Math.min(100, capacity.used_gib / capacity.limit_gib * 100) : 0;
+    const snapshotFits = quota?.validated === true && (quota.vm_max_snapshots === 0 || quota.vm_snapshots < quota.vm_max_snapshots);
 
     return (
         <section className="vm-snapshot-panel" aria-labelledby="snapshot-heading">
             <header className="snapshot-heading">
                 <h4 id="snapshot-heading">Snapshots</h4>
-                <button className="icon-button snapshot-add-button" type="button" aria-label="Create snapshot" title="Create snapshot" onClick={() => setCreateOpen(true)} disabled={busy}><Plus size={17} /></button>
+                {quota?.vm_max_snapshots ? <span className="snapshot-quota-count">{quota.vm_snapshots} / {quota.vm_max_snapshots}</span> : null}
+                <button className="icon-button snapshot-add-button" type="button" aria-label="Create snapshot" onClick={() => setCreateOpen(true)} disabled={busy || !snapshotFits}><Plus size={17} /></button>
             </header>
-            {capacity && <div className="snapshot-capacity" aria-label="Snapshot storage reservation">
-                <div><span>Reserved</span><strong>{capacity.used_gib} GiB{capacity.validated && capacity.limit_gib > 0 ? ` / ${capacity.limit_gib} GiB` : capacity.validated ? " / Unlimited" : ""}</strong></div>
-                {capacity.validated && capacity.limit_gib > 0 && <div className="snapshot-capacity-track" role="meter" aria-label="Snapshot storage used" aria-valuemin={0} aria-valuemax={capacity.limit_gib} aria-valuenow={Math.min(capacity.used_gib, capacity.limit_gib)}><span style={{ width: `${quotaPercent}%` }} /></div>}
-                {!capacity.validated && <small>Capacity policy not validated</small>}
-            </div>}
             {snapshots.length === 0 ? <p className="snapshot-empty">No managed snapshots.</p> : <ul className="snapshot-list">{snapshots.map((snapshot) => (
                 <li key={snapshot.id}>
                     <div className="snapshot-summary">
                         <div className="snapshot-title"><strong>{snapshot.description}</strong></div>
-                        <small>{new Date(snapshot.created_at).toLocaleString()} · {snapshot.reserved_gib} GiB</small>
+                        <small>{new Date(snapshot.created_at).toLocaleString()}</small>
                     </div>
                     <div className="snapshot-actions">
                         <button className="icon-button" type="button" aria-label={`Restore ${snapshot.description}`} title="Restore" onClick={() => restore(snapshot)} disabled={busy || snapshot.state !== "ready"}><RotateCcw size={15} /></button>
@@ -118,7 +114,6 @@ export function VMSnapshotPanel({ resourceID, reservedGiB, request, onError }: P
                 <form onSubmit={createSnapshot}>
                     <header><h3>Create snapshot</h3><button className="icon-button" type="button" aria-label="Close" onClick={() => setCreateOpen(false)} disabled={busy}><X size={16} /></button></header>
                     <label>Snapshot note<input autoFocus maxLength={160} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Before system update" required /></label>
-                    <p>{reservedGiB !== undefined && reservedGiB > 0 ? `This snapshot will reserve ${reservedGiB} GiB of snapshot capacity.` : reservedGiB === undefined ? "Loading VM disk reservation…" : "VM disk reservation is unavailable."}</p>
                     <footer><button className="quiet-button" type="button" onClick={() => setCreateOpen(false)} disabled={busy}>Cancel</button><button className="primary-action" type="submit" disabled={busy || !description.trim()}>{busy ? "Creating…" : "Create snapshot"}</button></footer>
                 </form>
             </dialog>

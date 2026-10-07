@@ -3,13 +3,11 @@ package auth
 import (
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/csrf"
 	"github.com/gofiber/fiber/v3/middleware/session"
 	"github.com/z46-dev/organesson/backend/app/api/common"
-	localauth "github.com/z46-dev/organesson/backend/auth"
 	"github.com/z46-dev/organesson/backend/db"
 )
 
@@ -30,11 +28,6 @@ type (
 		Username    string `json:"username"`
 		DisplayName string `json:"display_name"`
 	}
-
-	createAPITokenRequest struct {
-		Name         string `json:"name"`
-		LifetimeDays int    `json:"lifetime_days"`
-	}
 )
 
 // Init registers authentication endpoints for bootstrap, login, logout, and status.
@@ -50,45 +43,17 @@ func Init(parent fiber.Router, services common.Services) {
 	admin.Post("/realms/ldap/:alias/test", testLDAPRealm(services))
 	admin.Get("/users", listUsers(services))
 	admin.Put("/users/:user_id/platform-administrator", updatePlatformAdministrator(services))
+	admin.Get("/api-tokens", listAPITokens(services))
+	admin.Post("/api-tokens", createAPIToken(services))
+	admin.Post("/api-tokens/prune-expired", pruneExpiredAPITokens(services))
+	admin.Post("/api-tokens/:token_id/renew", renewAPIToken(services))
+	admin.Delete("/api-tokens/:token_id", expireAPIToken(services))
 	authRouter.Post("/bootstrap/redeem", redeemBootstrap(services))
 	authRouter.Post("/password/redeem", redeemPasswordLink(services))
 	authRouter.Post("/login", login(services))
-	authRouter.Post("/api-tokens", common.RequireSession(services.Authentication), createAPIToken(services))
 	authRouter.Delete("/api-tokens/:token_id", common.RequireSession(services.Authentication), revokeAPIToken(services))
 	authRouter.Post("/logout", common.RequireSession(services.Authentication), logout)
 	authRouter.Get("/me", common.RequireSession(services.Authentication), me(services))
-}
-
-// createAPIToken creates a non-browser bearer token and returns its secret once.
-func createAPIToken(services common.Services) (handler fiber.Handler) {
-	handler = func(ctx fiber.Ctx) (err error) {
-		var accountID int
-		if accountID, _ = common.AccountID(ctx); accountID < 1 {
-			return ctx.SendStatus(fiber.StatusUnauthorized)
-		}
-		var request createAPITokenRequest
-		if err = ctx.Bind().Body(&request); err != nil {
-			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid API token request."})
-		}
-		if request.LifetimeDays == 0 {
-			request.LifetimeDays = 90
-		}
-		var credential *localauth.APITokenCredential
-		if credential, err = services.Authentication.CreateAPIToken(accountID, request.Name, time.Duration(request.LifetimeDays)*24*time.Hour); err != nil {
-			return common.AuthError(ctx, err)
-		}
-		ctx.Set(fiber.HeaderCacheControl, "no-store")
-		ctx.Set(fiber.HeaderPragma, "no-cache")
-		err = ctx.Status(fiber.StatusCreated).JSON(fiber.Map{
-			"id":         credential.Token.ID,
-			"name":       credential.Token.Name,
-			"prefix":     credential.Token.Prefix,
-			"expires_at": credential.Token.ExpiresAt,
-			"token":      credential.Secret,
-		})
-		return
-	}
-	return
 }
 
 // revokeAPIToken revokes a bearer token owned by the signed-in account.

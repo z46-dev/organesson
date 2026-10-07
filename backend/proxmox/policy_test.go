@@ -116,7 +116,7 @@ func TestValidateResourcePolicyValidatesNodeScopedVLANTrunks(t *testing.T) {
 	}
 }
 
-func TestAuthorizeExternalVLANCollectsMatchingTrunksAcrossNodes(t *testing.T) {
+func TestAuthorizeExternalVLANUsesOnlySelectedTrunkNode(t *testing.T) {
 	var policy ResourcePolicy = ResourcePolicy{VLANTrunks: []VLANTrunk{
 		{Node: "tungsten", Bridge: "ogtrunk", AllowedVLANRanges: []VLANRange{{Start: 2000, End: 2100}}},
 		{Node: "osmium", Bridge: "ogtrunk", AllowedVLANRanges: []VLANRange{{Start: 2048, End: 2048}}},
@@ -128,8 +128,12 @@ func TestAuthorizeExternalVLANCollectsMatchingTrunksAcrossNodes(t *testing.T) {
 	if nodes, err = AuthorizeExternalVLAN(policy, exposure); err != nil {
 		t.Fatalf("authorize VLAN exposure: %v", err)
 	}
-	if len(nodes) != 2 || nodes[0] != "osmium" || nodes[1] != "tungsten" {
-		t.Fatalf("expected only matching nodes sorted by name, got %#v", nodes)
+	if len(nodes) != 1 || nodes[0] != "tungsten" {
+		t.Fatalf("expected only the selected trunk node, got %#v", nodes)
+	}
+	exposure.TrunkNode = "osmium"
+	if nodes, err = AuthorizeExternalVLAN(policy, exposure); err != nil || len(nodes) != 1 || nodes[0] != "osmium" {
+		t.Fatalf("expected separately selected trunk node to be authorized, got nodes=%#v err=%v", nodes, err)
 	}
 	exposure.VLANID = 3000
 	if _, err = AuthorizeExternalVLAN(policy, exposure); err == nil {

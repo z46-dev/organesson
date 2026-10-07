@@ -6,7 +6,6 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -40,7 +39,7 @@ func TestHTTPBoundaryReportsSetupAndRejectsUnauthenticatedMutations(t *testing.T
 	defer store.Close()
 
 	var authentication *localauth.Service
-	if authentication, err = localauth.New(store); err != nil {
+	if authentication, err = localauth.New(store, ""); err != nil {
 		t.Fatalf("create authentication service: %v", err)
 	}
 	var application *fiber.App = New(api.Services{
@@ -85,7 +84,7 @@ func TestLoginAcceptsUsernameAndRealm(t *testing.T) {
 	defer store.Close()
 
 	var authentication *localauth.Service
-	if authentication, err = localauth.New(store); err != nil {
+	if authentication, err = localauth.New(store, ""); err != nil {
 		t.Fatalf("create authentication service: %v", err)
 	}
 	var activationToken string
@@ -129,7 +128,6 @@ func TestLoginAcceptsUsernameAndRealm(t *testing.T) {
 
 // TestAdminAuthenticationRealmAPIProtectsCredentialsAndAllowsRealmManagement.
 func TestAdminAuthenticationRealmAPIProtectsCredentialsAndAllowsRealmManagement(t *testing.T) {
-	t.Setenv("ORGANESSON_AUTH_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	var store *db.Store
 	var err error
 	if store, err = db.Open(filepath.Join(t.TempDir(), "organesson.db"), golog.New(), false); err != nil {
@@ -137,7 +135,7 @@ func TestAdminAuthenticationRealmAPIProtectsCredentialsAndAllowsRealmManagement(
 	}
 	defer store.Close()
 	var authentication *localauth.Service
-	if authentication, err = localauth.New(store); err != nil {
+	if authentication, err = localauth.New(store, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="); err != nil {
 		t.Fatalf("create authentication service: %v", err)
 	}
 	var activationToken string
@@ -248,7 +246,7 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 	defer store.Close()
 
 	var authentication *localauth.Service
-	if authentication, err = localauth.New(store); err != nil {
+	if authentication, err = localauth.New(store, ""); err != nil {
 		t.Fatalf("create authentication service: %v", err)
 	}
 	var bootstrapToken string
@@ -319,10 +317,16 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 		t.Fatalf("expected readiness confirmation 200, got %d", response.StatusCode)
 	}
 
-	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/auth/api-tokens", `{"name":"provider acceptance","lifetime_days":7}`, csrfToken)
+	var tokenOwner *db.Account
+	if tokenOwner, _, err = store.InitialAdministrator(); err != nil {
+		t.Fatalf("load API token owner: %v", err)
+	}
+	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/auth/admin/api-tokens", `{"account_id":`+strconv.Itoa(tokenOwner.ID)+`,"name":"provider acceptance","lifetime_days":7}`, csrfToken)
 	var apiTokenResult struct {
-		ID    int    `json:"id"`
-		Token string `json:"token"`
+		ID        int       `json:"id"`
+		AccountID int       `json:"account_id"`
+		Token     string    `json:"token"`
+		ExpiresAt time.Time `json:"expires_at"`
 	}
 	if response.StatusCode != fiber.StatusCreated {
 		var body []byte
@@ -335,8 +339,26 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 		t.Fatalf("decode API token response: %v", err)
 	}
 	response.Body.Close()
-	if apiTokenResult.ID < 1 || apiTokenResult.Token == "" {
+	if apiTokenResult.ID < 1 || apiTokenResult.AccountID != tokenOwner.ID || apiTokenResult.Token == "" || apiTokenResult.ExpiresAt.IsZero() {
 		t.Fatalf("API token response lacks one-time secret or identifier: %#v", apiTokenResult)
+	}
+	response = performRequest(t, application, jar, http.MethodGet, "/api/v1/auth/admin/api-tokens", "", "")
+	var listedTokens struct {
+		Tokens []struct {
+			ID         int    `json:"id"`
+			AccountID  int    `json:"account_id"`
+			OwnerLogin string `json:"owner_qualified_name"`
+			TokenHash  string `json:"token_hash"`
+		} `json:"tokens"`
+	}
+	var listBody []byte
+	if listBody, err = io.ReadAll(response.Body); err != nil {
+		response.Body.Close()
+		t.Fatalf("read API token listing: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK || json.Unmarshal(listBody, &listedTokens) != nil || len(listedTokens.Tokens) != 1 || listedTokens.Tokens[0].AccountID != tokenOwner.ID || listedTokens.Tokens[0].OwnerLogin != "administrator@organesson" || listedTokens.Tokens[0].TokenHash != "" || strings.Contains(string(listBody), apiTokenResult.Token) {
+		t.Fatalf("API token listing should expose owner metadata only: status=%d body=%s", response.StatusCode, listBody)
 	}
 	response = performBearerRequest(t, application, http.MethodPost, "/api/v1/deployments", `{"name":"provider-deployment","description":"Bearer API acceptance"}`, apiTokenResult.Token)
 	response.Body.Close()
@@ -351,12 +373,30 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 	if csrfToken, err = requestCSRFToken(t, application, jar); err != nil {
 		t.Fatalf("get token revoke CSRF token: %v", err)
 	}
-	response = performRequest(t, application, jar, http.MethodDelete, "/api/v1/auth/api-tokens/"+strconv.Itoa(apiTokenResult.ID), "", csrfToken)
+	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/auth/admin/api-tokens/"+strconv.Itoa(apiTokenResult.ID)+"/renew", `{"lifetime_days":14}`, csrfToken)
+	var renewedToken struct {
+		ID    int    `json:"id"`
+		Token string `json:"token"`
+	}
+	if response.StatusCode != fiber.StatusCreated || json.NewDecoder(response.Body).Decode(&renewedToken) != nil {
+		response.Body.Close()
+		t.Fatalf("expected token renewal to return a one-time replacement: status %d", response.StatusCode)
+	}
 	response.Body.Close()
-	if response.StatusCode != fiber.StatusNoContent {
-		t.Fatalf("expected API token revocation to return 204, got %d", response.StatusCode)
+	if renewedToken.ID == apiTokenResult.ID || renewedToken.Token == "" || renewedToken.Token == apiTokenResult.Token {
+		t.Fatalf("renewal did not rotate the token secret: %#v", renewedToken)
 	}
 	response = performBearerRequest(t, application, http.MethodGet, "/api/v1/deployments", "", apiTokenResult.Token)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("renewed token should invalidate the old secret: got %d", response.StatusCode)
+	}
+	response = performRequest(t, application, jar, http.MethodDelete, "/api/v1/auth/admin/api-tokens/"+strconv.Itoa(renewedToken.ID), "", csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("expected API token expiration to return 204, got %d", response.StatusCode)
+	}
+	response = performBearerRequest(t, application, http.MethodGet, "/api/v1/deployments", "", renewedToken.Token)
 	response.Body.Close()
 	if response.StatusCode != fiber.StatusUnauthorized {
 		t.Fatalf("expected revoked bearer credential to return 401, got %d", response.StatusCode)
@@ -486,7 +526,7 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 	}
 	defer store.Close()
 	var authentication *localauth.Service
-	if authentication, err = localauth.New(store); err != nil {
+	if authentication, err = localauth.New(store, ""); err != nil {
 		t.Fatalf("create authentication service: %v", err)
 	}
 	var bootstrapToken string
@@ -536,11 +576,11 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 		t.Fatalf("activate Dave: %v", err)
 	}
 	var charlieCredential *localauth.APITokenCredential
-	if charlieCredential, err = authentication.CreateAPIToken(charlie.ID, "lifecycle test", 24*time.Hour); err != nil {
+	if charlieCredential, err = authentication.CreateAPIToken(admin.ID, charlie.ID, "lifecycle test", 24*time.Hour); err != nil {
 		t.Fatalf("create Charlie API token: %v", err)
 	}
 	var daveCredential *localauth.APITokenCredential
-	if daveCredential, err = authentication.CreateAPIToken(dave.ID, "lifecycle test", 24*time.Hour); err != nil {
+	if daveCredential, err = authentication.CreateAPIToken(admin.ID, dave.ID, "lifecycle test", 24*time.Hour); err != nil {
 		t.Fatalf("create Dave API token: %v", err)
 	}
 	if csrfToken, err = requestCSRFToken(t, application, jar); err != nil {

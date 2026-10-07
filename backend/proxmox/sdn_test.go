@@ -66,7 +66,7 @@ func TestValidateSDNNetworkRequestRejectsNonCanonicalOrInvalidSubnet(t *testing.
 func TestValidateSDNNetworkRequestChecksExternalVLANPlacement(t *testing.T) {
 	var request SDNNetworkRequest = SDNNetworkRequest{
 		Name: "shared", Mode: "unmanaged-layer-2", EgressPolicy: "isolated", OperationKey: "og-vlan",
-		ExternalVLAN: &SDNExternalVLANExposure{TrunkNode: "tungsten", TrunkBridge: "ogtrunk", VLANID: 2048, Nodes: []string{"osmium", "tungsten"}},
+		ExternalVLAN: &SDNExternalVLANExposure{TrunkNode: "tungsten", TrunkBridge: "ogtrunk", VLANID: 2048, Nodes: []string{"tungsten"}},
 	}
 	if err := validateSDNNetworkRequest(request); err != nil {
 		t.Fatalf("valid external VLAN request rejected: %v", err)
@@ -74,6 +74,10 @@ func TestValidateSDNNetworkRequestChecksExternalVLANPlacement(t *testing.T) {
 	request.ExternalVLAN.Nodes = []string{"osmium"}
 	if err := validateSDNNetworkRequest(request); err == nil {
 		t.Fatal("external VLAN node list without selected trunk node was accepted")
+	}
+	request.ExternalVLAN.Nodes = []string{"osmium", "tungsten"}
+	if err := validateSDNNetworkRequest(request); err == nil {
+		t.Fatal("external VLAN exposure on multiple trunk nodes was accepted")
 	}
 }
 
@@ -148,7 +152,7 @@ func TestAPISDNNetworkDriverCreatesOnlyIsolatedSimpleZoneAndDeletesIt(t *testing
 			if body["type"] == "simple" && body["bridge"] != nil {
 				t.Errorf("Simple zone unexpectedly has a bridge: %#v", body)
 			}
-			if body["type"] == "vlan" && (body["bridge"] != "ogtrunk" || body["nodes"] != "osmium,tungsten") {
+			if body["type"] == "vlan" && (body["bridge"] != "ogtrunk" || body["nodes"] != "tungsten") {
 				t.Errorf("VLAN zone did not use the authorized trunk placement: %#v", body)
 			}
 			zones[body["zone"].(string)] = body
@@ -291,12 +295,12 @@ func TestAPISDNNetworkDriverCreatesOnlyIsolatedSimpleZoneAndDeletesIt(t *testing
 	request = SDNNetworkRequest{
 		Name: "shared", Mode: "managed", Subnet: "192.168.1.0/24", Gateway: "192.168.1.1",
 		DHCPEnabled: true, EgressPolicy: "isolated", OperationKey: "og-shared-vlan", VNetSourceZone: "ogvxlan",
-		ExternalVLAN: &SDNExternalVLANExposure{TrunkNode: "tungsten", TrunkBridge: "ogtrunk", VLANID: 2048, Nodes: []string{"osmium", "tungsten"}},
+		ExternalVLAN: &SDNExternalVLANExposure{TrunkNode: "tungsten", TrunkBridge: "ogtrunk", VLANID: 2048, Nodes: []string{"tungsten"}},
 	}
 	if placement, err = driver.Create(context.Background(), request); err != nil {
 		t.Fatalf("create externally exposed VLAN network: %v", err)
 	}
-	if placement.Zone == "ogvxlan" || placement.Tag != 2048 || zones[placement.Zone]["type"] != "vlan" || zones[placement.Zone]["bridge"] != "ogtrunk" || vnets[placement.VNet]["zone"] != placement.Zone || uint32(vnets[placement.VNet]["tag"].(float64)) != 2048 {
+	if placement.Zone == "ogvxlan" || placement.Tag != 2048 || zones[placement.Zone]["type"] != "vlan" || zones[placement.Zone]["bridge"] != "ogtrunk" || zones[placement.Zone]["nodes"] != "tungsten" || vnets[placement.VNet]["zone"] != placement.Zone || uint32(vnets[placement.VNet]["tag"].(float64)) != 2048 {
 		t.Fatalf("external VLAN was not represented by a dedicated tagged VLAN zone: placement=%#v zones=%#v vnets=%#v", placement, zones, vnets)
 	}
 	if err = driver.Read(context.Background(), request, placement); err != nil {

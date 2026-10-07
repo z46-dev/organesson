@@ -12,8 +12,8 @@ import (
 	"github.com/z46-dev/organesson/backend/proxmox"
 )
 
-// TestSnapshotReservationsEnforcePermissionAndDeclaredDiskQuota covers the core safety bounds.
-func TestSnapshotReservationsEnforcePermissionAndDeclaredDiskQuota(t *testing.T) {
+// TestSnapshotReservationsEnforcePermissionAndPerVMCount covers snapshot permission and count bounds.
+func TestSnapshotReservationsEnforcePermissionAndPerVMCount(t *testing.T) {
 	var store *db.Store
 	var err error
 	if store, err = db.Open(filepath.Join(t.TempDir(), "snapshots.db"), golog.New(), false); err != nil {
@@ -45,8 +45,10 @@ func TestSnapshotReservationsEnforcePermissionAndDeclaredDiskQuota(t *testing.T)
 		t.Fatal(err)
 	}
 	var policy proxmox.ResourcePolicy = proxmox.ResourcePolicy{
-		Limits:        proxmox.CapacityLimits{SnapshotStorageGiB: 15},
-		ResourcePools: []string{"organesson"}, Storages: []string{"laas"},
+		Limits:           proxmox.CapacityLimits{SnapshotStorageGiB: 100},
+		DeploymentLimits: proxmox.DeploymentLimits{SnapshotStorageGiB: 15},
+		VMLimits:         proxmox.VMLimits{MaxSnapshots: 1},
+		ResourcePools:    []string{"organesson"}, Storages: []string{"laas"},
 	}
 	var policyJSON []byte
 	if policyJSON, err = json.Marshal(policy); err != nil {
@@ -70,8 +72,43 @@ func TestSnapshotReservationsEnforcePermissionAndDeclaredDiskQuota(t *testing.T)
 	if first.ReservedGiB != 10 || first.State != "creating" {
 		t.Fatalf("unexpected reservation: %#v", first)
 	}
-	if _, _, err = service.ReserveVMSnapshot(admin.ID, vm.ID, "too much"); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("snapshot exceeding capacity should be rejected, got %v", err)
+	if _, _, err = service.ReserveVMSnapshot(admin.ID, vm.ID, "over per-VM limit"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("snapshot exceeding per-VM count should be rejected, got %v", err)
+	}
+	policy.VMLimits.MaxSnapshots = 0
+	if policyJSON, err = json.Marshal(policy); err != nil {
+		t.Fatal(err)
+	}
+	if policyHash, err = proxmox.ResourcePolicyHash(policy); err != nil {
+		t.Fatal(err)
+	}
+	var policyRecord *db.ProxmoxResourcePolicy
+	if policyRecord, err = store.ProxmoxResourcePolicies.Select(1); err != nil {
+		t.Fatal(err)
+	}
+	policyRecord.ConfigurationJSON = string(policyJSON)
+	policyRecord.ValidatedConfigHash = policyHash
+	if err = store.ProxmoxResourcePolicies.Update(policyRecord); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = service.ReserveVMSnapshot(admin.ID, vm.ID, "over deployment storage quota"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("snapshot exceeding deployment storage quota should be rejected, got %v", err)
+	}
+	policy.Limits.SnapshotStorageGiB = 15
+	policy.DeploymentLimits.SnapshotStorageGiB = 0
+	if policyJSON, err = json.Marshal(policy); err != nil {
+		t.Fatal(err)
+	}
+	if policyHash, err = proxmox.ResourcePolicyHash(policy); err != nil {
+		t.Fatal(err)
+	}
+	policyRecord.ConfigurationJSON = string(policyJSON)
+	policyRecord.ValidatedConfigHash = policyHash
+	if err = store.ProxmoxResourcePolicies.Update(policyRecord); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = service.ReserveVMSnapshot(admin.ID, vm.ID, "over platform storage quota"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("snapshot exceeding platform storage quota should be rejected, got %v", err)
 	}
 	if _, _, err = service.CompleteVMSnapshot(admin.ID, first.ID, true); err != nil {
 		t.Fatalf("complete snapshot: %v", err)

@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ChevronDown, Pencil, Plus, Trash2, X } from "lucide-react";
+import { ChevronDown, Network, Pencil, Plus, Trash2, X } from "lucide-react";
 import type { ApiRequest } from "./api";
 
 type AddressPool = {
@@ -23,14 +23,14 @@ type PolicyNetwork = {
 
 type VLANRange = { start: number; end: number };
 type VLANTrunk = { node: string; bridge: string; allowed_vlan_ranges: VLANRange[] };
-type VLANTrunkMapping = { node: string; bridge: string; vlan_id: number; deployment_name: string; vnet_name: string };
+type VLANTrunkMapping = { deployment_id: number; resource_id: number; node: string; bridge: string; vlan_id: number; deployment_name: string; vnet_name: string };
 type BridgeInventory = { name: string; vlan_aware: boolean; has_physical_ports: boolean; has_ip_config: boolean };
 type NodeInventory = { name: string; status: string; bridges: BridgeInventory[] };
 
 type Policy = {
     limits: { max_deployments: number; max_sdn_networks: number; virtual_cpus: number; memory_mib: number; storage_gib: number; snapshot_storage_gib: number };
     deployment_limits: { max_resources: number; max_sdn_networks: number; virtual_cpus: number; memory_mib: number; storage_gib: number; snapshot_storage_gib: number };
-    vm_limits: { virtual_cpus: number; memory_mib: number; storage_gib: number; snapshot_storage_gib: number };
+    vm_limits: { virtual_cpus: number; memory_mib: number; storage_gib: number; max_snapshots: number };
     resource_pools: string[];
     storages: string[];
     networks: PolicyNetwork[];
@@ -43,7 +43,7 @@ type Props = { request: ApiRequest; section: "capacity" | "networks"; onError: (
 const emptyPolicy: Policy = {
     limits: { max_deployments: 0, max_sdn_networks: 0, virtual_cpus: 0, memory_mib: 0, storage_gib: 0, snapshot_storage_gib: 0 },
     deployment_limits: { max_resources: 0, max_sdn_networks: 0, virtual_cpus: 0, memory_mib: 0, storage_gib: 0, snapshot_storage_gib: 0 },
-    vm_limits: { virtual_cpus: 0, memory_mib: 0, storage_gib: 0, snapshot_storage_gib: 0 },
+    vm_limits: { virtual_cpus: 0, memory_mib: 0, storage_gib: 0, max_snapshots: 0 },
     resource_pools: [], storages: [], networks: [], vlan_trunks: []
 };
 
@@ -100,16 +100,36 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
     const [trunkEditor, setTrunkEditor] = useState<{ node: string; bridge: string; vlanRanges: string } | null>(null);
     const [trunkIssue, setTrunkIssue] = useState("");
     const [trunkMappings, setTrunkMappings] = useState<VLANTrunkMapping[]>([]);
+    const [networkView, setNetworkView] = useState<"networks" | "vlans">("networks");
 
     useEffect(() => {
-        request<{ policy?: Policy; inventory?: Inventory; configured: boolean; validated_at?: string; inventory_error?: string }>("/admin/proxmox/resources")
+        request<{ policy?: Policy; inventory?: Inventory; configured: boolean; validated_at?: string; inventory_error?: string; vlan_mappings?: VLANTrunkMapping[] }>("/admin/proxmox/resources")
             .then((result) => {
                 setPolicy({
                     ...emptyPolicy,
                     ...result.policy,
-                    limits: { ...emptyPolicy.limits, ...result.policy?.limits },
-                    deployment_limits: { ...emptyPolicy.deployment_limits, ...result.policy?.deployment_limits },
-                    vm_limits: { ...emptyPolicy.vm_limits, ...result.policy?.vm_limits },
+                    limits: {
+                        max_deployments: result.policy?.limits?.max_deployments ?? 0,
+                        max_sdn_networks: result.policy?.limits?.max_sdn_networks ?? 0,
+                        virtual_cpus: result.policy?.limits?.virtual_cpus ?? 0,
+                        memory_mib: result.policy?.limits?.memory_mib ?? 0,
+                        storage_gib: result.policy?.limits?.storage_gib ?? 0,
+                        snapshot_storage_gib: result.policy?.limits?.snapshot_storage_gib ?? 0
+                    },
+                    deployment_limits: {
+                        max_resources: result.policy?.deployment_limits?.max_resources ?? 0,
+                        max_sdn_networks: result.policy?.deployment_limits?.max_sdn_networks ?? 0,
+                        virtual_cpus: result.policy?.deployment_limits?.virtual_cpus ?? 0,
+                        memory_mib: result.policy?.deployment_limits?.memory_mib ?? 0,
+                        storage_gib: result.policy?.deployment_limits?.storage_gib ?? 0,
+                        snapshot_storage_gib: result.policy?.deployment_limits?.snapshot_storage_gib ?? 0
+                    },
+                    vm_limits: {
+                        virtual_cpus: result.policy?.vm_limits?.virtual_cpus ?? 0,
+                        memory_mib: result.policy?.vm_limits?.memory_mib ?? 0,
+                        storage_gib: result.policy?.vm_limits?.storage_gib ?? 0,
+                        max_snapshots: result.policy?.vm_limits?.max_snapshots ?? 0
+                    },
                     networks: (result.policy?.networks ?? []).map((network) => ({
                         ...network,
                         target_mode: network.target_mode ?? "existing",
@@ -119,7 +139,7 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
                     vlan_trunks: result.policy?.vlan_trunks ?? []
                 });
                 setInventory(result.inventory ?? null);
-                setTrunkMappings([]);
+                setTrunkMappings(result.vlan_mappings ?? []);
                 setConfigured(result.configured);
                 setValidatedAt(result.validated_at ?? null);
                 setInventoryError(result.inventory_error ?? "");
@@ -249,9 +269,13 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
 
     return (
         <form className="panel resource-policy" aria-labelledby="resource-policy-heading" onSubmit={save}>
-            <div className="policy-heading"><div><p className="eyebrow">Platform resource policy</p><h2 id="resource-policy-heading">{section === "capacity" ? "Quotas & placement" : "Networks and address pools"}</h2></div>{section === "networks" ? <button className="icon-action" type="button" aria-label="Add network" title="Add network" onClick={() => openNetworkEditor(null)}><Plus size={17} /></button> : <span className={validatedAt ? "policy-status is-ready" : "policy-status"}>{validatedAt ? "Validated" : "Not validated"}</span>}</div>
+            <div className="policy-heading"><div><p className="eyebrow">Platform resource policy</p><h2 id="resource-policy-heading">{section === "capacity" ? "Quotas & placement" : "Networks and address pools"}</h2></div><span className={validatedAt ? "policy-status is-ready" : "policy-status"}>{validatedAt ? "Validated" : "Not validated"}</span></div>
             {!configured && <p className="policy-note">Configure the read-only Proxmox API connection in backend/config.toml before validating this policy.</p>}
             {inventoryError && <p className="policy-note policy-warning">{inventoryError}</p>}
+            {section === "networks" && <div className="network-admin-tabs" role="tablist" aria-label="Network settings">
+                <button type="button" role="tab" id="network-settings-tab" aria-selected={networkView === "networks"} aria-controls="network-settings-panel" onClick={() => setNetworkView("networks")}>Networks &amp; pools</button>
+                <button type="button" role="tab" id="external-vlan-tab" aria-selected={networkView === "vlans"} aria-controls="external-vlan-panel" onClick={() => setNetworkView("vlans")}>External VLANs</button>
+            </div>}
             {section === "capacity" && <div className="quota-layout">
                 <div className="quota-columns">
                     <QuotaTable title="Organesson" onChange={changeQuota} rows={[
@@ -274,7 +298,7 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
                         { field: "vm_limits.virtual_cpus", label: "vCPU", unit: "cores", value: policy.vm_limits.virtual_cpus },
                         { field: "vm_limits.memory_mib", label: "RAM", unit: "GiB", value: policy.vm_limits.memory_mib, scale: 1024 },
                         { field: "vm_limits.storage_gib", label: "Active storage", unit: "GiB", value: policy.vm_limits.storage_gib },
-                        { field: "vm_limits.snapshot_storage_gib", label: "Snapshots", unit: "GiB", value: policy.vm_limits.snapshot_storage_gib }
+                        { field: "vm_limits.max_snapshots", label: "Snapshots", unit: "max", value: policy.vm_limits.max_snapshots }
                     ]} />
                 </div>
                 <section className="placement-targets" aria-label="Proxmox placement targets">
@@ -285,27 +309,46 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
                     </div>
                 </section>
             </div>}
-            {section === "networks" && <div className="policy-network-list">
-                {policy.networks.map((network, networkIndex) => <fieldset className="policy-network" key={networkIndex}>
-                    <legend className="policy-network-title"><span>{network.name || `Network ${networkIndex + 1}`}</span><span className="policy-network-actions"><button className="icon-action" type="button" aria-label={`Edit ${network.name || `network ${networkIndex + 1}`}`} onClick={() => openNetworkEditor(networkIndex)}><Pencil size={14} /></button><button className="icon-action danger-action" type="button" aria-label={`Remove ${network.name || `network ${networkIndex + 1}`}`} onClick={() => removeNetwork(networkIndex)}><Trash2 size={14} /></button></span></legend>
-                    <div className="policy-network-columns">
-                        <div className="network-summary">
-                            <div className="network-summary-item"><span>Type</span><strong>{network.kind === "bridge" ? "Linux bridge" : "SDN VNet"}</strong></div>
-                            <div className="network-summary-item"><span>Proxmox target</span><strong>{network.target_mode === "create" ? "Created per deployment" : network.pve_name || "Not selected"}</strong></div>
-                            {network.kind === "vnet" && <div className="network-summary-subnets"><span>{network.target_mode === "create" ? "Configured subnets" : "Proxmox subnets"}</span>{(network.target_mode === "create" ? network.subnets : inventory?.vnet_subnets?.[network.pve_name] ?? []).length === 0 ? <small>No subnets defined</small> : (network.target_mode === "create" ? network.subnets : inventory?.vnet_subnets?.[network.pve_name] ?? []).map((subnet, subnetIndex) => <small key={`${subnet.prefix}-${subnetIndex}`}><strong>{subnet.prefix}</strong>{subnet.gateway ? ` · gateway ${subnet.gateway}` : ""}{subnet.dhcp_enabled ? " · DHCP" : ""}</small>)}</div>}
+            {section === "networks" && networkView === "networks" && <section id="network-settings-panel" className="network-admin-tabpanel" role="tabpanel" aria-labelledby="network-settings-tab">
+                <div className="network-admin-view-heading"><h3>Networks &amp; pools</h3><button className="icon-action" type="button" aria-label="Add network" title="Add network" onClick={() => openNetworkEditor(null)}><Plus size={17} /></button></div>
+                <div className="policy-network-list">
+                {policy.networks.length === 0 ? <div className="network-list-empty">No Proxmox networks configured.</div> : policy.networks.map((network, networkIndex) => {
+                    const subnets = network.target_mode === "create" ? network.subnets : inventory?.vnet_subnets?.[network.pve_name] ?? [];
+                    const networkLabel = network.name || `Network ${networkIndex + 1}`;
+                    return <section className="policy-network" key={networkIndex} aria-labelledby={`policy-network-${networkIndex}`}>
+                        <header className="policy-network-header">
+                            <div className="policy-network-heading">
+                                <Network size={17} aria-hidden="true" />
+                                <h3 id={`policy-network-${networkIndex}`}>{networkLabel}</h3>
+                                <span className="network-kind-badge">{network.kind === "bridge" ? "Linux bridge" : "SDN VNet"}</span>
+                            </div>
+                            <div className="policy-network-actions">
+                                <button className="icon-action" type="button" aria-label={`Edit ${networkLabel}`} onClick={() => openNetworkEditor(networkIndex)}><Pencil size={14} /></button>
+                                <button className="icon-action danger-action" type="button" aria-label={`Remove ${networkLabel}`} onClick={() => removeNetwork(networkIndex)}><Trash2 size={14} /></button>
+                            </div>
+                        </header>
+                        <div className="policy-network-columns">
+                            <section className="network-target-panel" aria-label={`${networkLabel} target details`}>
+                                <h4>Network target</h4>
+                                <table className="address-properties-table network-admin-properties"><tbody>
+                                    <tr><th scope="row">Proxmox target</th><td>{network.target_mode === "create" ? "Created per deployment" : network.pve_name || "Not selected"}</td></tr>
+                                    {network.kind === "vnet" && <tr><th scope="row">Subnets</th><td>{subnets.length === 0 ? <span className="network-target-empty">None</span> : <ul className="network-subnet-list">{subnets.map((subnet, subnetIndex) => <li key={`${subnet.prefix}-${subnetIndex}`}><code>{subnet.prefix}</code>{subnet.gateway ? <span>Gateway {subnet.gateway}</span> : null}{subnet.dhcp_enabled ? <span>DHCP</span> : null}</li>)}</ul>}</td></tr>}
+                                </tbody></table>
+                            </section>
+                            <section className="address-pool-list" aria-label={`${networkLabel} address pools`}>
+                                <div className="pool-list-heading"><h4>Address pools</h4><span>{network.address_pools.length}</span></div>
+                                {network.address_pools.length === 0 ? <p className="empty-pool-list">No address pools</p> : <div className="address-pool-table-wrap"><table className="address-pool-table"><thead><tr><th scope="col">Pool</th><th scope="col">Guest prefix</th><th scope="col">Allocation subnet</th><th scope="col">Gateway</th><th scope="col">DNS</th></tr></thead><tbody>{network.address_pools.map((pool, poolIndex) => <tr key={poolIndex}><th scope="row">{pool.name}</th><td>{pool.prefix || "—"}</td><td>{pool.allocation_prefix || "Same as guest prefix"}</td><td>{pool.gateway || "—"}</td><td>{pool.dns.length > 0 ? pool.dns.join(", ") : "—"}</td></tr>)}</tbody></table></div>}
+                            </section>
                         </div>
-                        <section className="address-pool-list" aria-label={`${network.name} address pools`}>
-                            <div className="pool-list-heading"><h4>Address pools</h4></div>
-                            {network.address_pools.length === 0 ? <p className="empty-pool-list">No address pools</p> : <div className="address-pool-table-wrap"><table className="address-pool-table"><thead><tr><th scope="col">Pool</th><th scope="col">Guest prefix</th><th scope="col">Allocation subnet</th><th scope="col">Gateway</th><th scope="col">DNS</th></tr></thead><tbody>{network.address_pools.map((pool, poolIndex) => <tr key={poolIndex}><th scope="row">{pool.name}</th><td>{pool.prefix || "—"}</td><td>{pool.allocation_prefix || "Same as guest prefix"}</td><td>{pool.gateway || "—"}</td><td>{pool.dns.length > 0 ? pool.dns.join(", ") : "—"}</td></tr>)}</tbody></table></div>}
-                        </section>
-                    </div>
-                </fieldset>)}
-            </div>}
-            {section === "networks" && <section className="trunk-management" aria-labelledby="vlan-trunks-heading">
-                <div className="trunk-management-heading"><div><h3 id="vlan-trunks-heading">External VLAN trunks</h3><p>Approved node bridges and VLAN ranges for future VNet exposure.</p></div><button className="icon-action" type="button" aria-label="Add VLAN trunk" title="Add VLAN trunk" onClick={openTrunkEditor}><Plus size={17} /></button></div>
+                    </section>;
+                })}
+                </div>
+            </section>}
+            {section === "networks" && networkView === "vlans" && <section id="external-vlan-panel" className="trunk-management network-admin-tabpanel" role="tabpanel" aria-labelledby="external-vlan-tab">
+                <div className="trunk-management-heading"><div><h3 id="vlan-trunks-heading">External VLAN trunks</h3><p>Approved node bridges and VLAN ranges.</p></div><button className="icon-action" type="button" aria-label="Add VLAN trunk" title="Add VLAN trunk" onClick={openTrunkEditor}><Plus size={17} /></button></div>
                 {policy.vlan_trunks.length === 0 ? <p className="empty-trunk-list">No external VLAN trunks configured.</p> : <div className="address-pool-table-wrap"><table className="trunk-table"><thead><tr><th scope="col">Node</th><th scope="col">Bridge</th><th scope="col">Allowed VLANs</th><th scope="col">Used VLANs</th><th scope="col">Deployment / VNet</th><th scope="col"><span className="visually-hidden">Actions</span></th></tr></thead><tbody>{policy.vlan_trunks.map((trunk) => {
                     const mappings = trunkMappings.filter((mapping) => mapping.node === trunk.node && mapping.bridge === trunk.bridge);
-                    return <tr key={`${trunk.node}/${trunk.bridge}`}><th scope="row">{trunk.node}</th><td>{trunk.bridge}</td><td>{vlanRangeText(trunk.allowed_vlan_ranges)}</td><td>{mappings.length === 0 ? "—" : [...new Set(mappings.map((mapping) => mapping.vlan_id))].sort((left, right) => left - right).join(", ")}</td><td>{mappings.length === 0 ? "—" : mappings.map((mapping) => <span className="trunk-mapping" key={`${mapping.vlan_id}/${mapping.vnet_name}`}>VLAN {mapping.vlan_id} · {mapping.deployment_name} / {mapping.vnet_name}</span>)}</td><td><button className="icon-action danger-action" type="button" aria-label={`Remove ${trunk.node} ${trunk.bridge} trunk`} onClick={() => removeTrunk(trunk.node, trunk.bridge)}><Trash2 size={14} /></button></td></tr>;
+                    return <tr key={`${trunk.node}/${trunk.bridge}`}><th scope="row">{trunk.node}</th><td>{trunk.bridge}</td><td>{vlanRangeText(trunk.allowed_vlan_ranges)}</td><td>{mappings.length === 0 ? "—" : [...new Set(mappings.map((mapping) => mapping.vlan_id))].sort((left, right) => left - right).join(", ")}</td><td>{mappings.length === 0 ? "—" : mappings.map((mapping) => <a className="trunk-mapping" key={`${mapping.vlan_id}/${mapping.vnet_name}`} href={`/?deployment=${mapping.deployment_id}&resource=${mapping.resource_id}`}>VLAN {mapping.vlan_id} · {mapping.deployment_name} / {mapping.vnet_name}</a>)}</td><td><button className="icon-action danger-action" type="button" aria-label={`Remove ${trunk.node} ${trunk.bridge} trunk`} onClick={() => removeTrunk(trunk.node, trunk.bridge)}><Trash2 size={14} /></button></td></tr>;
                 })}</tbody></table></div>}
                 {policy.vlan_trunks.length > 0 && trunkMappings.length === 0 && <p className="trunk-mapping-note">No VNet exports are using these trunks yet.</p>}
             </section>}

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { Check, CircleAlert, Pencil, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { Check, ChevronDown, CircleAlert, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, X } from "lucide-react";
 import "./template-catalog.css";
 
 type VMTemplate = {
@@ -95,6 +95,10 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
     const [proxmoxConfigured, setProxmoxConfigured] = useState(false);
     const [insecureTLS, setInsecureTLS] = useState(false);
     const [busy, setBusy] = useState(false);
+    const [formOpen, setFormOpen] = useState(false);
+    const [searchText, setSearchText] = useState("");
+    const [readinessFilter, setReadinessFilter] = useState<"all" | "ready" | "not_ready">("all");
+    const formDialog = useRef<HTMLDialogElement>(null);
 
     const refresh = useCallback(async () => {
         const [catalog, connection] = await Promise.all([
@@ -112,6 +116,22 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
         refresh().catch((error: Error) => onError(error.message));
     }, [refresh, onError]);
 
+    useEffect(() => {
+        const dialog = formDialog.current;
+        if (formOpen && dialog && !dialog.open) {
+            dialog.showModal();
+        } else if (!formOpen && dialog?.open) {
+            dialog.close();
+        }
+    }, [formOpen]);
+
+    function closeTemplateForm() {
+        setFormOpen(false);
+        setEditingId(null);
+        setForm(emptyForm);
+        setAliasesText("");
+    }
+
     function changeForm(field: keyof TemplateForm, value: string) {
         setForm((current) => ({ ...current, [field]: value }));
     }
@@ -128,6 +148,7 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                 });
                 setForm(emptyForm);
                 setAliasesText("");
+                setFormOpen(false);
                 onNotice("Source VM added to the catalog. It is not ready for provisioning yet.");
             } else {
                 await request(`/admin/vm-templates/${editingId}`, "PUT", {
@@ -136,6 +157,7 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                 });
                 setEditingId(null);
                 setForm(emptyForm);
+                setFormOpen(false);
                 onNotice("Template metadata saved. Preflight and readiness checks need to be repeated.");
             }
             await refresh();
@@ -157,6 +179,7 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
             edition: record.template.edition,
             architecture: record.template.architecture
         });
+        setFormOpen(true);
     }
 
     async function addAlias(templateId: number) {
@@ -220,15 +243,34 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
         }
     }
 
+    const query = searchText.trim().toLowerCase();
+    const visibleTemplates = templates.filter(({ template, aliases }) => {
+        const matchesQuery = !query || [
+            template.display_name,
+            template.description,
+            template.source_id,
+            template.guest_os,
+            template.guest_os_version,
+            template.edition,
+            template.architecture,
+            ...aliases.map((alias) => alias.alias)
+        ].some((value) => value.toLowerCase().includes(query));
+        const matchesReadiness = readinessFilter === "all" || (readinessFilter === "ready") === template.provisioning_ready;
+        return matchesQuery && matchesReadiness;
+    });
+
     return (
         <section className="panel template-catalog" aria-labelledby="template-catalog-heading">
             <div className="template-catalog-heading">
                 <div>
                     <p className="eyebrow">Platform administration</p>
                     <h2 id="template-catalog-heading">Source VM catalog</h2>
-                    <p className="template-catalog-intro">Register ordinary Proxmox VMs and give each source one or more stable selectors for OpenTofu.</p>
+                    <p className="template-catalog-intro">Proxmox sources and their OpenTofu aliases.</p>
                 </div>
-                <button className="icon-button" type="button" onClick={() => refresh().catch((error: Error) => onError(error.message))} aria-label="Refresh source VM catalog"><RefreshCw size={16} /></button>
+                <div className="template-catalog-actions">
+                    <button className="icon-button" type="button" onClick={() => refresh().catch((error: Error) => onError(error.message))} aria-label="Refresh source VM catalog"><RefreshCw size={16} /></button>
+                    <button className="primary-action" type="button" onClick={() => { setEditingId(null); setForm(emptyForm); setAliasesText(""); setFormOpen(true); }}><Plus size={15} />Add source VM</button>
+                </div>
             </div>
 
             <div className={`connection-note${proxmoxConfigured && !insecureTLS ? " is-connected" : ""}`}>
@@ -240,27 +282,38 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                         : "Proxmox read-only preflight is configured with TLS certificate verification."}</span>
             </div>
 
-            <form className="template-form" onSubmit={saveTemplate}>
-                <div className="template-form-heading">
-                    <h3>{editingId === null ? "Register a source VM" : "Edit source metadata"}</h3>
-                    {editingId !== null && <button className="text-action" type="button" onClick={() => { setEditingId(null); setForm(emptyForm); }}>Cancel</button>}
-                </div>
-                <div className="template-fields">
-                    <label>Display name<input value={form.display_name} onChange={(event) => changeForm("display_name", event.target.value)} required maxLength={128} placeholder="Fedora Workstation" /></label>
-                    <label>Proxmox VMID<input inputMode="numeric" value={form.source_id} onChange={(event) => changeForm("source_id", event.target.value)} required placeholder="156" /></label>
-                    <label>Guest OS ID<input value={form.guest_os} onChange={(event) => changeForm("guest_os", event.target.value)} required placeholder="fedora" /></label>
-                    <label>OS version<input value={form.guest_os_version} onChange={(event) => changeForm("guest_os_version", event.target.value)} required placeholder="44" /></label>
-                    <label>Edition<input value={form.edition} onChange={(event) => changeForm("edition", event.target.value)} required placeholder="workstation or server" /></label>
-                    <label>Architecture<select value={form.architecture} onChange={(event) => changeForm("architecture", event.target.value)}><option value="x86_64">x86_64</option><option value="aarch64">aarch64</option></select></label>
-                    <label className="template-description">Description<textarea value={form.description} onChange={(event) => changeForm("description", event.target.value)} maxLength={2048} rows={2} /></label>
-                    {editingId === null && <label className="template-alias-entry">Aliases<input value={aliasesText} onChange={(event) => setAliasesText(event.target.value)} required placeholder="og-template-fedora-workstation-latest, fedora-workstation" /><small>Comma-separated. Each alias must be unique.</small></label>}
-                </div>
-                <div className="template-form-actions"><button className="primary-action" type="submit" disabled={busy}><Plus size={15} />{busy ? "Saving…" : editingId === null ? "Add source VM" : "Save metadata"}</button></div>
-            </form>
+            <dialog className="template-form-dialog" ref={formDialog} onClose={closeTemplateForm} onClick={(event) => {
+                if (event.target === event.currentTarget) {
+                    closeTemplateForm();
+                }
+            }}>
+                <form className="template-form" onSubmit={saveTemplate}>
+                    <div className="template-form-heading">
+                        <h3>{editingId === null ? "Register a source VM" : "Edit source metadata"}</h3>
+                        <button className="icon-button" type="button" aria-label="Close" onClick={closeTemplateForm}><X size={16} /></button>
+                    </div>
+                    <div className="template-fields">
+                        <label>Display name<input value={form.display_name} onChange={(event) => changeForm("display_name", event.target.value)} required maxLength={128} placeholder="Fedora Workstation" /></label>
+                        <label>Proxmox VMID<input inputMode="numeric" value={form.source_id} onChange={(event) => changeForm("source_id", event.target.value)} required placeholder="156" /></label>
+                        <label>Guest OS ID<input value={form.guest_os} onChange={(event) => changeForm("guest_os", event.target.value)} required placeholder="fedora" /></label>
+                        <label>OS version<input value={form.guest_os_version} onChange={(event) => changeForm("guest_os_version", event.target.value)} required placeholder="44" /></label>
+                        <label>Edition<input value={form.edition} onChange={(event) => changeForm("edition", event.target.value)} required placeholder="workstation or server" /></label>
+                        <label>Architecture<select value={form.architecture} onChange={(event) => changeForm("architecture", event.target.value)}><option value="x86_64">x86_64</option><option value="aarch64">aarch64</option></select></label>
+                        <label className="template-description">Description<textarea value={form.description} onChange={(event) => changeForm("description", event.target.value)} maxLength={2048} rows={2} /></label>
+                        {editingId === null && <label className="template-alias-entry">Aliases<input value={aliasesText} onChange={(event) => setAliasesText(event.target.value)} required placeholder="og-template-fedora-workstation-latest, fedora-workstation" /><small>Comma-separated. Each alias must be unique.</small></label>}
+                    </div>
+                    <div className="template-form-actions"><button className="secondary-action" type="button" onClick={closeTemplateForm} disabled={busy}>Cancel</button><button className="primary-action" type="submit" disabled={busy}><Plus size={15} />{busy ? "Saving…" : editingId === null ? "Add source VM" : "Save metadata"}</button></div>
+                </form>
+            </dialog>
 
-            {templates.length === 0 ? <div className="template-empty">No source VMs are registered yet. Add VMID 156 for Fedora Workstation and VMID 157 for Fedora Server.</div> : (
-                <div className="template-list">
-                    {templates.map((record) => {
+            {templates.length > 0 && <div className="template-browser">
+                <div className="template-browser-toolbar">
+                    <label className="template-search"><Search size={15} /><input type="search" value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder="Search source VMs" aria-label="Search source VMs" /></label>
+                    <select value={readinessFilter} onChange={(event) => setReadinessFilter(event.target.value as typeof readinessFilter)} aria-label="Filter templates by readiness"><option value="all">All sources</option><option value="ready">Ready</option><option value="not_ready">Not ready</option></select>
+                    <span>{visibleTemplates.length} / {templates.length}</span>
+                </div>
+                {visibleTemplates.length === 0 ? <div className="template-empty">No source VMs match.</div> : <div className="template-list">
+                    {visibleTemplates.map((record) => {
                         const { template } = record;
                         const preflight = preflightFor(template);
                         const rootCheck = preflight?.checks?.find((check) => check.name === "guest_agent_root_execution");
@@ -269,27 +322,33 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                         return (
                             <article className="template-card" key={template.id}>
                                 <div className="template-card-heading">
-                                    <div><p className="eyebrow">{template.guest_os} {template.guest_os_version} · {template.edition}</p><h3>{template.display_name}</h3><p className="template-source-id">Proxmox VMID {template.source_id} · {template.architecture}</p></div>
+                                    <div><p className="eyebrow">{template.guest_os} {template.guest_os_version} · {template.edition}</p><h3>{template.display_name}</h3><p className="template-source-id">VMID {template.source_id} · {template.architecture} · {record.aliases.length} aliases</p></div>
                                     <span className={`template-status${template.provisioning_ready ? " is-ready" : ""}`}>{template.provisioning_ready ? <><Check size={13} /> Ready</> : "Not ready"}</span>
                                 </div>
-                                {template.description && <p className="template-description-copy">{template.description}</p>}
-                                <div className="template-aliases" aria-label="Template aliases">
-                                    {record.aliases.map((alias) => <span className="template-alias" key={alias.id}><code>{alias.alias}</code><button type="button" disabled={busy || record.aliases.length < 2} onClick={() => removeAlias(template.id, alias.id)} aria-label={`Remove alias ${alias.alias}`} title={record.aliases.length < 2 ? "Every source needs at least one alias" : "Remove alias"}><Trash2 size={13} /></button></span>)}
-                                </div>
-                                <div className="template-alias-add"><input aria-label={`New alias for ${template.display_name}`} value={aliasDrafts[template.id] ?? ""} onChange={(event) => setAliasDrafts((current) => ({ ...current, [template.id]: event.target.value }))} placeholder="Add another alias" /><button className="secondary-action" type="button" disabled={busy || !aliasDrafts[template.id]?.trim()} onClick={() => addAlias(template.id)}><Plus size={14} /> Add alias</button></div>
-                                <div className="template-card-actions"><button className="secondary-action" type="button" disabled={busy} onClick={() => startEditing(record)}><Pencil size={14} /> Edit metadata</button><button className="secondary-action" type="button" title="Checks VM configuration and guest OS; Linux also must pass the QEMU Guest Agent root and SELinux execution check." disabled={busy || !proxmoxConfigured} onClick={() => runPreflight(template.id)}><RefreshCw size={14} /> Check source</button></div>
-                                {preflight && <div className="preflight-results"><div className="preflight-summary"><strong>{preflight.passed ? "Preflight passed" : "Preflight needs attention"}</strong><time dateTime={preflight.checked_at}>{new Date(preflight.checked_at).toLocaleString()}</time></div>{preflight.checks?.map((check) => <p className={`preflight-check${check.passed ? " is-passed" : ""}`} key={check.name}><span>{check.passed ? "✓" : check.required ? "!" : "·"}</span>{check.details}</p>)}</div>}
-                                <div className="template-readiness">
-                                    {linuxRootCheck ? <p className="template-readiness-status">Linux guest-agent system-level check: {rootCheck?.passed && preflight?.guest_agent_root_verified ? "verified" : "not verified"}</p> : <label><input type="checkbox" checked={rootVerified[template.id] ?? template.guest_agent_root_verified} onChange={(event) => setRootVerified((current) => ({ ...current, [template.id]: event.target.checked }))} /> I verified the guest agent executes as SYSTEM and the guest OS matches this record.</label>}
-                                    <label><input type="checkbox" checked={accountRemoved[template.id] ?? template.provisioning_account_removed} onChange={(event) => setAccountRemoved((current) => ({ ...current, [template.id]: event.target.checked }))} /> The temporary provisioning account has been removed.</label>
-                                    {!canConfirmReadiness && <p className="template-readiness-status">Start the source VM and rerun preflight to verify guest access.</p>}
-                                    <button className="secondary-action" type="button" disabled={busy || !canConfirmReadiness || linuxRootCheck && (!rootCheck?.passed || !preflight?.guest_agent_root_verified) || !linuxRootCheck && rootVerified[template.id] !== true && !template.guest_agent_root_verified || accountRemoved[template.id] !== true && !template.provisioning_account_removed} onClick={() => updateReadiness(template.id)}><ShieldCheck size={14} /> Confirm readiness</button>
-                                </div>
+                                <details className="template-management">
+                                    <summary><span>Manage source</span><ChevronDown size={15} /></summary>
+                                    <div className="template-management-content">
+                                        {template.description && <p className="template-description-copy">{template.description}</p>}
+                                        <div className="template-aliases" aria-label="Template aliases">
+                                            {record.aliases.map((alias) => <span className="template-alias" key={alias.id}><code>{alias.alias}</code><button type="button" disabled={busy || record.aliases.length < 2} onClick={() => removeAlias(template.id, alias.id)} aria-label={`Remove alias ${alias.alias}`}><Trash2 size={13} /></button></span>)}
+                                        </div>
+                                        <div className="template-alias-add"><input aria-label={`New alias for ${template.display_name}`} value={aliasDrafts[template.id] ?? ""} onChange={(event) => setAliasDrafts((current) => ({ ...current, [template.id]: event.target.value }))} placeholder="Add another alias" /><button className="secondary-action" type="button" disabled={busy || !aliasDrafts[template.id]?.trim()} onClick={() => addAlias(template.id)}><Plus size={14} /> Add alias</button></div>
+                                        <div className="template-card-actions"><button className="secondary-action" type="button" disabled={busy} onClick={() => startEditing(record)}><Pencil size={14} /> Edit metadata</button><button className="secondary-action" type="button" disabled={busy || !proxmoxConfigured} onClick={() => runPreflight(template.id)}><RefreshCw size={14} /> Check source</button></div>
+                                        {preflight && <div className="preflight-results"><div className="preflight-summary"><strong>{preflight.passed ? "Preflight passed" : "Preflight needs attention"}</strong><time dateTime={preflight.checked_at}>{new Date(preflight.checked_at).toLocaleString()}</time></div>{preflight.checks?.map((check) => <p className={`preflight-check${check.passed ? " is-passed" : ""}`} key={check.name}><span>{check.passed ? "✓" : check.required ? "!" : "·"}</span>{check.details}</p>)}</div>}
+                                        <div className="template-readiness">
+                                            {linuxRootCheck ? <p className="template-readiness-status">Linux guest-agent system-level check: {rootCheck?.passed && preflight?.guest_agent_root_verified ? "verified" : "not verified"}</p> : <label><input type="checkbox" checked={rootVerified[template.id] ?? template.guest_agent_root_verified} onChange={(event) => setRootVerified((current) => ({ ...current, [template.id]: event.target.checked }))} /> I verified the guest agent executes as SYSTEM and the guest OS matches this record.</label>}
+                                            <label><input type="checkbox" checked={accountRemoved[template.id] ?? template.provisioning_account_removed} onChange={(event) => setAccountRemoved((current) => ({ ...current, [template.id]: event.target.checked }))} /> The temporary provisioning account has been removed.</label>
+                                            {!canConfirmReadiness && <p className="template-readiness-status">Start the source VM and rerun preflight to verify guest access.</p>}
+                                            <button className="secondary-action" type="button" disabled={busy || !canConfirmReadiness || linuxRootCheck && (!rootCheck?.passed || !preflight?.guest_agent_root_verified) || !linuxRootCheck && rootVerified[template.id] !== true && !template.guest_agent_root_verified || accountRemoved[template.id] !== true && !template.provisioning_account_removed} onClick={() => updateReadiness(template.id)}><ShieldCheck size={14} /> Confirm readiness</button>
+                                        </div>
+                                    </div>
+                                </details>
                             </article>
                         );
                     })}
-                </div>
-            )}
+                </div>}
+            </div>}
+            {templates.length === 0 && <div className="template-empty">No source VMs are registered.</div>}
         </section>
     );
 }

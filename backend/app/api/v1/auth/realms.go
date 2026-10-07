@@ -25,6 +25,7 @@ type (
 		DisplayName           string                 `json:"display_name"`
 		PlatformAdministrator bool                   `json:"platform_administrator"`
 		Disabled              bool                   `json:"disabled"`
+		Active                bool                   `json:"active"`
 		Identities            []userIdentityResponse `json:"identities"`
 	}
 )
@@ -52,7 +53,7 @@ func createLDAPRealm(services common.Services) (handler fiber.Handler) {
 		var realm localauth.AuthenticationRealm
 		if realm, err = services.Authentication.CreateLDAPRealm(input); err != nil {
 			if errors.Is(err, localauth.ErrEncryptionKeyRequired) {
-				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Configure ORGANESSON_AUTH_ENCRYPTION_KEY before adding LDAP credentials."})
+				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Configure authentication.encryption_key in backend/config.toml before adding LDAP credentials."})
 			}
 			if errors.Is(err, localauth.ErrConflict) {
 				return ctx.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "That realm alias is already in use."})
@@ -103,7 +104,7 @@ func updateLocalRealm(services common.Services) (handler fiber.Handler) {
 func testLDAPRealm(services common.Services) (handler fiber.Handler) {
 	handler = func(ctx fiber.Ctx) (err error) {
 		if err = services.Authentication.TestLDAPRealm(ctx.Params("alias")); err != nil {
-			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "LDAP connection test failed. Verify the realm URL, TLS trust, bind account, and base DN."})
+			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "LDAP connection test failed: " + err.Error()})
 		}
 		err = ctx.JSON(fiber.Map{"passed": true})
 		return
@@ -134,7 +135,8 @@ func listUsers(services common.Services) (handler fiber.Handler) {
 		for _, account := range accounts {
 			var user userResponse = userResponse{
 				ID: account.ID, DisplayName: account.DisplayName, PlatformAdministrator: account.PlatformAdministrator,
-				Disabled: account.Disabled, Identities: make([]userIdentityResponse, 0),
+				Disabled: account.Disabled, Active: !account.Disabled && account.ActivatedAt != nil,
+				Identities: make([]userIdentityResponse, 0),
 			}
 			for _, identity := range identities {
 				if identity.AccountID != account.ID {

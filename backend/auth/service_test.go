@@ -21,7 +21,7 @@ func TestBootstrapLinkIsSingleUseAndCreatesLocalAuthentication(t *testing.T) {
 	defer store.Close()
 
 	var service *Service
-	if service, err = New(store); err != nil {
+	if service, err = New(store, ""); err != nil {
 		t.Fatalf("create auth service: %v", err)
 	}
 	var token string
@@ -62,23 +62,26 @@ func TestLDAPRealmCredentialsAreEncryptedAndLocalRealmCannotLockOutTheOnlyAdmin(
 	defer store.Close()
 
 	var service *Service
-	if service, err = New(store); err != nil {
+	if service, err = New(store, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="); err != nil {
 		t.Fatalf("create authentication service: %v", err)
 	}
-	service.encryptionKey = bytes.Repeat([]byte{0x42}, 32)
 	var realm AuthenticationRealm
 	if realm, err = service.CreateLDAPRealm(LDAPRealmInput{
 		Alias: "cyber", Enabled: true, BindPassword: "sensitive-bind-password",
 		LDAPRealmConfiguration: LDAPRealmConfiguration{
 			URL: "ldaps://ipa.cyber.lab:636", BaseDN: "cn=users,cn=accounts,dc=cyber,dc=lab",
 			UserFilter: "(uid={username})", UsernameAttribute: "uid", DisplayNameAttribute: "cn",
-			BindDN: "uid=organesson,cn=users,cn=accounts,dc=cyber,dc=lab",
+			BindDN:                      "uid=organesson,cn=users,cn=accounts,dc=cyber,dc=lab",
+			SkipCertificateVerification: true,
 		},
 	}); err != nil {
 		t.Fatalf("create LDAP realm: %v", err)
 	}
 	if realm.Alias != "cyber" || realm.Kind != "ldap" || !realm.Enabled || !realm.HasBindPassword {
 		t.Fatalf("unexpected LDAP realm metadata: %#v", realm)
+	}
+	if !realm.Configuration.SkipCertificateVerification {
+		t.Fatal("LDAP certificate verification preference was not retained")
 	}
 	var providers []*db.AuthenticationProvider
 	if providers, err = store.AuthenticationProviders.SelectAll(); err != nil {
@@ -119,7 +122,7 @@ func TestPasswordLinkExpirationAndReset(t *testing.T) {
 	defer store.Close()
 
 	var service *Service
-	if service, err = New(store); err != nil {
+	if service, err = New(store, ""); err != nil {
 		t.Fatalf("create auth service: %v", err)
 	}
 	var fixedTime time.Time = time.Date(2026, time.September, 30, 12, 0, 0, 0, time.UTC)
@@ -155,7 +158,7 @@ func TestLocalAccountProvisioningAndReset(t *testing.T) {
 	defer store.Close()
 
 	var service *Service
-	if service, err = New(store); err != nil {
+	if service, err = New(store, ""); err != nil {
 		t.Fatalf("create auth service: %v", err)
 	}
 	var adminToken string
@@ -211,7 +214,7 @@ func TestAPITokenLifecycleEnsuresBearerSecretsAreExpiringAndRevocable(t *testing
 	defer store.Close()
 
 	var service *Service
-	if service, err = New(store); err != nil {
+	if service, err = New(store, ""); err != nil {
 		t.Fatalf("create auth service: %v", err)
 	}
 	var token string
@@ -223,12 +226,26 @@ func TestAPITokenLifecycleEnsuresBearerSecretsAreExpiringAndRevocable(t *testing
 	if administrator, err = service.RedeemPasswordLink(token, "api-token-test-password"); err != nil {
 		t.Fatalf("activate administrator: %v", err)
 	}
+	var regularSetup *LocalAccountSetup
+	if regularSetup, err = service.CreateLocalAccount(administrator.ID, "token-user", "Token User"); err != nil {
+		t.Fatalf("create regular token-test account: %v", err)
+	}
+	var regularAccount *db.Account
+	if regularAccount, err = service.RedeemPasswordLink(regularSetup.SetupToken, "regular-token-test-password"); err != nil {
+		t.Fatalf("activate regular token-test account: %v", err)
+	}
+	if _, err = service.CreateAPIToken(regularAccount.ID, regularAccount.ID, "not allowed", 24*time.Hour); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("non-administrator should not create API tokens: %v", err)
+	}
 	var credential *APITokenCredential
-	if credential, err = service.CreateAPIToken(administrator.ID, "tofu acceptance", 24*time.Hour); err != nil {
+	if credential, err = service.CreateAPIToken(administrator.ID, administrator.ID, "tofu acceptance", 24*time.Hour); err != nil {
 		t.Fatalf("create API token: %v", err)
 	}
 	if credential.Secret == "" || len(credential.Token.TokenHash) != 32 {
 		t.Fatalf("API token secret or digest missing: %#v", credential)
+	}
+	if summaries, listErr := service.ListAPITokens(); listErr != nil || len(summaries) != 1 || summaries[0].AccountID != administrator.ID || summaries[0].OwnerQualifiedName != "administrator@organesson" {
+		t.Fatalf("API token metadata did not map to its owner: %#v, err=%v", summaries, listErr)
 	}
 	var tokenRows []*db.APIToken
 	if tokenRows, err = store.APITokens.SelectAll(); err != nil {
@@ -247,6 +264,19 @@ func TestAPITokenLifecycleEnsuresBearerSecretsAreExpiringAndRevocable(t *testing
 	if _, err = service.AuthenticateAPIToken(credential.Secret); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("revoked API token should fail, got %v", err)
 	}
+	var expiredAt time.Time = service.now().Add(-time.Hour)
+	credential.Token.ExpiresAt = &expiredAt
+	if err = service.store.APITokens.Update(credential.Token); err != nil {
+		t.Fatalf("set token expiry for prune check: %v", err)
+	}
+	var pruned int
+	if pruned, err = service.PruneExpiredAPITokens(administrator.ID); err != nil || pruned != 1 {
+		t.Fatalf("prune expired API token: count=%d err=%v", pruned, err)
+	}
+	var prunedToken *db.APIToken
+	if prunedToken, err = service.store.APITokens.Select(credential.Token.ID); err != nil || prunedToken != nil {
+		t.Fatalf("expired API token remains after prune: token=%#v err=%v", prunedToken, err)
+	}
 }
 
 // TestDevelopmentFixtureCreationIsRepeatable checks explicit fake-user seeding behavior.
@@ -258,7 +288,7 @@ func TestDevelopmentFixtureCreationIsRepeatable(t *testing.T) {
 	}
 	defer store.Close()
 	var service *Service
-	if service, err = New(store); err != nil {
+	if service, err = New(store, ""); err != nil {
 		t.Fatalf("create auth service: %v", err)
 	}
 	var admin *db.Account

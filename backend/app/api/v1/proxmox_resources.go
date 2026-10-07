@@ -2,14 +2,26 @@ package v1
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/z46-dev/organesson/backend/app/api/common"
 	"github.com/z46-dev/organesson/backend/db"
+	"github.com/z46-dev/organesson/backend/domain"
 	"github.com/z46-dev/organesson/backend/proxmox"
 )
+
+type vlanTrunkMapping struct {
+	DeploymentID   int    `json:"deployment_id"`
+	ResourceID     int    `json:"resource_id"`
+	Node           string `json:"node"`
+	Bridge         string `json:"bridge"`
+	VLANID         int    `json:"vlan_id"`
+	DeploymentName string `json:"deployment_name"`
+	VNetName       string `json:"vnet_name"`
+}
 
 // initProxmoxResources registers platform-admin capacity policy and read-only inventory routes.
 func initProxmoxResources(parent fiber.Router, services common.Services) {
@@ -31,7 +43,11 @@ func getProxmoxResources(services common.Services) (handler fiber.Handler) {
 				return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Stored resource policy is invalid."})
 			}
 		}
-		response := fiber.Map{"policy": policy, "configured": services.Proxmox != nil && services.Proxmox.Configured()}
+		var vlanMappings []vlanTrunkMapping
+		if vlanMappings, err = listVLANTrunkMappings(services.Store); err != nil {
+			return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not load external VLAN usage."})
+		}
+		response := fiber.Map{"policy": policy, "configured": services.Proxmox != nil && services.Proxmox.Configured(), "vlan_mappings": vlanMappings}
 		if stored != nil {
 			response["validation_json"] = stored.ValidationJSON
 			response["validated_at"] = stored.ValidatedAt
@@ -47,6 +63,57 @@ func getProxmoxResources(services common.Services) (handler fiber.Handler) {
 		err = ctx.JSON(response)
 		return
 	}
+	return
+}
+
+// listVLANTrunkMappings links persisted externally exposed VNets to their deployment and trunk.
+func listVLANTrunkMappings(store *db.Store) (mappings []vlanTrunkMapping, err error) {
+	var deployments []*db.Deployment
+	if deployments, err = store.Deployments.SelectAll(); err != nil {
+		return
+	}
+	var deploymentNames map[int]string = make(map[int]string, len(deployments))
+	for _, deployment := range deployments {
+		deploymentNames[deployment.ID] = deployment.Name
+	}
+	var resources []*db.ManagedResource
+	if resources, err = store.ManagedResources.SelectAll(); err != nil {
+		return
+	}
+	mappings = make([]vlanTrunkMapping, 0)
+	for _, resource := range resources {
+		if resource.Kind != "virtual_network" || resource.ConfigurationJSON == "" {
+			continue
+		}
+		var configuration domain.ManagedNetworkConfiguration
+		if err = json.Unmarshal([]byte(resource.ConfigurationJSON), &configuration); err != nil {
+			return
+		}
+		var exposure *proxmox.SDNExternalVLANExposure = configuration.Request.ExternalVLAN
+		if exposure == nil {
+			continue
+		}
+		mappings = append(mappings, vlanTrunkMapping{
+			DeploymentID: resource.DeploymentID, ResourceID: resource.ID,
+			Node: exposure.TrunkNode, Bridge: exposure.TrunkBridge, VLANID: exposure.VLANID,
+			DeploymentName: deploymentNames[resource.DeploymentID], VNetName: resource.Name,
+		})
+	}
+	sort.Slice(mappings, func(left int, right int) bool {
+		if mappings[left].Node != mappings[right].Node {
+			return mappings[left].Node < mappings[right].Node
+		}
+		if mappings[left].Bridge != mappings[right].Bridge {
+			return mappings[left].Bridge < mappings[right].Bridge
+		}
+		if mappings[left].VLANID != mappings[right].VLANID {
+			return mappings[left].VLANID < mappings[right].VLANID
+		}
+		if mappings[left].DeploymentName != mappings[right].DeploymentName {
+			return mappings[left].DeploymentName < mappings[right].DeploymentName
+		}
+		return mappings[left].VNetName < mappings[right].VNetName
+	})
 	return
 }
 

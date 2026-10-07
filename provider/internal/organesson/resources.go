@@ -146,7 +146,7 @@ func externalVLANExposureSchema() (field *schema.Schema) {
 			"trunk_bridge": {Type: schema.TypeString, Required: true, Description: "Authorized host bridge on that node."},
 			"vlan_id":      {Type: schema.TypeInt, Required: true, ValidateFunc: validation.IntBetween(1, 4094), Description: "VLAN tag to expose on the trunk."},
 		}},
-		Description: "Optional external VLAN exposure over an administrator-authorized trunk. The VNet is attached to the Proxmox VLAN zone for that bridge and tag.",
+		Description: "Optional external VLAN exposure over one administrator-authorized node trunk. The VNet is attached only on the selected node to prevent duplicate physical paths and switching loops.",
 	}
 
 	return
