@@ -267,7 +267,80 @@ func (service *Service) TestLDAPRealm(alias string) (err error) {
 
 // AuthenticateLDAP locates and verifies a directory identity, then maps it to a local Organesson user.
 func (service *Service) authenticateLDAP(provider *db.AuthenticationProvider, username string, password string) (account *db.Account, err error) {
-	if !provider.Enabled {
+	var directoryUser ldapUser
+	var distinguishedName string
+	var connection *ldap.Conn
+	if directoryUser, distinguishedName, connection, err = service.searchLDAPUser(provider, username); err != nil {
+		_ = verifyPassword(service.dummyHash, password)
+		err = ErrInvalidCredentials
+		return
+	}
+	defer connection.Close()
+	if err = connection.Bind(distinguishedName, password); err != nil {
+		_ = verifyPassword(service.dummyHash, password)
+		err = ErrInvalidCredentials
+		return
+	}
+	account, err = service.upsertLDAPIdentity(provider, directoryUser)
+	return
+}
+
+// ImportRemoteIdentity resolves an existing identity or imports it from its enabled LDAP realm.
+func (service *Service) ImportRemoteIdentity(qualifiedName string) (account *db.Account, err error) {
+	qualifiedName = strings.TrimSpace(qualifiedName)
+	var delimiter int = strings.LastIndex(qualifiedName, "@")
+	if delimiter < 1 || delimiter == len(qualifiedName)-1 {
+		err = ErrInvalidCredentials
+		return
+	}
+	var username string = strings.TrimSpace(qualifiedName[:delimiter])
+	var alias string = strings.ToLower(strings.TrimSpace(qualifiedName[delimiter+1:]))
+	if username == "" || alias == "" {
+		err = ErrInvalidCredentials
+		return
+	}
+	var identities []*db.AccountIdentity
+	if identities, err = service.store.AccountIdentities.SelectAll(); err != nil {
+		return
+	}
+	for _, identity := range identities {
+		if !strings.EqualFold(identity.QualifiedName, qualifiedName) {
+			continue
+		}
+		if account, err = service.store.Accounts.Select(identity.AccountID); err != nil {
+			return
+		}
+		if account == nil || account.Disabled || account.ActivatedAt == nil {
+			account = nil
+			err = ErrInvalidCredentials
+		}
+		return
+	}
+	var provider *db.AuthenticationProvider
+	if provider, err = service.findProvider(alias); err != nil {
+		return
+	}
+	if provider == nil || provider.Kind != db.AuthenticationProviderKindLDAP || !provider.Enabled {
+		err = ErrInvalidCredentials
+		return
+	}
+	var directoryUser ldapUser
+	var connection *ldap.Conn
+	if directoryUser, _, connection, err = service.searchLDAPUser(provider, username); err != nil {
+		return
+	}
+	defer connection.Close()
+	if !strings.EqualFold(directoryUser.Username, username) {
+		err = ErrInvalidCredentials
+		return
+	}
+	account, err = service.upsertLDAPIdentity(provider, directoryUser)
+	return
+}
+
+// searchLDAPUser finds exactly one enabled directory identity using the realm's service bind.
+func (service *Service) searchLDAPUser(provider *db.AuthenticationProvider, username string) (user ldapUser, distinguishedName string, connection *ldap.Conn, err error) {
+	if provider == nil || !provider.Enabled {
 		err = ErrInvalidCredentials
 		return
 	}
@@ -277,52 +350,45 @@ func (service *Service) authenticateLDAP(provider *db.AuthenticationProvider, us
 	}
 	var bindPassword string
 	if bindPassword, err = service.decryptBindPassword(provider); err != nil {
-		_ = verifyPassword(service.dummyHash, password)
-		err = ErrInvalidCredentials
 		return
 	}
-	var connection *ldap.Conn
 	if connection, err = dialLDAP(configuration); err != nil {
-		_ = verifyPassword(service.dummyHash, password)
-		err = ErrInvalidCredentials
 		return
 	}
-	defer connection.Close()
 	connection.SetTimeout(10 * time.Second)
 	if err = connection.Bind(configuration.BindDN, bindPassword); err != nil {
-		_ = verifyPassword(service.dummyHash, password)
-		err = ErrInvalidCredentials
+		_ = connection.Close()
+		connection = nil
 		return
 	}
 	var filter string = strings.ReplaceAll(configuration.UserFilter, "{username}", ldap.EscapeFilter(strings.TrimSpace(username)))
 	var results *ldap.SearchResult
 	if results, err = connection.Search(ldap.NewSearchRequest(configuration.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 2, 10, false, filter,
 		[]string{configuration.UsernameAttribute, configuration.DisplayNameAttribute, configuration.EmailAttribute, "entryUUID", "objectGUID"}, nil)); err != nil || results == nil || len(results.Entries) != 1 {
-		_ = verifyPassword(service.dummyHash, password)
-		err = ErrInvalidCredentials
+		_ = connection.Close()
+		connection = nil
+		if err == nil {
+			err = ErrInvalidCredentials
+		}
 		return
 	}
 	var entry *ldap.Entry = results.Entries[0]
-	if err = connection.Bind(entry.DN, password); err != nil {
-		_ = verifyPassword(service.dummyHash, password)
+	user.Username = entry.GetAttributeValue(configuration.UsernameAttribute)
+	user.Name = entry.GetAttributeValue(configuration.DisplayNameAttribute)
+	user.Subject = entry.GetAttributeValue("entryUUID")
+	if user.Subject == "" {
+		user.Subject = entry.GetAttributeValue("objectGUID")
+	}
+	if user.Subject == "" {
+		user.Subject = strings.ToLower(entry.DN)
+	}
+	if user.Username == "" {
+		_ = connection.Close()
+		connection = nil
 		err = ErrInvalidCredentials
 		return
 	}
-	var directoryUser ldapUser
-	directoryUser.Username = entry.GetAttributeValue(configuration.UsernameAttribute)
-	directoryUser.Name = entry.GetAttributeValue(configuration.DisplayNameAttribute)
-	directoryUser.Subject = entry.GetAttributeValue("entryUUID")
-	if directoryUser.Subject == "" {
-		directoryUser.Subject = entry.GetAttributeValue("objectGUID")
-	}
-	if directoryUser.Subject == "" {
-		directoryUser.Subject = strings.ToLower(entry.DN)
-	}
-	if directoryUser.Username == "" {
-		err = ErrInvalidCredentials
-		return
-	}
-	account, err = service.upsertLDAPIdentity(provider, directoryUser)
+	distinguishedName = entry.DN
 	return
 }
 

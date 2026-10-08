@@ -7,6 +7,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/z46-dev/organesson/backend/app/api/common"
+	"github.com/z46-dev/organesson/backend/auth"
 	"github.com/z46-dev/organesson/backend/db"
 	"github.com/z46-dev/organesson/backend/domain"
 	"github.com/z46-dev/organesson/backend/proxmox"
@@ -603,7 +604,7 @@ func createUserGroup(services common.Services) (handler fiber.Handler) {
 		}
 		for _, qualifiedName := range request.Members {
 			var memberID int
-			if memberID, err = resolveLocalAccountID(services.Store, qualifiedName); err != nil {
+			if memberID, err = resolveGroupMemberAccountID(services.Authentication, qualifiedName); err != nil {
 				_ = services.Domain.DeleteUserGroup(accountID, group.ID)
 				return common.DomainError(ctx, err)
 			}
@@ -657,10 +658,13 @@ func setGroupMembers(services common.Services) (handler fiber.Handler) {
 		if groupID, err = common.ParseID(ctx, "group_id"); err != nil {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user group identifier."})
 		}
+		if err = services.Domain.RequireGroupManagement(actorID, groupID); err != nil {
+			return common.DomainError(ctx, err)
+		}
 		var accountIDs []int
 		for _, qualifiedName := range request.Members {
 			var accountID int
-			if accountID, err = resolveLocalAccountID(services.Store, qualifiedName); err != nil {
+			if accountID, err = resolveGroupMemberAccountID(services.Authentication, qualifiedName); err != nil {
 				return common.DomainError(ctx, err)
 			}
 			accountIDs = append(accountIDs, accountID)
@@ -1167,5 +1171,22 @@ func resolveLocalAccountID(store *db.Store, qualifiedName string) (accountID int
 		}
 	}
 	err = domain.ErrNotFound
+	return
+}
+
+// resolveGroupMemberAccountID imports an unknown LDAP member before returning its local account ID.
+func resolveGroupMemberAccountID(authentication *auth.Service, qualifiedName string) (accountID int, err error) {
+	var account *db.Account
+	if account, err = authentication.ImportRemoteIdentity(qualifiedName); err != nil {
+		if errors.Is(err, auth.ErrInvalidCredentials) {
+			err = domain.ErrNotFound
+		}
+		return
+	}
+	if account == nil {
+		err = domain.ErrNotFound
+		return
+	}
+	accountID = account.ID
 	return
 }

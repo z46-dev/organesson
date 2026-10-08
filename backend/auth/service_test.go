@@ -112,6 +112,77 @@ func TestLDAPRealmCredentialsAreEncryptedAndLocalRealmCannotLockOutTheOnlyAdmin(
 	}
 }
 
+// TestRemoteIdentityImportPersistsAndReusesDirectoryAccounts exercises identity upsert without a user password.
+func TestRemoteIdentityImportPersistsAndReusesDirectoryAccounts(t *testing.T) {
+	var store *db.Store
+	var err error
+	if store, err = db.Open(filepath.Join(t.TempDir(), "organesson.db"), golog.New(), false); err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+
+	var service *Service
+	if service, err = New(store, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="); err != nil {
+		t.Fatalf("create authentication service: %v", err)
+	}
+	if _, err = service.CreateLDAPRealm(LDAPRealmInput{
+		Alias: "cyber", Enabled: true, BindPassword: "directory-bind-password",
+		LDAPRealmConfiguration: LDAPRealmConfiguration{
+			URL: "ldaps://directory.example.test:636", BaseDN: "dc=example,dc=test",
+			UserFilter: "(uid={username})", UsernameAttribute: "uid", DisplayNameAttribute: "cn",
+			BindDN: "cn=organesson,dc=example,dc=test",
+		},
+	}); err != nil {
+		t.Fatalf("create LDAP realm: %v", err)
+	}
+	var providers []*db.AuthenticationProvider
+	if providers, err = store.AuthenticationProviders.SelectAll(); err != nil {
+		t.Fatalf("load authentication providers: %v", err)
+	}
+	var provider *db.AuthenticationProvider
+	for _, candidate := range providers {
+		if candidate.Alias == "cyber" {
+			provider = candidate
+			break
+		}
+	}
+	if provider == nil {
+		t.Fatal("LDAP realm was not persisted")
+	}
+	var directoryUser ldapUser = ldapUser{Subject: "directory-id-1", Username: "KGB1043", Name: "KGB User"}
+	var imported *db.Account
+	if imported, err = service.upsertLDAPIdentity(provider, directoryUser); err != nil {
+		t.Fatalf("import LDAP identity: %v", err)
+	}
+	if imported == nil || imported.ActivatedAt == nil || imported.DisplayName != "KGB User" {
+		t.Fatalf("unexpected imported account: %#v", imported)
+	}
+	var repeated *db.Account
+	if repeated, err = service.upsertLDAPIdentity(provider, directoryUser); err != nil || repeated.ID != imported.ID {
+		t.Fatalf("re-import should reuse the mapped account: first=%#v repeated=%#v err=%v", imported, repeated, err)
+	}
+	var identities []*db.AccountIdentity
+	if identities, err = store.AccountIdentities.SelectAll(); err != nil {
+		t.Fatalf("load account identities: %v", err)
+	}
+	var matched bool
+	for _, identity := range identities {
+		if identity.AccountID == imported.ID && identity.QualifiedName == "kgb1043@cyber" {
+			matched = true
+		}
+	}
+	if !matched {
+		t.Fatal("imported account does not have its qualified realm identity")
+	}
+	var resolved *db.Account
+	if resolved, err = service.ImportRemoteIdentity("kgb1043@cyber"); err != nil || resolved.ID != imported.ID {
+		t.Fatalf("resolve existing remote identity: account=%#v err=%v", resolved, err)
+	}
+	if _, err = service.ImportRemoteIdentity("unknown@organesson"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("unknown local identity must not be imported: %v", err)
+	}
+}
+
 // TestPasswordLinkExpirationAndReset checks reset invalidates a pending activation link.
 func TestPasswordLinkExpirationAndReset(t *testing.T) {
 	var store *db.Store

@@ -1,0 +1,7 @@
+# Cyber workstation
+
+This OpenTofu example creates one Fedora workstation from `og-template-fedora-workstation-latest`, attaches one NIC to the `cyber` environment network, and reserves one IPv4 plus one IPv6 address for that interface. The addresses are configured statically in the guest using the prefix, gateway, and DNS supplied by the corresponding reservation requests. On apply, an Organesson artifact creates the test user `ogusr` with the same password, marks GNOME's per-user setup complete, disables GDM's account-creation setup, and schedules a reboot so the VM returns to the normal login screen.
+
+The deployment-local request names are `cyber-ipv4` and `cyber-ipv6`. The current API chooses the source address pool by environment network and family, not by a separate pool-name argument. The validated `cyber` environment network must have exactly one IPv4 pool named `cyber-ipv4` and one IPv6 pool named `cyber-ipv6`; requests fail as ambiguous if multiple pools of the same family are configured there.
+
+The Organesson group `cyber-workstation-operators` contains `kgb1043@cyber` and `dpm1072@cyber`. If either identity is not yet local, Organesson imports it from the enabled `cyber` LDAP realm while creating the group; the user does not need to sign in first. The group receives `resource.view`, `vm.snapshot_control`, `vm.console_control`, and `vm.power_control` on the VM. This is an example configuration only; it has not been applied.

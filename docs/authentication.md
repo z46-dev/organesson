@@ -12,7 +12,8 @@
 [authentication]
 encryption_key = "<base64-encoded 32-byte key>"
 ```
-- The Users section shows local accounts and their identity sources. LDAP users are created on first successful login; promote an LDAP account to platform administrator there before disabling the local realm. Organesson refuses to disable the local realm unless an enabled LDAP realm already has an active platform administrator, and prevents demoting the last active platform administrator.
+- The Users section shows local accounts and their identity sources. LDAP users are created on first successful login or when referenced by deployment-group membership; promote an LDAP account to platform administrator there before disabling the local realm. Organesson refuses to disable the local realm unless an enabled LDAP realm already has an active platform administrator, and prevents demoting the last active platform administrator.
+- When an authorized deployment group is created or its membership is updated, qualified identities such as `kgb1043@cyber` are imported from the enabled LDAP realm if they are not already known locally. The LDAP service bind looks up the username; the directory user still has to authenticate with LDAP to sign in. Missing users and unknown/local realms remain errors, and no Terraform changes are required.
 - Alice/Bob/Charlie/Dave development identities are created only by `development seed-test-users` when `development.enable_test_fixtures = true` is explicitly set in local configuration. The command prints one-time activation tokens and is not exposed over HTTP.
 
 ## Reused modules

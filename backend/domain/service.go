@@ -1006,23 +1006,7 @@ func (service *Service) AddGroupMember(actorID int, groupID int, accountID int) 
 
 // SetGroupMembers replaces one deployment-local group's complete member set.
 func (service *Service) SetGroupMembers(actorID int, groupID int, accountIDs []int) (err error) {
-	var group *db.UserGroup
-	if group, err = service.store.UserGroups.Select(groupID); err != nil {
-		return
-	}
-	if group == nil {
-		err = ErrNotFound
-		return
-	}
-	var deployment *db.Deployment
-	if deployment, err = service.store.Deployments.Select(group.DeploymentID); err != nil {
-		return
-	}
-	if deployment == nil || deployment.RootNodeID == nil {
-		err = ErrNotFound
-		return
-	}
-	if err = service.Require(actorID, db.PermissionDeploymentManageGroups, *deployment.RootNodeID); err != nil {
+	if err = service.RequireGroupManagement(actorID, groupID); err != nil {
 		return
 	}
 	var desired map[int]struct{} = make(map[int]struct{}, len(accountIDs))
@@ -1068,6 +1052,28 @@ func (service *Service) SetGroupMembers(actorID int, groupID int, accountIDs []i
 			}
 		}
 	}
+	return
+}
+
+// RequireGroupManagement verifies the actor may manage one group's membership.
+func (service *Service) RequireGroupManagement(actorID int, groupID int) (err error) {
+	var group *db.UserGroup
+	if group, err = service.store.UserGroups.Select(groupID); err != nil {
+		return
+	}
+	if group == nil {
+		err = ErrNotFound
+		return
+	}
+	var deployment *db.Deployment
+	if deployment, err = service.store.Deployments.Select(group.DeploymentID); err != nil {
+		return
+	}
+	if deployment == nil || deployment.RootNodeID == nil {
+		err = ErrNotFound
+		return
+	}
+	err = service.Require(actorID, db.PermissionDeploymentManageGroups, *deployment.RootNodeID)
 	return
 }
 
