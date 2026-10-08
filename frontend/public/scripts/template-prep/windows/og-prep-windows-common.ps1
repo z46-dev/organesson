@@ -35,27 +35,34 @@ function Find-GuestAgentInstaller {
 }
 
 function Install-GuestAgent {
-    $installerPath = Find-GuestAgentInstaller
-    $signature = Get-AuthenticodeSignature -FilePath $installerPath
-    if ($signature.Status -ne "Valid") {
-        throw "The QEMU Guest Agent installer signature is not valid: $($signature.Status)."
-    }
-
-    Write-PrepLog "Installing QEMU Guest Agent from the attached VirtIO ISO."
-    $install = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" `
-        -ArgumentList @("/i", "`"$installerPath`"", "/qn", "/norestart") `
-        -Wait -PassThru
-    if ($install.ExitCode -notin @(0, 3010)) {
-        throw "QEMU Guest Agent installation failed with exit code $($install.ExitCode)."
-    }
-
-    if ($install.ExitCode -eq 3010) {
-        throw "QEMU Guest Agent installation requires a reboot. Reboot, then run this script again before sealing the source."
-    }
-
     $agentService = Get-CimInstance -ClassName Win32_Service | Where-Object {
         $_.Name -eq "QEMU-GA" -or $_.DisplayName -like "*QEMU*Guest*Agent*"
     } | Select-Object -First 1
+
+    if ($null -eq $agentService) {
+        $installerPath = Find-GuestAgentInstaller
+        $signature = Get-AuthenticodeSignature -FilePath $installerPath
+        if ($signature.Status -ne "Valid") {
+            throw "The QEMU Guest Agent installer signature is not valid: $($signature.Status)."
+        }
+
+        Write-PrepLog "Installing QEMU Guest Agent from the attached VirtIO ISO."
+        $install = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" `
+            -ArgumentList @("/i", "`"$installerPath`"", "/qn", "/norestart") `
+            -Wait -PassThru
+        if ($install.ExitCode -notin @(0, 3010)) {
+            throw "QEMU Guest Agent installation failed with exit code $($install.ExitCode)."
+        }
+
+        if ($install.ExitCode -eq 3010) {
+            throw "QEMU Guest Agent installation requires a reboot. Reboot, then run this script again before sealing the source."
+        }
+
+        $agentService = Get-CimInstance -ClassName Win32_Service | Where-Object {
+            $_.Name -eq "QEMU-GA" -or $_.DisplayName -like "*QEMU*Guest*Agent*"
+        } | Select-Object -First 1
+    }
+
     if ($null -eq $agentService) {
         throw "QEMU Guest Agent service was not installed."
     }
@@ -114,7 +121,9 @@ function Invoke-OrganessonWindowsPrep {
         [string]$ExpectedRelease,
 
         [Parameter(Mandatory = $true)]
-        [string]$EntryScriptPath
+        [string]$EntryScriptPath,
+
+        [switch]$PrepareOnly
     )
 
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -150,6 +159,11 @@ function Invoke-OrganessonWindowsPrep {
     }
 
     Write-PrepLog "QEMU Guest Agent is running as LocalSystem; updates are installed."
+    if ($PrepareOnly) {
+        Write-PrepLog "Preparation-only mode completed; leaving the guest running for account removal and final sealing."
+        return
+    }
+
     Write-PrepLog "Removing the downloaded prep files and generalizing Windows before shutdown."
     $commonScriptPath = Join-Path $PSScriptRoot "og-prep-windows-common.ps1"
     Remove-Item -LiteralPath $EntryScriptPath -Force

@@ -26,6 +26,7 @@ type VLANTrunk = { node: string; bridge: string; allowed_vlan_ranges: VLANRange[
 type VLANTrunkMapping = { deployment_id: number; resource_id: number; node: string; bridge: string; vlan_id: number; deployment_name: string; vnet_name: string };
 type BridgeInventory = { name: string; vlan_aware: boolean; has_physical_ports: boolean; has_ip_config: boolean };
 type NodeInventory = { name: string; status: string; bridges: BridgeInventory[] };
+type RouterTemplateRecord = { template: { provisioning_ready: boolean }; aliases: { alias: string }[] };
 
 type Policy = {
     limits: { max_deployments: number; max_sdn_networks: number; virtual_cpus: number; memory_mib: number; storage_gib: number; snapshot_storage_gib: number };
@@ -33,6 +34,7 @@ type Policy = {
     vm_limits: { virtual_cpus: number; memory_mib: number; storage_gib: number; max_snapshots: number };
     resource_pools: string[];
     storages: string[];
+    managed_network_router: { template_alias: string; pool: string; storage: string };
     networks: PolicyNetwork[];
     vlan_trunks: VLANTrunk[];
 };
@@ -44,23 +46,25 @@ const emptyPolicy: Policy = {
     limits: { max_deployments: 0, max_sdn_networks: 0, virtual_cpus: 0, memory_mib: 0, storage_gib: 0, snapshot_storage_gib: 0 },
     deployment_limits: { max_resources: 0, max_sdn_networks: 0, virtual_cpus: 0, memory_mib: 0, storage_gib: 0, snapshot_storage_gib: 0 },
     vm_limits: { virtual_cpus: 0, memory_mib: 0, storage_gib: 0, max_snapshots: 0 },
-    resource_pools: [], storages: [], networks: [], vlan_trunks: []
+    resource_pools: [], storages: [], managed_network_router: { template_alias: "", pool: "", storage: "" }, networks: [], vlan_trunks: []
 };
 
 type QuotaScope = "limits" | "deployment_limits" | "vm_limits";
 type QuotaRow = { field: string; label: string; unit: string; value: number; scale?: number; inactiveText?: string };
 
 function ResourceTargetSelect({ label, options, selected, onChange }: { label: string; options: string[]; selected: string[]; onChange: (values: string[]) => void }) {
-    const choices = [...new Set([...options, ...selected])].sort((left, right) => left.localeCompare(right));
+    const availableOptions = Array.isArray(options) ? options : [];
+    const selectedValues = Array.isArray(selected) ? selected : [];
+    const choices = [...new Set([...availableOptions, ...selectedValues])].sort((left, right) => left.localeCompare(right));
     return <div className="placement-select-field">
         <span>{label}</span>
         <details className="placement-select">
-            <summary><span>{selected.length === 0 ? `Select ${label.toLowerCase()}` : selected.join(", ")}</span><ChevronDown size={15} /></summary>
+            <summary><span>{selectedValues.length === 0 ? `Select ${label.toLowerCase()}` : selectedValues.join(", ")}</span><ChevronDown size={15} /></summary>
             <div className="placement-select-options" role="group" aria-label={label}>
                 {choices.length === 0 ? <p>No Proxmox targets available</p> : choices.map((choice) => {
-                    const available = options.includes(choice);
+                    const available = availableOptions.includes(choice);
                     return <label className={!available ? "is-unavailable" : ""} key={choice}>
-                        <input type="checkbox" checked={selected.includes(choice)} onChange={(event) => onChange(event.target.checked ? [...selected, choice] : selected.filter((value) => value !== choice))} />
+                        <input type="checkbox" checked={selectedValues.includes(choice)} onChange={(event) => onChange(event.target.checked ? [...selectedValues, choice] : selectedValues.filter((value) => value !== choice))} />
                         <span>{choice}{!available && <small>Unavailable</small>}</span>
                     </label>;
                 })}
@@ -95,16 +99,20 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
     const [inventoryError, setInventoryError] = useState("");
     const [busy, setBusy] = useState(false);
     const [networkEditor, setNetworkEditor] = useState<{ networkIndex: number | null; value: PolicyNetwork } | null>(null);
-    const [poolEditor, setPoolEditor] = useState<{ poolIndex: number | null; value: AddressPool } | null>(null);
+    const [poolEditor, setPoolEditor] = useState<{ poolIndex: number | null; value: AddressPool; dnsText: string } | null>(null);
     const [poolIssue, setPoolIssue] = useState("");
     const [trunkEditor, setTrunkEditor] = useState<{ node: string; bridge: string; vlanRanges: string } | null>(null);
     const [trunkIssue, setTrunkIssue] = useState("");
     const [trunkMappings, setTrunkMappings] = useState<VLANTrunkMapping[]>([]);
+    const [routerTemplateAliases, setRouterTemplateAliases] = useState<string[]>([]);
     const [networkView, setNetworkView] = useState<"networks" | "vlans">("networks");
 
     useEffect(() => {
-        request<{ policy?: Policy; inventory?: Inventory; configured: boolean; validated_at?: string; inventory_error?: string; vlan_mappings?: VLANTrunkMapping[] }>("/admin/proxmox/resources")
-            .then((result) => {
+        Promise.all([
+            request<{ policy?: Policy; inventory?: Inventory; configured: boolean; validated_at?: string; inventory_error?: string; vlan_mappings?: VLANTrunkMapping[] }>("/admin/proxmox/resources"),
+            request<{ templates: RouterTemplateRecord[] }>("/admin/vm-templates")
+        ])
+            .then(([result, catalog]) => {
                 setPolicy({
                     ...emptyPolicy,
                     ...result.policy,
@@ -130,6 +138,9 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
                         storage_gib: result.policy?.vm_limits?.storage_gib ?? 0,
                         max_snapshots: result.policy?.vm_limits?.max_snapshots ?? 0
                     },
+                    resource_pools: result.policy?.resource_pools ?? [],
+                    storages: result.policy?.storages ?? [],
+                    managed_network_router: result.policy?.managed_network_router ?? emptyPolicy.managed_network_router,
                     networks: (result.policy?.networks ?? []).map((network) => ({
                         ...network,
                         target_mode: network.target_mode ?? "existing",
@@ -140,6 +151,7 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
                 });
                 setInventory(result.inventory ?? null);
                 setTrunkMappings(result.vlan_mappings ?? []);
+                setRouterTemplateAliases((catalog.templates ?? []).filter(({ template }) => template.provisioning_ready).flatMap(({ aliases }) => aliases.map(({ alias }) => alias)).sort((left, right) => left.localeCompare(right)));
                 setConfigured(result.configured);
                 setValidatedAt(result.validated_at ?? null);
                 setInventoryError(result.inventory_error ?? "");
@@ -152,6 +164,10 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
         setPolicy((current) => ({ ...current, [scope]: { ...current[scope], [name]: value } }));
     }
 
+    function changeManagedNetworkRouter(field: "template_alias" | "pool" | "storage", value: string) {
+        setPolicy((current) => ({ ...current, managed_network_router: { ...current.managed_network_router, [field]: value } }));
+    }
+
     function changeNetwork(_index: number, field: keyof PolicyNetwork, value: string | PolicySubnet[]) {
         setNetworkEditor((current) => current ? { ...current, value: { ...current.value, [field]: value } } : current);
     }
@@ -160,6 +176,7 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
         if (!poolEditor) return;
         const { value, poolIndex } = poolEditor;
         if (!networkEditor) return;
+        const poolValue: AddressPool = { ...value, dns: poolEditor.dnsText.split(/[\s,]+/).map((server) => server.trim()).filter(Boolean) };
         const prefix = value.prefix.trim();
         const allocationPrefix = value.allocation_prefix.trim();
         const cidrPattern = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$|^[0-9a-fA-F:]+\/\d{1,3}$/;
@@ -178,7 +195,7 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
         }
         setNetworkEditor((current) => current ? { ...current, value: {
             ...current.value,
-            address_pools: poolIndex === null ? [...current.value.address_pools, value] : current.value.address_pools.map((pool, index) => index === poolIndex ? value : pool)
+            address_pools: poolIndex === null ? [...current.value.address_pools, poolValue] : current.value.address_pools.map((pool, index) => index === poolIndex ? poolValue : pool)
         } } : current);
         setPoolIssue("");
         setPoolEditor(null);
@@ -220,7 +237,7 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
         const emptyPool: AddressPool = { name: "", prefix: "", allocation_prefix: "", gateway: "", dns: [] };
         const value: AddressPool = poolIndex === null ? emptyPool : { ...(networkEditor?.value.address_pools[poolIndex] ?? emptyPool) };
         setPoolIssue("");
-        setPoolEditor({ poolIndex, value });
+        setPoolEditor({ poolIndex, value, dnsText: value.dns.join(", ") });
     };
     const removePool = (poolIndex: number) => setNetworkEditor((current) => current ? { ...current, value: { ...current.value, address_pools: current.value.address_pools.filter((_, index) => index !== poolIndex) } } : current);
     const openTrunkEditor = () => {
@@ -307,6 +324,14 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
                         <ResourceTargetSelect label="Resource pools" options={inventory?.pools ?? []} selected={policy.resource_pools} onChange={(resource_pools) => setPolicy((current) => ({ ...current, resource_pools }))} />
                         <ResourceTargetSelect label="Storages" options={inventory?.storages ?? []} selected={policy.storages} onChange={(storages) => setPolicy((current) => ({ ...current, storages }))} />
                     </div>
+                    <div className="router-policy-fields">
+                        <h4>Managed network router</h4>
+                        <div className="policy-fields">
+                            <label>Ready source VM<select value={policy.managed_network_router.template_alias} onChange={(event) => changeManagedNetworkRouter("template_alias", event.target.value)}><option value="">Select a ready source VM</option>{policy.managed_network_router.template_alias && !routerTemplateAliases.includes(policy.managed_network_router.template_alias) && <option value={policy.managed_network_router.template_alias}>{policy.managed_network_router.template_alias} · unavailable</option>}{routerTemplateAliases.map((alias) => <option key={alias} value={alias}>{alias}</option>)}</select></label>
+                            <label>Resource pool<select value={policy.managed_network_router.pool} onChange={(event) => changeManagedNetworkRouter("pool", event.target.value)}><option value="">Select pool</option>{policy.managed_network_router.pool && !policy.resource_pools.includes(policy.managed_network_router.pool) && <option value={policy.managed_network_router.pool}>{policy.managed_network_router.pool} · unavailable</option>}{policy.resource_pools.map((pool) => <option key={pool} value={pool}>{pool}</option>)}</select></label>
+                            <label>Storage<select value={policy.managed_network_router.storage} onChange={(event) => changeManagedNetworkRouter("storage", event.target.value)}><option value="">Select storage</option>{policy.managed_network_router.storage && !policy.storages.includes(policy.managed_network_router.storage) && <option value={policy.managed_network_router.storage}>{policy.managed_network_router.storage} · unavailable</option>}{policy.storages.map((storage) => <option key={storage} value={storage}>{storage}</option>)}</select></label>
+                        </div>
+                    </div>
                 </section>
             </div>}
             {section === "networks" && networkView === "networks" && <section id="network-settings-panel" className="network-admin-tabpanel" role="tabpanel" aria-labelledby="network-settings-tab">
@@ -372,7 +397,7 @@ export function ProxmoxResourcePolicy({ request, section, onError, onNotice }: P
                 <tr><th scope="row">Network prefix</th><td><input placeholder="10.0.0.0/8" value={poolEditor.value.prefix} onChange={(event) => setPoolEditor({ ...poolEditor, value: { ...poolEditor.value, prefix: event.target.value } })} /></td></tr>
                 <tr><th scope="row">Allocation subnet</th><td><input placeholder="Same as network prefix" value={poolEditor.value.allocation_prefix} onChange={(event) => setPoolEditor({ ...poolEditor, value: { ...poolEditor.value, allocation_prefix: event.target.value } })} /></td></tr>
                 <tr><th scope="row">Gateway</th><td><input value={poolEditor.value.gateway} onChange={(event) => setPoolEditor({ ...poolEditor, value: { ...poolEditor.value, gateway: event.target.value } })} /></td></tr>
-                <tr><th scope="row">DNS</th><td><input placeholder="Comma-separated addresses" value={poolEditor.value.dns.join(", ")} onChange={(event) => setPoolEditor({ ...poolEditor, value: { ...poolEditor.value, dns: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) } })} /></td></tr>
+                <tr><th scope="row">DNS</th><td><input placeholder="Separate addresses with commas or spaces" value={poolEditor.dnsText} onChange={(event) => setPoolEditor({ ...poolEditor, dnsText: event.target.value })} /></td></tr>
             </tbody></table>{poolIssue && <p className="policy-warning">{poolIssue}</p>}<footer><button className="secondary-action" type="button" onClick={() => setPoolEditor(null)}>Cancel</button><button className="primary-action" type="button" onClick={savePool}>Save pool</button></footer></div></section></div>}
             {trunkEditor && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTrunkEditor(null); }}><section className="pool-editor-modal trunk-editor-modal" role="dialog" aria-modal="true" aria-labelledby="trunk-editor-title"><header><h3 id="trunk-editor-title">Add VLAN trunk</h3><button className="icon-action" type="button" aria-label="Close" onClick={() => setTrunkEditor(null)}><X size={17} /></button></header><div><table className="policy-config-table"><tbody>
                 <tr><th scope="row">Proxmox node</th><td><select autoFocus value={trunkEditor.node} onChange={(event) => {

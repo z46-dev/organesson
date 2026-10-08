@@ -19,6 +19,7 @@ import (
 // resourceManagedNetwork creates and owns the complete Organesson managed-network stack.
 func resourceManagedNetwork() (resource *schema.Resource) {
 	resource = &schema.Resource{
+		Description:   "Creates a managed VNet with a hidden router using the platform-configured source template, pool, and storage.",
 		CreateContext: managedNetworkCreate,
 		ReadContext:   managedNetworkRead,
 		DeleteContext: managedNetworkDelete,
@@ -39,9 +40,6 @@ func resourceManagedNetwork() (resource *schema.Resource) {
 			"ipv6_dhcp_start":                {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "First IPv6 address offered by the router DHCPv6 service."},
 			"ipv6_dhcp_end":                  {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Last IPv6 address offered by the router DHCPv6 service."},
 			"ipv6_dns_servers":               {Type: schema.TypeSet, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "IPv6 DNS servers advertised to IPv6 clients."},
-			"router_template":                {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Ready Organesson Debian router template alias."},
-			"router_pool":                    {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Authorized Proxmox resource pool for the hidden router VM."},
-			"router_storage":                 {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Authorized Proxmox storage for the hidden router VM."},
 			"router_cpu_cores":               {Type: schema.TypeInt, Optional: true, Default: 1, ForceNew: true, ValidateFunc: validation.IntAtLeast(1), Description: "Virtual CPU cores for the hidden router VM."},
 			"router_memory_mib":              {Type: schema.TypeInt, Optional: true, Default: 2048, ForceNew: true, ValidateFunc: validation.IntAtLeast(512), Description: "Memory in MiB for the hidden router VM."},
 			"router_boot_disk_gib":           {Type: schema.TypeInt, Optional: true, Default: 16, ForceNew: true, ValidateFunc: validation.IntAtLeast(8), Description: "Boot disk size in GiB for the hidden router VM."},
@@ -195,7 +193,6 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 	var vm vmResult
 	if err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+deploymentID+"/virtual-machines", map[string]any{
 		"parent_node_id": group.Node.ID, "name": data.Get("name").(string) + "-router", "provisioning_mode": "proxmox",
-		"template": data.Get("router_template").(string), "pool": data.Get("router_pool").(string), "storage": data.Get("router_storage").(string),
 		"cpu_cores": data.Get("router_cpu_cores").(int), "memory_mib": data.Get("router_memory_mib").(int), "boot_disk_gib": data.Get("router_boot_disk_gib").(int),
 	}, &vm); err != nil {
 		_ = client.request(ctx, http.MethodDelete, "/api/v1/ownership-nodes/"+groupID, nil, nil)

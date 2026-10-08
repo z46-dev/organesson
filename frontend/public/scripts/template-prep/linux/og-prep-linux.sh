@@ -28,39 +28,89 @@ source /etc/os-release
 
 os_id="${ID:-unknown}"
 os_version="${VERSION_ID:-unknown}"
-os_major="${os_version%%.*}"
 package_manager=""
 
-case "${os_id}:${os_version}" in
-    fedora:43|fedora:44|fedora:45)
-        package_manager="dnf"
-        ;;
-    ubuntu:24.04|ubuntu:26.04)
+case "${os_id}" in
+    debian|ubuntu|linuxmint|pop)
         package_manager="apt-get"
         ;;
-    debian:12|debian:13)
-        package_manager="apt-get"
+    fedora|rhel|rocky|almalinux|centos|ol|oracle|amzn)
+        if command -v dnf >/dev/null 2>&1; then
+            package_manager="dnf"
+        elif command -v yum >/dev/null 2>&1; then
+            package_manager="yum"
+        else
+            fail "No supported dnf/yum package manager was found."
+        fi
         ;;
-    rhel:8.*|rhel:9.*|rhel:10.*|rocky:8.*|rocky:9.*|rocky:10.*|almalinux:8.*|almalinux:9.*|almalinux:10.*)
-        package_manager="dnf"
+    opensuse*|sles|sled)
+        package_manager="zypper"
         ;;
-    rhel:8|rhel:9|rhel:10|rocky:8|rocky:9|rocky:10|almalinux:8|almalinux:9|almalinux:10)
-        package_manager="dnf"
+    alpine)
+        package_manager="apk"
+        ;;
+    arch|manjaro|endeavouros)
+        package_manager="pacman"
         ;;
     *)
-        fail "Unsupported OS: ${PRETTY_NAME:-${os_id} ${os_version}}. Supported: Fedora 43-45, Ubuntu 24.04/26.04 LTS, Debian 12/13, RHEL/Rocky/AlmaLinux 8-10."
+        fail "Unsupported Linux distribution '${os_id}' (${PRETTY_NAME:-${os_version}}). Supported package families: apt, dnf/yum, zypper, apk, and pacman."
         ;;
 esac
 
-require_command systemctl
-require_command awk
-require_command cat
-require_command find
-require_command grep
-require_command install
-require_command rm
-require_command truncate
+for command_name in awk cat find grep install rm truncate; do
+    require_command "${command_name}"
+done
 require_command "${package_manager}"
+
+install_packages() {
+    case "${package_manager}" in
+        apt-get)
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get --assume-yes full-upgrade
+            apt-get --assume-yes install network-manager qemu-guest-agent
+            apt-get clean
+            ;;
+        dnf)
+            dnf --refresh --assumeyes upgrade
+            dnf --assumeyes install NetworkManager qemu-guest-agent policycoreutils
+            dnf clean all
+            ;;
+        yum)
+            yum --assumeyes update
+            yum --assumeyes install NetworkManager qemu-guest-agent policycoreutils
+            yum clean all
+            ;;
+        zypper)
+            zypper --non-interactive refresh
+            zypper --non-interactive update
+            zypper --non-interactive install NetworkManager qemu-guest-agent
+            zypper clean --all
+            ;;
+        apk)
+            apk update
+            apk upgrade
+            apk add networkmanager qemu-guest-agent qemu-guest-agent-openrc
+            ;;
+        pacman)
+            pacman --noconfirm --needed -Syu networkmanager qemu-guest-agent
+            ;;
+    esac
+}
+
+enable_service() {
+    local service_name="$1"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable --now "${service_name}.service"
+        systemctl is-active --quiet "${service_name}.service" || fail "${service_name}.service is not active."
+    elif command -v rc-update >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1; then
+        rc-update add "${service_name}" default
+        rc-service "${service_name}" start
+        rc-service "${service_name}" status >/dev/null || fail "${service_name} service is not active."
+    else
+        fail "Neither systemd nor OpenRC service management is available."
+    fi
+}
 
 configure_selinux_qemu_guest_agent() {
     local selinux_mode=""
@@ -170,25 +220,99 @@ verify_apparmor_qemu_guest_agent() {
     log "QEMU Guest Agent is unconfined by AppArmor; no AppArmor policy changes are needed."
 }
 
-if [[ "${package_manager}" == "dnf" ]]; then
-    log "Updating ${PRETTY_NAME:-${os_id} ${os_version}}."
-    dnf --refresh --assumeyes upgrade
-    dnf --assumeyes install qemu-guest-agent
-    dnf clean all
+ensure_usable_ethernet_connection() {
+    local device=""
+    local device_type=""
+    local device_state=""
+    local candidate=""
+    local attempt=0
+    local -a connected_devices=()
+    local -a available_devices=()
+
+    require_command nmcli
+    require_command ip
+    enable_service NetworkManager
+    [[ "$(nmcli -t -f RUNNING general)" == "running" ]] || fail "NetworkManager is not ready to manage the source NIC."
+
+    while IFS=: read -r device device_type device_state; do
+        [[ "${device_type}" == "ethernet" ]] || continue
+        case "${device_state}" in
+            connected)
+                connected_devices+=("${device}")
+                ;;
+            unavailable|unmanaged)
+                ;;
+            *)
+                available_devices+=("${device}")
+                ;;
+        esac
+    done < <(nmcli --terse --fields DEVICE,TYPE,STATE device status)
+
+    for candidate in "${connected_devices[@]}" "${available_devices[@]}"; do
+        [[ -n "${candidate}" ]] || continue
+        if ip -o address show dev "${candidate}" scope global | grep -qE ' inet(6)? '; then
+            log "Using active source NIC ${candidate}."
+            return
+        fi
+
+        log "Trying to activate source NIC ${candidate}."
+        if ! nmcli device connect "${candidate}"; then
+            log "Could not activate ${candidate}; checking the next Ethernet device."
+            continue
+        fi
+        for ((attempt = 0; attempt < 20; attempt++)); do
+            if ip -o address show dev "${candidate}" scope global | grep -qE ' inet(6)? '; then
+                log "Activated source NIC ${candidate}."
+                return
+            fi
+            sleep 1
+        done
+        log "${candidate} did not receive a global IP address; checking the next Ethernet device."
+    done
+
+    fail "No usable Ethernet device is connected. Reconnect a source NIC and rerun preparation; NetworkManager fallback behavior was left unchanged."
+}
+
+if command -v nmcli >/dev/null 2>&1; then
+    ensure_usable_ethernet_connection
 else
-    log "Updating ${PRETTY_NAME:-${os_id} ${os_version}}."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get --assume-yes full-upgrade
-    apt-get --assume-yes install qemu-guest-agent
-    apt-get clean
+    log "NetworkManager is not installed yet; retaining the existing network configuration while packages are updated."
 fi
 
-log "Enabling and starting QEMU Guest Agent."
-systemctl enable --now qemu-guest-agent.service
-systemctl is-active --quiet qemu-guest-agent.service || fail "QEMU Guest Agent service is not active."
+log "Updating ${PRETTY_NAME:-${os_id} ${os_version}} using ${package_manager}."
+install_packages
 
-agent_pid="$(systemctl show --property=MainPID --value qemu-guest-agent.service)"
+configure_network_manager() {
+    local config_path="/etc/NetworkManager/conf.d/20-organesson-no-auto-default.conf"
+
+    if [[ -e "${config_path}" ]]; then
+        [[ -f "${config_path}" && ! -L "${config_path}" ]] || fail "Refusing to replace a non-regular NetworkManager configuration at ${config_path}."
+        grep -Fqx '# Managed by og-prep-linux.sh.' "${config_path}" || fail "Refusing to replace an unmanaged NetworkManager configuration at ${config_path}."
+    fi
+
+    ensure_usable_ethernet_connection
+    install -d -o root -g root -m 0755 "${config_path%/*}"
+    cat > "${config_path}" <<'EOF'
+# Managed by og-prep-linux.sh.
+[main]
+no-auto-default=*
+EOF
+    chown root:root "${config_path}"
+    chmod 0644 "${config_path}"
+
+    nmcli general reload
+    log "Enabled NetworkManager for deployment NIC setup and disabled automatic fallback profiles."
+}
+
+configure_network_manager
+
+log "Enabling and starting QEMU Guest Agent."
+enable_service qemu-guest-agent
+if command -v systemctl >/dev/null 2>&1; then
+    agent_pid="$(systemctl show --property=MainPID --value qemu-guest-agent.service)"
+else
+    agent_pid="$(pidof qemu-ga | awk '{print $1}')"
+fi
 [[ "${agent_pid}" =~ ^[1-9][0-9]*$ ]] || fail "QEMU Guest Agent has no running process."
 agent_uid="$(awk '/^Uid:/ { print $3 }' "/proc/${agent_pid}/status")"
 [[ "${agent_uid}" == "0" ]] || fail "QEMU Guest Agent is not running as root (effective UID: ${agent_uid:-unknown})."
@@ -196,14 +320,16 @@ configure_selinux_qemu_guest_agent
 verify_apparmor_qemu_guest_agent
 
 log "Removing cloned machine identity."
-truncate --size 0 /etc/machine-id
+if [[ -e /etc/machine-id ]]; then
+    truncate --size 0 /etc/machine-id
+fi
 if [[ -e /var/lib/dbus/machine-id && ! -L /var/lib/dbus/machine-id ]]; then
     rm --force /var/lib/dbus/machine-id
 fi
 rm --force /etc/ssh/ssh_host_*
 rm --force /var/lib/systemd/random-seed
 
-[[ ! -s /etc/machine-id ]] || fail "Could not clear /etc/machine-id."
+[[ ! -e /etc/machine-id || ! -s /etc/machine-id ]] || fail "Could not clear /etc/machine-id."
 
 log "Preparation complete for ${PRETTY_NAME:-${os_id} ${os_version}}."
 log "Delete this script, then shut down this source VM without rebooting it before cloning."

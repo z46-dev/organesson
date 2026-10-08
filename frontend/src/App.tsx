@@ -44,7 +44,11 @@ export function App() {
         setToasts((current) => [...current.slice(-3), { id: nextToastID.current, kind, message }]);
     }, []);
     const dismissToast = useCallback((id: number) => setToasts((current) => current.filter((toast) => toast.id !== id)), []);
-    const onError = useCallback((message: string) => pushToast("error", message), [pushToast]);
+    const onError = useCallback((message: string) => {
+        if (message.trim()) {
+            pushToast("error", message);
+        }
+    }, [pushToast]);
     const onNotice = useCallback((message: string) => pushToast("success", message), [pushToast]);
 
     useEffect(() => {

@@ -40,30 +40,6 @@
     gap: 8px;
 }
 
-.connection-note {
-    display: flex;
-    align-items: flex-start;
-    gap: 9px;
-    padding: 12px 14px;
-    border: 1px solid #ead9b4;
-    border-radius: 6px;
-    background: #fffaf0;
-    color: #775a19;
-    font-size: 12px;
-    line-height: 1.5;
-}
-
-.connection-note svg {
-    flex: 0 0 auto;
-    margin-top: 1px;
-}
-
-.connection-note.is-connected {
-    border-color: #c9dfcf;
-    background: #f5fbf6;
-    color: #276443;
-}
-
 .template-form {
     display: grid;
     gap: 12px;
@@ -96,6 +72,48 @@
     border: 0;
     border-radius: 8px;
     box-shadow: 0 18px 60px rgb(13 24 17 / 22%);
+}
+
+.template-form > p {
+    margin: 0;
+    color: var(--theme-muted);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.template-form > label {
+    display: grid;
+    gap: 7px;
+    color: var(--theme-muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.template-form > label input {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    min-height: 38px;
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: 5px;
+    background: var(--theme-surface);
+    color: var(--theme-text);
+    font: inherit;
+    font-size: 13px;
+}
+
+.template-form > label input:focus {
+    border-color: var(--theme-accent);
+    outline: none;
+    box-shadow: 0 0 0 3px var(--theme-accent-soft);
+}
+
+.template-form > label small {
+    color: var(--theme-muted);
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.5;
 }
 
 .template-form-heading h3,
@@ -160,6 +178,30 @@
 .template-description,
 .template-alias-entry {
     grid-column: span 3;
+}
+
+.template-detection-note {
+    grid-column: span 3;
+    margin: -4px 0 0;
+    color: var(--theme-muted);
+    font-size: 12px;
+}
+
+.template-system-only {
+    grid-column: span 3;
+    display: flex !important;
+    align-items: center;
+    gap: 8px !important;
+}
+
+.template-system-only input {
+    width: 15px;
+    min-height: 15px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    accent-color: var(--theme-accent);
 }
 
 .template-alias-entry small {
@@ -235,6 +277,12 @@
     color: var(--theme-muted);
     font-size: 11px;
     font-weight: 650;
+}
+
+.template-status-stack {
+    display: grid;
+    justify-items: end;
+    gap: 6px;
 }
 
 .template-status.is-ready {
@@ -482,7 +530,8 @@
     }
 
     .template-description,
-    .template-alias-entry {
+    .template-alias-entry,
+    .template-detection-note {
         grid-column: span 2;
     }
 }
@@ -506,7 +555,8 @@
     }
 
     .template-description,
-    .template-alias-entry {
+    .template-alias-entry,
+    .template-detection-note {
         grid-column: auto;
     }
 

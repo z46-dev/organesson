@@ -13,4 +13,4 @@ The current focused lifecycle acceptance target and moving goalpost is [`example
 5. Sign in as the expected fake users and check visibility and power access. An unauthorized cross-student action must be denied without changing the VM.
 6. Run `tofu destroy` with the same mode flag. Confirm deployment VMs and networks are gone and the source VM/snapshots remain.
 
-For Linux source preparation, use [`og-prep-linux.sh`](../frontend/public/scripts/template-prep/linux/og-prep-linux.sh). It prepares privileged QEMU Guest Agent execution; source readiness still requires an explicit preflight and confirmation that the temporary provisioning account has been removed.
+For source preparation, register the guest OS family in Administration → Source VMs and run **Prepare source**. The workflow invokes the bundled Linux, Windows, or FreeBSD prep script through QEMU Guest Agent, removes only accounts explicitly provided by the administrator, shuts down the guest, applies its valid tag, and only then restores readiness. QGA must already be installed and reachable as the initial bootstrap channel.

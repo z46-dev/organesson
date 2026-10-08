@@ -13,6 +13,16 @@ import (
 
 // ProvisioningVMTemplate resolves a stable alias and rejects sources not explicitly marked ready.
 func (service *Service) ProvisioningVMTemplate(selector string) (template *db.VMTemplate, err error) {
+	return service.provisioningVMTemplate(selector, false)
+}
+
+// ProvisioningSystemVMTemplate resolves a ready source reserved for platform-managed provisioning.
+func (service *Service) ProvisioningSystemVMTemplate(selector string) (template *db.VMTemplate, err error) {
+	return service.provisioningVMTemplate(selector, true)
+}
+
+// provisioningVMTemplate resolves an alias and enforces its deployment-use classification.
+func (service *Service) provisioningVMTemplate(selector string, allowSystemOnly bool) (template *db.VMTemplate, err error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
 		err = fmt.Errorf("%w: a VM template alias is required", ErrInvalidInput)
@@ -40,7 +50,12 @@ func (service *Service) ProvisioningVMTemplate(selector string) (template *db.VM
 		err = ErrNotFound
 		return
 	}
-	if !template.ProvisioningReady || !template.GuestAgentRootVerified || !template.ProvisioningAccountRemoved {
+	if template.SystemOnly && !allowSystemOnly {
+		err = fmt.Errorf("%w: VM template %q is reserved for system use", ErrForbidden, selector)
+		template = nil
+		return
+	}
+	if !template.PreparationValidated || !template.ProvisioningReady || !template.GuestAgentRootVerified || !template.ProvisioningAccountRemoved {
 		err = fmt.Errorf("%w: VM template %q has not passed readiness checks", ErrInvalidInput, selector)
 		template = nil
 	}
@@ -75,7 +90,12 @@ func (service *Service) ReserveProxmoxVirtualMachine(actorID int, deploymentID i
 		err = fmt.Errorf("%w: Proxmox VM names cannot exceed 60 characters", ErrInvalidInput)
 		return
 	}
-	if template, err = service.ProvisioningVMTemplate(request.TemplateAlias); err != nil {
+	if parent.Kind == db.OwnershipNodeKindInternal {
+		template, err = service.ProvisioningSystemVMTemplate(request.TemplateAlias)
+	} else {
+		template, err = service.ProvisioningVMTemplate(request.TemplateAlias)
+	}
+	if err != nil {
 		return
 	}
 	if request.Pool == "" || request.Storage == "" {

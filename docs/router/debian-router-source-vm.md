@@ -60,7 +60,7 @@ Log in through the Proxmox console as `template-maint`. Do not reuse the source 
 
 ## 3. Install the router packages and make networking clone-safe
 
-Install NetworkManager before applying the project prep script. Organesson's current per-NIC guest configuration uses `nmcli`; a minimal Debian netinst installation may otherwise use `ifupdown` and lack NetworkManager. Configure NetworkManager not to invent a DHCP connection for a newly attached NIC. This prevents a cloned WAN or LAN interface from coming up with an accidental/default configuration; `no-auto-default=*` is the NetworkManager-supported setting for this. See the [NetworkManager configuration reference](https://networkmanager.pages.freedesktop.org/NetworkManager/NetworkManager/NetworkManager.conf.html).
+Organesson's Linux prep script installs and enables NetworkManager, which the per-NIC guest configuration uses through `nmcli`. Configure NetworkManager not to invent a DHCP connection for a newly attached NIC. This prevents a cloned WAN or LAN interface from coming up with an accidental/default configuration; `no-auto-default=*` is the NetworkManager-supported setting for this. The prep script applies this setting to a dedicated configuration file. See the [NetworkManager configuration reference](https://networkmanager.pages.freedesktop.org/NetworkManager/NetworkManager/NetworkManager.conf.html).
 
 From the Debian console:
 

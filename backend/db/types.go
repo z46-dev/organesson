@@ -154,10 +154,13 @@ type (
 		SourcePlatform             string     `gosqlite:"source_platform,notnull" json:"source_platform"`
 		SourceID                   string     `gosqlite:"source_id,unique,notnull" json:"source_id"`
 		GuestOS                    string     `gosqlite:"guest_os,notnull" json:"guest_os"`
+		GuestOSName                string     `gosqlite:"guest_os_name" json:"guest_os_name"`
 		GuestOSVersion             string     `gosqlite:"guest_os_version,notnull" json:"guest_os_version"`
 		Edition                    string     `gosqlite:"edition,notnull" json:"edition"`
 		Architecture               string     `gosqlite:"architecture,notnull" json:"architecture"`
 		ExecutionMethod            string     `gosqlite:"execution_method,notnull" json:"execution_method"`
+		SystemOnly                 bool       `gosqlite:"system_only" json:"system_only"`
+		PreparationValidated       bool       `gosqlite:"preparation_validated" json:"preparation_validated"`
 		ProvisioningReady          bool       `gosqlite:"provisioning_ready,notnull" json:"provisioning_ready"`
 		GuestAgentRootVerified     bool       `gosqlite:"guest_agent_root_verified,notnull" json:"guest_agent_root_verified"`
 		ProvisioningAccountRemoved bool       `gosqlite:"provisioning_account_removed,notnull" json:"provisioning_account_removed"`

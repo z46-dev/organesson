@@ -186,6 +186,10 @@ func (service *Service) CompleteGuestArtifactExecution(actorID int, resourceID i
 }
 
 func isSupportedArtifactLinux(guestOS string) (supported bool) {
+	if guestOS == "linux" {
+		supported = true
+		return
+	}
 	for _, family := range []string{"fedora", "ubuntu", "debian", "rhel", "rocky", "alma", "centos"} {
 		if strings.Contains(guestOS, family) {
 			supported = true

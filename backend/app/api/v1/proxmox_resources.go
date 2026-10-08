@@ -2,6 +2,7 @@ package v1
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -136,6 +137,17 @@ func saveProxmoxResources(services common.Services) (handler fiber.Handler) {
 		var validation proxmox.ResourcePolicyValidation = proxmox.ValidateResourcePolicy(policy, inventory)
 		if !validation.Valid {
 			return ctx.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": strings.Join(validation.Issues, " "), "validation": validation})
+		}
+		if policy.ManagedNetworkRouter.TemplateAlias != "" {
+			if _, err = services.Domain.ProvisioningSystemVMTemplate(policy.ManagedNetworkRouter.TemplateAlias); err != nil {
+				return ctx.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": "Managed network router template must be registered and ready."})
+			}
+		}
+		if policy.ManagedNetworkRouter.Pool != "" && !slices.Contains(policy.ResourcePools, policy.ManagedNetworkRouter.Pool) {
+			return ctx.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": "Managed network router pool must be an authorized resource pool."})
+		}
+		if policy.ManagedNetworkRouter.Storage != "" && !slices.Contains(policy.Storages, policy.ManagedNetworkRouter.Storage) {
+			return ctx.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": "Managed network router storage must be an authorized storage."})
 		}
 		var encoded []byte
 		if encoded, err = json.Marshal(policy); err != nil {

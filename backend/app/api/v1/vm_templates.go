@@ -1,6 +1,9 @@
 package v1
 
 import (
+	"strconv"
+	"strings"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/z46-dev/organesson/backend/app/api/common"
 	"github.com/z46-dev/organesson/backend/db"
@@ -18,9 +21,9 @@ type (
 		Alias string `json:"alias"`
 	}
 
-	setVMTemplateReadinessRequest struct {
-		GuestAgentRootVerified     bool `json:"guest_agent_root_verified"`
-		ProvisioningAccountRemoved bool `json:"provisioning_account_removed"`
+	prepareVMTemplateRequest struct {
+		Scripts   map[string]string `json:"scripts"`
+		Usernames []string          `json:"usernames"`
 	}
 )
 
@@ -30,11 +33,85 @@ func initVMTemplates(parent fiber.Router, services common.Services) {
 	admin.Get("/vm-templates", listVMTemplates(services))
 	admin.Post("/vm-templates", createVMTemplate(services))
 	admin.Put("/vm-templates/:template_id", updateVMTemplate(services))
+	admin.Delete("/vm-templates/:template_id", deleteVMTemplate(services))
 	admin.Post("/vm-templates/:template_id/aliases", addVMTemplateAlias(services))
 	admin.Delete("/vm-templates/:template_id/aliases/:alias_id", removeVMTemplateAlias(services))
 	admin.Post("/vm-templates/:template_id/preflight", preflightVMTemplate(services))
-	admin.Put("/vm-templates/:template_id/readiness", setVMTemplateReadiness(services))
+	admin.Post("/vm-templates/:template_id/prepare", prepareVMTemplate(services))
 	admin.Get("/proxmox/status", proxmoxConfigurationStatus(services))
+}
+
+// prepareVMTemplate runs the selected guest preparation workflow, optionally removes named accounts, and seals the PVE source.
+func prepareVMTemplate(services common.Services) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var actorID int
+		if actorID, _ = common.AccountID(ctx); actorID < 1 {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var templateID int
+		if templateID, err = common.ParseID(ctx, "template_id"); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid VM template identifier."})
+		}
+		var request prepareVMTemplateRequest
+		if err = ctx.Bind().Body(&request); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid template preparation request."})
+		}
+		if len(request.Usernames) > 32 {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "No more than 32 account names may be removed in one run."})
+		}
+		var selected *db.VMTemplate
+		if selected, err = services.Store.VMTemplates.Select(templateID); err != nil {
+			return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not load VM template."})
+		}
+		if selected == nil {
+			return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "VM template not found."})
+		}
+		if !proxmox.IsTemplatePreparationSupported(selected.GuestOS) {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Automated preparation supports Linux and Windows plus FreeBSD guests."})
+		}
+		if err = proxmox.ValidateTemplatePreparationScripts(selected.GuestOS, request.Scripts); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		if services.Proxmox == nil || !services.Proxmox.Configured() {
+			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox connection is not configured on the backend."})
+		}
+		if err = services.Domain.BeginVMTemplatePreparation(actorID, templateID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		var result proxmox.PreflightResult
+		var preparationErr error
+		result, preparationErr = services.Proxmox.PrepareTemplate(ctx, proxmox.TemplatePreparationRequest{
+			SourceID: selected.SourceID, ExpectedOS: selected.GuestOS, Scripts: request.Scripts, Usernames: request.Usernames,
+		})
+		var record *domain.VMTemplateRecord
+		if record, err = services.Domain.CompleteVMTemplatePreparation(actorID, templateID, result, preparationErr); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if preparationErr != nil {
+			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": preparationErr.Error(), "template": record, "preparation": result})
+		}
+		return ctx.JSON(fiber.Map{"template": record, "preparation": result})
+	}
+	return
+}
+
+// deleteVMTemplate removes an Organesson catalog entry without deleting its Proxmox VM.
+func deleteVMTemplate(services common.Services) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var actorID int
+		if actorID, _ = common.AccountID(ctx); actorID < 1 {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var templateID int
+		if templateID, err = common.ParseID(ctx, "template_id"); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid VM template identifier."})
+		}
+		if err = services.Domain.DeleteVMTemplate(actorID, templateID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		return ctx.SendStatus(fiber.StatusNoContent)
+	}
+	return
 }
 
 // listVMTemplates shows source metadata and aliases to platform administrators.
@@ -65,11 +142,33 @@ func createVMTemplate(services common.Services) (handler fiber.Handler) {
 		if err = ctx.Bind().Body(&request); err != nil {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid VM template request."})
 		}
+		var sourceVMID int
+		if sourceVMID, err = strconv.Atoi(strings.TrimSpace(request.SourceID)); err != nil || sourceVMID < 1 {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Proxmox VMID must be a positive integer."})
+		}
+		request.SourceID = strconv.Itoa(sourceVMID)
+		if request.GuestOS != "linux" && request.GuestOS != "windows" && request.GuestOS != "bsd" {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Select a broad guest type: Linux, Windows, or BSD."})
+		}
+		if services.Proxmox == nil || !services.Proxmox.Configured() {
+			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox connection is not configured on the backend."})
+		}
+		var detection proxmox.PreflightResult
+		if detection, err = services.Proxmox.DetectTemplate(ctx, request.SourceID, request.GuestOS); err != nil {
+			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error(), "detection": detection})
+		}
+		if !detection.Passed || detection.PowerState != "stopped" || strings.TrimSpace(detection.GuestOSName) == "" || strings.TrimSpace(detection.GuestOSVersion) == "" || detection.GuestArchitecture == "" {
+			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Source detection did not pass all checks or restore the VM to stopped state.", "detection": detection})
+		}
+		request.GuestOSName = detection.GuestOSName
+		request.GuestOSVersion = detection.GuestOSVersion
+		request.Architecture = detection.GuestArchitecture
+		request.Edition = ""
 		var record *domain.VMTemplateRecord
 		if record, err = services.Domain.CreateVMTemplate(actorID, request.VMTemplateInput, request.Aliases); err != nil {
 			return common.DomainError(ctx, err)
 		}
-		err = ctx.Status(fiber.StatusCreated).JSON(fiber.Map{"template": record})
+		err = ctx.Status(fiber.StatusCreated).JSON(fiber.Map{"template": record, "detection": detection})
 		return
 	}
 	return
@@ -191,31 +290,6 @@ func preflightVMTemplate(services common.Services) (handler fiber.Handler) {
 			return common.DomainError(ctx, err)
 		}
 		err = ctx.JSON(fiber.Map{"template": record, "preflight": result})
-		return
-	}
-	return
-}
-
-// setVMTemplateReadiness records explicit guest-agent and source-account checks.
-func setVMTemplateReadiness(services common.Services) (handler fiber.Handler) {
-	handler = func(ctx fiber.Ctx) (err error) {
-		var actorID int
-		if actorID, _ = common.AccountID(ctx); actorID < 1 {
-			return ctx.SendStatus(fiber.StatusUnauthorized)
-		}
-		var templateID int
-		if templateID, err = common.ParseID(ctx, "template_id"); err != nil {
-			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid VM template identifier."})
-		}
-		var request setVMTemplateReadinessRequest
-		if err = ctx.Bind().Body(&request); err != nil {
-			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid readiness request."})
-		}
-		var record *domain.VMTemplateRecord
-		if record, err = services.Domain.SetVMTemplateReadiness(actorID, templateID, request.GuestAgentRootVerified, request.ProvisioningAccountRemoved); err != nil {
-			return common.DomainError(ctx, err)
-		}
-		err = ctx.JSON(fiber.Map{"template": record})
 		return
 	}
 	return

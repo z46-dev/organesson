@@ -26,10 +26,12 @@ type (
 		Description     string `json:"description"`
 		SourceID        string `json:"source_id"`
 		GuestOS         string `json:"guest_os"`
+		GuestOSName     string `json:"guest_os_name"`
 		GuestOSVersion  string `json:"guest_os_version"`
 		Edition         string `json:"edition"`
 		Architecture    string `json:"architecture"`
 		ExecutionMethod string `json:"execution_method"`
+		SystemOnly      bool   `json:"system_only"`
 	}
 )
 
@@ -92,10 +94,12 @@ func (service *Service) CreateVMTemplate(actorID int, input VMTemplateInput, ali
 		SourcePlatform:    "proxmox",
 		SourceID:          strings.TrimSpace(input.SourceID),
 		GuestOS:           strings.ToLower(strings.TrimSpace(input.GuestOS)),
+		GuestOSName:       strings.TrimSpace(input.GuestOSName),
 		GuestOSVersion:    strings.TrimSpace(input.GuestOSVersion),
 		Edition:           strings.TrimSpace(input.Edition),
 		Architecture:      strings.TrimSpace(input.Architecture),
 		ExecutionMethod:   strings.TrimSpace(input.ExecutionMethod),
+		SystemOnly:        input.SystemOnly,
 		ProvisioningReady: false,
 		LastPreflightJSON: "{}",
 		CreatedAt:         now,
@@ -142,10 +146,13 @@ func (service *Service) UpdateVMTemplate(actorID int, templateID int, input VMTe
 	template.Description = strings.TrimSpace(input.Description)
 	template.SourceID = strings.TrimSpace(input.SourceID)
 	template.GuestOS = strings.ToLower(strings.TrimSpace(input.GuestOS))
+	template.GuestOSName = strings.TrimSpace(input.GuestOSName)
 	template.GuestOSVersion = strings.TrimSpace(input.GuestOSVersion)
 	template.Edition = strings.TrimSpace(input.Edition)
 	template.Architecture = strings.TrimSpace(input.Architecture)
 	template.ExecutionMethod = strings.TrimSpace(input.ExecutionMethod)
+	template.SystemOnly = input.SystemOnly
+	template.PreparationValidated = false
 	template.ProvisioningReady = false
 	template.GuestAgentRootVerified = false
 	template.ProvisioningAccountRemoved = false
@@ -159,6 +166,37 @@ func (service *Service) UpdateVMTemplate(actorID int, templateID int, input VMTe
 		return
 	}
 	err = service.writeAudit(actorID, "vm_template.update", fmt.Sprintf("vm-template:%d", template.ID), "succeeded", map[string]string{"source_id": template.SourceID})
+	return
+}
+
+// DeleteVMTemplate removes a source catalog entry and its aliases without touching Proxmox.
+func (service *Service) DeleteVMTemplate(actorID int, templateID int) (err error) {
+	if err = service.requirePlatformAdministrator(actorID); err != nil {
+		return
+	}
+	var template *db.VMTemplate
+	if template, err = service.store.VMTemplates.Select(templateID); err != nil {
+		return
+	}
+	if template == nil {
+		err = ErrNotFound
+		return
+	}
+	var aliases []*db.VMTemplateAlias
+	if aliases, err = service.store.VMTemplateAliases.SelectAll(); err != nil {
+		return
+	}
+	for _, alias := range aliases {
+		if alias.VMTemplateID == templateID {
+			if err = service.store.VMTemplateAliases.Delete(alias.ID); err != nil {
+				return
+			}
+		}
+	}
+	if err = service.store.VMTemplates.Delete(templateID); err != nil {
+		return
+	}
+	err = service.writeAudit(actorID, "vm_template.delete", fmt.Sprintf("vm-template:%d", templateID), "succeeded", map[string]string{"source_id": template.SourceID})
 	return
 }
 
@@ -264,9 +302,19 @@ func (service *Service) RecordVMTemplatePreflight(actorID int, templateID int, r
 	template.LastPreflightJSON = string(encoded)
 	var now time.Time = service.now()
 	template.LastPreflightAt = &now
+	template.PreparationValidated = false
 	template.ProvisioningReady = false
 	template.GuestAgentRootVerified = result.GuestAgentRootVerified
 	template.ProvisioningAccountRemoved = false
+	if strings.TrimSpace(result.GuestOSName) != "" {
+		template.GuestOSName = strings.TrimSpace(result.GuestOSName)
+	}
+	if strings.TrimSpace(result.GuestOSVersion) != "" {
+		template.GuestOSVersion = strings.TrimSpace(result.GuestOSVersion)
+	}
+	if result.GuestArchitecture != "" {
+		template.Architecture = result.GuestArchitecture
+	}
 	template.UpdatedAt = now
 	if err = service.store.VMTemplates.Update(template); err != nil {
 		return
@@ -282,8 +330,8 @@ func (service *Service) RecordVMTemplatePreflight(actorID int, templateID int, r
 	return
 }
 
-// SetVMTemplateReadiness records explicit operator checks after a passing Proxmox preflight.
-func (service *Service) SetVMTemplateReadiness(actorID int, templateID int, guestAgentRootVerified bool, provisioningAccountRemoved bool) (record *VMTemplateRecord, err error) {
+// BeginVMTemplatePreparation revokes prior readiness before a maintenance attempt changes the source VM.
+func (service *Service) BeginVMTemplatePreparation(actorID int, templateID int) (err error) {
 	if err = service.requirePlatformAdministrator(actorID); err != nil {
 		return
 	}
@@ -295,54 +343,82 @@ func (service *Service) SetVMTemplateReadiness(actorID int, templateID int, gues
 		err = ErrNotFound
 		return
 	}
-	var preflight proxmox.PreflightResult
-	if err = json.Unmarshal([]byte(template.LastPreflightJSON), &preflight); err != nil {
-		err = fmt.Errorf("%w: preflight record is invalid", ErrInvalidInput)
+	template.PreparationValidated = false
+	template.ProvisioningReady = false
+	template.GuestAgentRootVerified = false
+	template.ProvisioningAccountRemoved = false
+	template.UpdatedAt = service.now()
+	if err = service.store.VMTemplates.Update(template); err != nil {
 		return
 	}
-	if !preflight.Passed || template.LastPreflightAt == nil {
-		err = fmt.Errorf("%w: a passing Proxmox preflight is required first", ErrInvalidInput)
+	err = service.writeAudit(actorID, "vm_template.prepare", fmt.Sprintf("vm-template:%d", template.ID), "started", map[string]string{"source_id": template.SourceID})
+	return
+}
+
+// CompleteVMTemplatePreparation records the operation result and grants readiness only after a complete successful run.
+func (service *Service) CompleteVMTemplatePreparation(actorID int, templateID int, result proxmox.PreflightResult, preparationErr error) (record *VMTemplateRecord, err error) {
+	if err = service.requirePlatformAdministrator(actorID); err != nil {
 		return
 	}
-	if preflight.PowerState != "running" || !preflight.AgentReachable {
-		err = fmt.Errorf("%w: source VM must be running with a reachable guest agent", ErrInvalidInput)
+	var template *db.VMTemplate
+	if template, err = service.store.VMTemplates.Select(templateID); err != nil {
 		return
 	}
-	var rootCheckRequired bool
-	var rootCheckPassed bool
-	for _, check := range preflight.Checks {
-		if check.Name == "guest_agent_root_execution" {
-			rootCheckRequired = check.Required
-			rootCheckPassed = check.Passed
-			break
+	if template == nil {
+		err = ErrNotFound
+		return
+	}
+	if preparationErr != nil {
+		result.Passed = false
+	}
+	if result.CheckedAt.IsZero() {
+		result.CheckedAt = service.now().UTC()
+	}
+	var encoded []byte
+	if encoded, err = json.Marshal(result); err != nil {
+		return
+	}
+	var successfulChecks map[string]bool = make(map[string]bool, len(result.Checks))
+	for _, check := range result.Checks {
+		if check.Required {
+			successfulChecks[check.Name] = check.Passed
 		}
 	}
-	if rootCheckRequired && (!rootCheckPassed || !preflight.GuestAgentRootVerified) {
-		err = fmt.Errorf("%w: guest agent must verify Linux root-level command execution", ErrInvalidInput)
-		return
+	var succeeded bool = preparationErr == nil && result.Passed && result.IsQEMU && !result.IsProxmoxTemplate &&
+		result.AgentConfigured && result.AgentReachable && result.GuestAgentRootVerified && result.PowerState == "stopped" &&
+		strings.TrimSpace(result.GuestOSID) != "" && successfulChecks["source_exists"] && successfulChecks["qemu_guest_agent_enabled"] &&
+		successfulChecks["guest_os_matches"] && successfulChecks["guest_agent_root_execution"] &&
+		successfulChecks["preparation_script"] && successfulChecks["requested_accounts_removed"]
+	var now time.Time = service.now()
+	template.LastPreflightAt = &now
+	template.LastPreflightJSON = string(encoded)
+	template.GuestAgentRootVerified = succeeded && result.GuestAgentRootVerified
+	template.ProvisioningAccountRemoved = succeeded
+	template.PreparationValidated = succeeded
+	template.ProvisioningReady = succeeded
+	if succeeded {
+		if strings.TrimSpace(result.GuestOSName) != "" {
+			template.GuestOSName = strings.TrimSpace(result.GuestOSName)
+		}
+		if strings.TrimSpace(result.GuestOSVersion) != "" {
+			template.GuestOSVersion = strings.TrimSpace(result.GuestOSVersion)
+		}
+		if result.GuestArchitecture != "" {
+			template.Architecture = result.GuestArchitecture
+		}
 	}
-	if !rootCheckRequired && !strings.Contains(strings.ToLower(preflight.GuestOSID), "windows") {
-		err = fmt.Errorf("%w: preflight did not verify guest-agent root execution", ErrInvalidInput)
-		return
-	}
-	template.GuestAgentRootVerified = guestAgentRootVerified
-	template.ProvisioningAccountRemoved = provisioningAccountRemoved
-	template.ProvisioningReady = guestAgentRootVerified && provisioningAccountRemoved
-	template.UpdatedAt = service.now()
+	template.UpdatedAt = now
 	if err = service.store.VMTemplates.Update(template); err != nil {
 		return
 	}
 	if record, err = service.vmTemplateRecord(template); err != nil {
 		return
 	}
-	var result string = "not_ready"
-	if template.ProvisioningReady {
-		result = "ready"
+	var auditResult string = "failed"
+	if succeeded {
+		auditResult = "succeeded"
 	}
-	err = service.writeAudit(actorID, "vm_template.readiness", fmt.Sprintf("vm-template:%d", template.ID), result, map[string]bool{
-		"guest_agent_root_verified":    guestAgentRootVerified,
-		"provisioning_account_removed": provisioningAccountRemoved,
-	})
+	err = service.writeAudit(actorID, "vm_template.prepare", fmt.Sprintf("vm-template:%d", template.ID), auditResult, result)
 	return
 }
 
@@ -412,13 +488,18 @@ func validateVMTemplateInput(input VMTemplateInput) (err error) {
 		err = fmt.Errorf("%w: template name or description is invalid", ErrInvalidInput)
 		return
 	}
-	var supportedOS map[string]bool = map[string]bool{"debian": true, "fedora": true, "ubuntu": true, "rhel": true, "rocky": true, "almalinux": true, "windows": true}
+	var supportedOS map[string]bool = map[string]bool{
+		"almalinux": true, "alpine": true, "amzn": true, "arch": true, "centos": true, "debian": true, "endeavouros": true,
+		"fedora": true, "freebsd": true, "bsd": true, "linux": true, "linuxmint": true, "manjaro": true, "ol": true, "opensuse": true,
+		"opensuse-leap": true, "opensuse-tumbleweed": true, "oracle": true, "pop": true, "rhel": true, "rocky": true,
+		"sled": true, "sles": true, "ubuntu": true, "windows": true,
+	}
 	if !supportedOS[strings.ToLower(strings.TrimSpace(input.GuestOS))] {
-		err = fmt.Errorf("%w: guest OS must be debian, fedora, ubuntu, rhel, rocky, almalinux, or windows", ErrInvalidInput)
+		err = fmt.Errorf("%w: guest OS must be a supported Linux distribution or the linux, windows, or bsd family", ErrInvalidInput)
 		return
 	}
-	if strings.TrimSpace(input.GuestOSVersion) == "" || len(input.GuestOSVersion) > 64 || strings.TrimSpace(input.Edition) == "" || len(input.Edition) > 64 {
-		err = fmt.Errorf("%w: guest OS version and edition are required", ErrInvalidInput)
+	if len(input.GuestOSName) > 128 || strings.TrimSpace(input.GuestOSVersion) == "" || len(input.GuestOSVersion) > 64 || len(input.Edition) > 64 {
+		err = fmt.Errorf("%w: detected guest version or name is invalid", ErrInvalidInput)
 		return
 	}
 	if input.Architecture != "x86_64" && input.Architecture != "aarch64" {

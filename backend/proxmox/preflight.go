@@ -37,6 +37,8 @@ type (
 		PowerState             string    `json:"power_state,omitempty"`
 		GuestOSID              string    `json:"guest_os_id,omitempty"`
 		GuestOSName            string    `json:"guest_os_name,omitempty"`
+		GuestOSVersion         string    `json:"guest_os_version,omitempty"`
+		GuestArchitecture      string    `json:"guest_architecture,omitempty"`
 		AgentConfigured        bool      `json:"agent_configured"`
 		AgentReachable         bool      `json:"agent_reachable"`
 		GuestAgentRootVerified bool      `json:"guest_agent_root_verified"`
@@ -88,6 +90,16 @@ type (
 		Execute(context.Context, GuestArtifactRequest, []GuestArtifactFile) (GuestArtifactResult, error)
 	}
 
+	// TemplatePreparationDriver prepares a registered source VM without adopting it as a managed deployment resource.
+	TemplatePreparationDriver interface {
+		Prepare(context.Context, TemplatePreparationRequest) (PreflightResult, error)
+	}
+
+	// TemplateDetectionDriver inspects a source VM through QEMU Guest Agent and restores it to stopped state.
+	TemplateDetectionDriver interface {
+		Detect(context.Context, string, string) (PreflightResult, error)
+	}
+
 	// VMSnapshotDriver restricts snapshot operations to QEMU guests verified as Organesson-managed.
 	VMSnapshotDriver interface {
 		Create(context.Context, string, string, string, string, string) error
@@ -97,19 +109,21 @@ type (
 
 	// Service configures the Proxmox API driver and performs read-only checks.
 	Service struct {
-		settings                config.ProxmoxConfiguration
-		inspector               Inspector
-		vmDriver                VMDriver
-		snapshotDriver          VMSnapshotDriver
-		inventoryReader         ResourceInventoryReader
-		sdnNetworkDriver        SDNNetworkDriver
-		networkAttachmentDriver NetworkAttachmentDriver
-		guestNetworkDriver      GuestNetworkDriver
-		guestArtifactDriver     GuestArtifactDriver
-		lifecycleLock           sync.Mutex
-		routerPollingLock       sync.Mutex
-		routerPollingCache      map[string]cachedRouterPollingResult
-		alwaysConfigured        bool
+		settings                  config.ProxmoxConfiguration
+		inspector                 Inspector
+		vmDriver                  VMDriver
+		snapshotDriver            VMSnapshotDriver
+		inventoryReader           ResourceInventoryReader
+		sdnNetworkDriver          SDNNetworkDriver
+		networkAttachmentDriver   NetworkAttachmentDriver
+		guestNetworkDriver        GuestNetworkDriver
+		guestArtifactDriver       GuestArtifactDriver
+		templatePreparationDriver TemplatePreparationDriver
+		templateDetectionDriver   TemplateDetectionDriver
+		lifecycleLock             sync.Mutex
+		routerPollingLock         sync.Mutex
+		routerPollingCache        map[string]cachedRouterPollingResult
+		alwaysConfigured          bool
 	}
 )
 
@@ -124,6 +138,8 @@ func New(settings config.ProxmoxConfiguration) (service *Service) {
 	service.networkAttachmentDriver = &apiNetworkAttachmentDriver{settings: settings}
 	service.guestNetworkDriver = &apiGuestNetworkDriver{settings: settings}
 	service.guestArtifactDriver = &apiGuestArtifactDriver{settings: settings}
+	service.templatePreparationDriver = &apiTemplatePreparationDriver{settings: settings}
+	service.templateDetectionDriver = &apiTemplateDetectionDriver{settings: settings}
 	return
 }
 
@@ -181,6 +197,25 @@ func NewWithInspector(inspector Inspector) (service *Service) {
 	return
 }
 
+// NewWithTemplateCatalogDrivers injects deterministic inspectors and source-VM detection for API tests.
+func NewWithTemplateCatalogDrivers(inspector Inspector, detector TemplateDetectionDriver) (service *Service) {
+	service = &Service{inspector: inspector, templateDetectionDriver: detector, alwaysConfigured: true}
+	return
+}
+
+// NewWithArtifactAndTemplateDetectionDrivers injects artifact and source detection drivers for application tests.
+func NewWithArtifactAndTemplateDetectionDrivers(vmDriver VMDriver, inventory ResourceInventoryReader, inspector Inspector, artifactDriver GuestArtifactDriver, detector TemplateDetectionDriver) (service *Service) {
+	service = NewWithArtifactExecutionDrivers(vmDriver, inventory, inspector, artifactDriver)
+	service.templateDetectionDriver = detector
+	return
+}
+
+// NewWithTemplatePreparationDriver creates a configured preparation service for deterministic lifecycle tests.
+func NewWithTemplatePreparationDriver(driver TemplatePreparationDriver) (service *Service) {
+	service = &Service{templatePreparationDriver: driver, alwaysConfigured: true}
+	return
+}
+
 // Configured reports whether connection details and a token secret are available.
 func (service *Service) Configured() (configured bool) {
 	if service == nil {
@@ -212,6 +247,42 @@ func (service *Service) InspectTemplate(ctx context.Context, sourceID string, ex
 		return
 	}
 	result, err = service.inspector.Inspect(ctx, sourceID, strings.ToLower(strings.TrimSpace(expectedOS)))
+	return
+}
+
+// PrepareTemplate runs the OS-specific source preparation workflow and seals the ordinary source VM.
+func (service *Service) PrepareTemplate(ctx context.Context, request TemplatePreparationRequest) (result PreflightResult, err error) {
+	if service == nil || service.templatePreparationDriver == nil || !service.Configured() {
+		err = ErrNotConfigured
+		return
+	}
+	if len(request.Usernames) > 32 {
+		err = errors.New("at most 32 guest accounts may be removed in one preparation run")
+		return
+	}
+	if err = ValidateTemplatePreparationScripts(request.ExpectedOS, request.Scripts); err != nil {
+		return
+	}
+	service.lifecycleLock.Lock()
+	defer service.lifecycleLock.Unlock()
+	result, err = service.templatePreparationDriver.Prepare(ctx, request)
+	return
+}
+
+// DetectTemplate identifies a source VM's guest metadata and validates its privileged QGA path.
+func (service *Service) DetectTemplate(ctx context.Context, sourceID string, guestType string) (result PreflightResult, err error) {
+	if service == nil || service.templateDetectionDriver == nil || !service.Configured() {
+		err = ErrNotConfigured
+		return
+	}
+	guestType = strings.ToLower(strings.TrimSpace(guestType))
+	if guestType != "linux" && guestType != "windows" && guestType != "bsd" {
+		err = errors.New("guest type must be linux, windows, or bsd")
+		return
+	}
+	service.lifecycleLock.Lock()
+	defer service.lifecycleLock.Unlock()
+	result, err = service.templateDetectionDriver.Detect(ctx, sourceID, guestType)
 	return
 }
 
@@ -287,7 +358,12 @@ func (inspector *apiInspector) Inspect(ctx context.Context, sourceID string, exp
 			result.AgentReachable = true
 			result.GuestOSID = strings.ToLower(osInfo.ID)
 			result.GuestOSName = osInfo.PrettyName
-			var osMatches bool = expectedOS == "" || expectedOS == result.GuestOSID
+			result.GuestOSVersion = strings.TrimSpace(osInfo.VersionID)
+			if result.GuestOSVersion == "" {
+				result.GuestOSVersion = strings.TrimSpace(osInfo.Version)
+			}
+			result.GuestArchitecture = normalizeGuestArchitecture(osInfo.Machine)
+			var osMatches bool = expectedOS == "" || guestOSMatchesTemplate(expectedOS, result.GuestOSID)
 			result.Checks = append(result.Checks, Check{Name: "guest_agent_reachable", Passed: true, Required: true, Details: "QEMU Guest Agent returned operating-system information."})
 			result.Checks = append(result.Checks, Check{
 				Name:     "guest_os_matches",

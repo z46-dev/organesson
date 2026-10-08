@@ -42,9 +42,10 @@ func TestHTTPBoundaryReportsSetupAndRejectsUnauthenticatedMutations(t *testing.T
 	if authentication, err = localauth.New(store, ""); err != nil {
 		t.Fatalf("create authentication service: %v", err)
 	}
+	var domainService *domain.Service = domain.New(store)
 	var application *fiber.App = New(api.Services{
 		Authentication: authentication,
-		Domain:         domain.New(store),
+		Domain:         domainService,
 		Store:          store,
 	}, false, nil)
 
@@ -258,7 +259,7 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 		Authentication: authentication,
 		Domain:         domain.New(store),
 		Store:          store,
-		Proxmox:        proxmox.NewWithInspector(testProxmoxInspector{}),
+		Proxmox:        proxmox.NewWithTemplateCatalogDrivers(testProxmoxInspector{}, testTemplateDetectionDriver{}),
 	}, false, nil)
 	var jar *cookiejar.Jar
 	if jar, err = cookiejar.New(nil); err != nil {
@@ -279,16 +280,21 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 	if csrfToken, err = requestCSRFToken(t, application, jar); err != nil {
 		t.Fatalf("get deployment CSRF token: %v", err)
 	}
-	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/admin/vm-templates", `{"display_name":"Fedora Workstation","description":"Test source","source_id":"156","guest_os":"fedora","guest_os_version":"44","edition":"workstation","architecture":"x86_64","execution_method":"qemu_guest_agent","aliases":["og-template-fedora-workstation-latest"]}`, csrfToken)
+	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/admin/vm-templates", `{"display_name":"Fedora Workstation","description":"Test source","source_id":"156","guest_os":"linux","execution_method":"qemu_guest_agent","aliases":["og-template-fedora-workstation-latest"]}`, csrfToken)
 	var sourceResult struct {
 		Template struct {
 			Template struct {
-				ID int `json:"id"`
+				ID             int    `json:"id"`
+				GuestOS        string `json:"guest_os"`
+				GuestOSName    string `json:"guest_os_name"`
+				GuestOSVersion string `json:"guest_os_version"`
+				Architecture   string `json:"architecture"`
 			} `json:"template"`
 			Aliases []struct {
 				Alias string `json:"alias"`
 			} `json:"aliases"`
 		} `json:"template"`
+		Detection proxmox.PreflightResult `json:"detection"`
 	}
 	if response.StatusCode != fiber.StatusCreated {
 		var body []byte
@@ -304,6 +310,9 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 	if sourceResult.Template.Template.ID < 1 || len(sourceResult.Template.Aliases) != 1 {
 		t.Fatalf("template response is missing source record or alias: %#v", sourceResult)
 	}
+	if sourceResult.Template.Template.GuestOS != "linux" || sourceResult.Template.Template.GuestOSName != "Fedora Linux 44" || sourceResult.Template.Template.GuestOSVersion != "44" || sourceResult.Template.Template.Architecture != "x86_64" {
+		t.Fatalf("source metadata was not populated from Proxmox detection: %#v", sourceResult.Template.Template)
+	}
 	var preflightPath string = "/api/v1/admin/vm-templates/" + strconv.Itoa(sourceResult.Template.Template.ID) + "/preflight"
 	response = performRequest(t, application, jar, http.MethodPost, preflightPath, "{}", csrfToken)
 	response.Body.Close()
@@ -313,8 +322,26 @@ func TestBootstrapLoginAndAuthorizedOperations(t *testing.T) {
 	var readinessPath string = "/api/v1/admin/vm-templates/" + strconv.Itoa(sourceResult.Template.Template.ID) + "/readiness"
 	response = performRequest(t, application, jar, http.MethodPut, readinessPath, `{"guest_agent_root_verified":true,"provisioning_account_removed":true}`, csrfToken)
 	response.Body.Close()
-	if response.StatusCode != fiber.StatusOK {
-		t.Fatalf("expected readiness confirmation 200, got %d", response.StatusCode)
+	if response.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("manual readiness route should be unavailable, got %d", response.StatusCode)
+	}
+	var deleteTemplatePath string = "/api/v1/admin/vm-templates/" + strconv.Itoa(sourceResult.Template.Template.ID)
+	response = performRequest(t, application, jar, http.MethodDelete, deleteTemplatePath, "", csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("expected template catalog delete 204, got %d", response.StatusCode)
+	}
+	response = performRequest(t, application, jar, http.MethodGet, "/api/v1/admin/vm-templates", "", "")
+	var remainingTemplates struct {
+		Templates []any `json:"templates"`
+	}
+	if response.StatusCode != fiber.StatusOK || json.NewDecoder(response.Body).Decode(&remainingTemplates) != nil {
+		response.Body.Close()
+		t.Fatalf("read catalog after template deletion: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if len(remainingTemplates.Templates) != 0 {
+		t.Fatalf("deleted catalog record remains visible: %#v", remainingTemplates.Templates)
 	}
 
 	var tokenOwner *db.Account
@@ -535,10 +562,11 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 	}
 	var fakeDriver *fakeProxmoxVMDriver = &fakeProxmoxVMDriver{state: "stopped"}
 	var fakeArtifactDriver *fakeGuestArtifactDriver = &fakeGuestArtifactDriver{}
-	var proxmoxService *proxmox.Service = proxmox.NewWithArtifactExecutionDrivers(fakeDriver, fakeProxmoxInventory{}, testProxmoxInspector{}, fakeArtifactDriver)
+	var proxmoxService *proxmox.Service = proxmox.NewWithArtifactAndTemplateDetectionDrivers(fakeDriver, fakeProxmoxInventory{}, testProxmoxInspector{}, fakeArtifactDriver, testTemplateDetectionDriver{})
+	var domainService *domain.Service = domain.New(store)
 	var application *fiber.App = New(api.Services{
 		Authentication: authentication,
-		Domain:         domain.New(store),
+		Domain:         domainService,
 		Store:          store,
 		Proxmox:        proxmoxService,
 	}, false, nil)
@@ -586,7 +614,7 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 	if csrfToken, err = requestCSRFToken(t, application, jar); err != nil {
 		t.Fatalf("get admin CSRF token: %v", err)
 	}
-	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/admin/vm-templates", `{"display_name":"Fedora Server","description":"Lifecycle source","source_id":"157","guest_os":"fedora","guest_os_version":"44","edition":"server","architecture":"x86_64","execution_method":"qemu_guest_agent","aliases":["fedora-server-latest"]}`, csrfToken)
+	response = performRequest(t, application, jar, http.MethodPost, "/api/v1/admin/vm-templates", `{"display_name":"Fedora Server","description":"Lifecycle source","source_id":"157","guest_os":"linux","execution_method":"qemu_guest_agent","aliases":["fedora-server-latest"]}`, csrfToken)
 	var templateResult struct {
 		Template struct {
 			Template struct {
@@ -605,12 +633,25 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 	if response.StatusCode != fiber.StatusOK {
 		t.Fatalf("run passing source preflight: status %d", response.StatusCode)
 	}
-	response = performRequest(t, application, jar, http.MethodPut, readinessPath+"/readiness", `{"guest_agent_root_verified":true,"provisioning_account_removed":true}`, csrfToken)
-	response.Body.Close()
-	if response.StatusCode != fiber.StatusOK {
-		t.Fatalf("mark source ready: status %d", response.StatusCode)
+	var preparedSource proxmox.PreflightResult = proxmox.PreflightResult{
+		SourceID: "157", GuestOSID: "fedora", AgentConfigured: true, AgentReachable: true,
+		GuestAgentRootVerified: true, IsQEMU: true, Passed: true, PowerState: "stopped",
+		CheckedAt: time.Now(), Checks: []proxmox.Check{
+			{Name: "source_exists", Passed: true, Required: true},
+			{Name: "qemu_guest_agent_enabled", Passed: true, Required: true},
+			{Name: "guest_os_matches", Passed: true, Required: true},
+			{Name: "guest_agent_root_execution", Passed: true, Required: true},
+			{Name: "preparation_script", Passed: true, Required: true},
+			{Name: "requested_accounts_removed", Passed: true, Required: true},
+		},
 	}
-	response = performRequest(t, application, jar, http.MethodPut, "/api/v1/admin/proxmox/resources", `{"limits":{"virtual_cpus":8,"memory_mib":16384,"storage_gib":256},"resource_pools":["class-labs"],"storages":["local-lvm"],"networks":[]}`, csrfToken)
+	if err = domainService.BeginVMTemplatePreparation(admin.ID, templateResult.Template.Template.ID); err != nil {
+		t.Fatalf("begin source readiness fixture: %v", err)
+	}
+	if _, err = domainService.CompleteVMTemplatePreparation(admin.ID, templateResult.Template.Template.ID, preparedSource, nil); err != nil {
+		t.Fatalf("complete source readiness fixture: %v", err)
+	}
+	response = performRequest(t, application, jar, http.MethodPut, "/api/v1/admin/proxmox/resources", `{"limits":{"virtual_cpus":8,"memory_mib":16384,"storage_gib":256},"resource_pools":["class-labs"],"storages":["local-lvm"],"managed_network_router":{"template_alias":"fedora-server-latest","pool":"class-labs","storage":"local-lvm"},"networks":[]}`, csrfToken)
 	response.Body.Close()
 	if response.StatusCode != fiber.StatusOK {
 		t.Fatalf("validate and save resource policy: status %d", response.StatusCode)
@@ -852,6 +893,42 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 	if response.StatusCode != fiber.StatusNoContent || fakeDriver.deleteCount != 2 || fakeDriver.deletedVMIDs[len(fakeDriver.deletedVMIDs)-1] != "901" {
 		t.Fatalf("admin destroy must delete only the managed clone: status=%d deletes=%d vmids=%v", response.StatusCode, fakeDriver.deleteCount, fakeDriver.deletedVMIDs)
 	}
+	var internalGroupResponse *http.Response = performRequest(t, application, jar, http.MethodPost, "/api/v1/deployments/"+strconv.Itoa(deploymentResult.Deployment.ID)+"/logical-groups", `{"name":"router-defaults-test","internal":true}`, csrfToken)
+	var internalGroupResult struct {
+		OwnershipNode struct {
+			ID int `json:"id"`
+		} `json:"ownership_node"`
+	}
+	if internalGroupResponse.StatusCode != fiber.StatusCreated || json.NewDecoder(internalGroupResponse.Body).Decode(&internalGroupResult) != nil {
+		internalGroupResponse.Body.Close()
+		t.Fatalf("create internal router ownership group: status %d", internalGroupResponse.StatusCode)
+	}
+	internalGroupResponse.Body.Close()
+	response = performRequest(t, application, jar, http.MethodPost, createPath, `{"parent_node_id":`+strconv.Itoa(internalGroupResult.OwnershipNode.ID)+`,"name":"router-defaults-test","provisioning_mode":"proxmox","cpu_cores":1,"memory_mib":1024,"boot_disk_gib":8}`, csrfToken)
+	var internalVMResult struct {
+		Resource struct {
+			ID int `json:"id"`
+		} `json:"resource"`
+	}
+	if response.StatusCode != fiber.StatusCreated || json.NewDecoder(response.Body).Decode(&internalVMResult) != nil {
+		response.Body.Close()
+		t.Fatalf("create router VM using platform defaults: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	var lastCloneRequest proxmox.VMCloneRequest = fakeDriver.cloneRequests[len(fakeDriver.cloneRequests)-1]
+	if lastCloneRequest.TemplateAlias != "fedora-server-latest" || lastCloneRequest.Pool != "class-labs" || lastCloneRequest.Storage != "local-lvm" {
+		t.Fatalf("internal router did not use validated platform defaults: %#v", lastCloneRequest)
+	}
+	response = performRequest(t, application, jar, http.MethodDelete, "/api/v1/virtual-machines/"+strconv.Itoa(internalVMResult.Resource.ID), "", csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("delete internal router test VM: status %d", response.StatusCode)
+	}
+	response = performRequest(t, application, jar, http.MethodDelete, "/api/v1/ownership-nodes/"+strconv.Itoa(internalGroupResult.OwnershipNode.ID), "", csrfToken)
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("delete empty internal router test group: status %d", response.StatusCode)
+	}
 }
 
 type fakeProxmoxInventory struct{}
@@ -864,6 +941,7 @@ func (fakeProxmoxInventory) ReadResourceInventory(context.Context) (inventory pr
 type fakeProxmoxVMDriver struct {
 	state           string
 	cloneCount      int
+	cloneRequests   []proxmox.VMCloneRequest
 	deleteCount     int
 	failNextClone   bool
 	placementsByKey map[string]proxmox.VMPlacement
@@ -894,6 +972,7 @@ func (driver *fakeProxmoxVMDriver) Clone(_ context.Context, request proxmox.VMCl
 		return placement, nil
 	}
 	driver.cloneCount++
+	driver.cloneRequests = append(driver.cloneRequests, request)
 	var vmid string = "901"
 	if driver.cloneCount > 1 {
 		vmid = "902"
@@ -932,6 +1011,26 @@ func (driver *fakeProxmoxVMDriver) Delete(_ context.Context, _ string, vmid stri
 }
 
 type testProxmoxInspector struct{}
+
+type testTemplateDetectionDriver struct{}
+
+func (testTemplateDetectionDriver) Detect(_ context.Context, sourceID string, guestType string) (result proxmox.PreflightResult, err error) {
+	var guestOSID string = "fedora"
+	var guestOSName string = "Fedora Linux 44"
+	if guestType == "windows" {
+		guestOSID = "mswindows"
+		guestOSName = "Microsoft Windows 11 Pro"
+	} else if guestType == "bsd" {
+		guestOSID = "freebsd"
+		guestOSName = "FreeBSD 14.3-RELEASE"
+	}
+	result = proxmox.PreflightResult{
+		SourceID: sourceID, PowerState: "stopped", GuestOSID: guestOSID, GuestOSName: guestOSName,
+		GuestOSVersion: "44", GuestArchitecture: "x86_64", AgentConfigured: true, AgentReachable: true,
+		GuestAgentRootVerified: true, IsQEMU: true, Passed: true,
+	}
+	return
+}
 
 func (testProxmoxInspector) Inspect(_ context.Context, sourceID string, _ string) (result proxmox.PreflightResult, err error) {
 	result = proxmox.PreflightResult{

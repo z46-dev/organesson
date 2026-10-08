@@ -14,14 +14,22 @@ import (
 type (
 	// ResourcePolicy defines global capacity limits and the PVE resources available to Organesson.
 	ResourcePolicy struct {
-		Limits           CapacityLimits   `json:"limits"`
-		DeploymentLimits DeploymentLimits `json:"deployment_limits"`
-		VMLimits         VMLimits         `json:"vm_limits"`
-		ResourcePools    []string         `json:"resource_pools"`
-		Storages         []string         `json:"storages"`
-		VNetSourceZone   string           `json:"vnet_source_zone"`
-		Networks         []PolicyNetwork  `json:"networks"`
-		VLANTrunks       []VLANTrunk      `json:"vlan_trunks"`
+		Limits               CapacityLimits             `json:"limits"`
+		DeploymentLimits     DeploymentLimits           `json:"deployment_limits"`
+		VMLimits             VMLimits                   `json:"vm_limits"`
+		ResourcePools        []string                   `json:"resource_pools"`
+		Storages             []string                   `json:"storages"`
+		ManagedNetworkRouter ManagedNetworkRouterPolicy `json:"managed_network_router"`
+		VNetSourceZone       string                     `json:"vnet_source_zone"`
+		Networks             []PolicyNetwork            `json:"networks"`
+		VLANTrunks           []VLANTrunk                `json:"vlan_trunks"`
+	}
+
+	// ManagedNetworkRouterPolicy selects the platform-owned source and placement for hidden VNet routers.
+	ManagedNetworkRouterPolicy struct {
+		TemplateAlias string `json:"template_alias"`
+		Pool          string `json:"pool"`
+		Storage       string `json:"storage"`
 	}
 
 	// CapacityLimits uses zero to mean that Organesson does not impose that global limit.

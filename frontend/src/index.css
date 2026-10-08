@@ -482,6 +482,19 @@ button:disabled {
     font-size: 11px;
 }
 
+.router-policy-fields {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--theme-border-soft);
+}
+
+.router-policy-fields h4 {
+    margin: 0 0 10px;
+    color: var(--theme-text);
+    font-size: 12px;
+    font-weight: 650;
+}
+
 .placement-select-field {
     display: grid;
     min-width: 0;

@@ -25,9 +25,6 @@ resource "organesson_managed_network" "managed" {
   ipv6_dhcp_enabled              = each.value.ipv6_dhcp_enabled
   ipv6_dhcp_start                = try(each.value.ipv6_dhcp_start, "")
   ipv6_dhcp_end                  = try(each.value.ipv6_dhcp_end, "")
-  router_template                = "og-template-debian-router-13-latest"
-  router_pool                    = "organesson"
-  router_storage                 = "laas"
   egress_enabled                 = each.value.egress_enabled
   egress_environment_network     = each.value.egress_environment_network
   egress_address_pool_request_id = each.value.egress_address_pool_request_id

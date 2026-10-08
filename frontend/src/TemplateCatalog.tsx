@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Check, ChevronDown, CircleAlert, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, X } from "lucide-react";
 import "./template-catalog.css";
 
 type VMTemplate = {
@@ -9,9 +9,11 @@ type VMTemplate = {
     source_platform: string;
     source_id: string;
     guest_os: string;
+    guest_os_name: string;
     guest_os_version: string;
     edition: string;
     architecture: string;
+    system_only: boolean;
     execution_method: string;
     provisioning_ready: boolean;
     guest_agent_root_verified: boolean;
@@ -43,6 +45,8 @@ type PreflightResult = {
     checks: PreflightCheck[];
     guest_os_id?: string;
     guest_os_name?: string;
+    guest_os_version?: string;
+    guest_architecture?: string;
     agent_reachable?: boolean;
     guest_agent_root_verified?: boolean;
     power_state?: string;
@@ -54,9 +58,11 @@ type TemplateForm = {
     description: string;
     source_id: string;
     guest_os: string;
+    guest_os_name: string;
     guest_os_version: string;
     edition: string;
     architecture: string;
+    system_only: boolean;
 };
 
 type Props = {
@@ -69,11 +75,30 @@ const emptyForm: TemplateForm = {
     display_name: "",
     description: "",
     source_id: "",
-    guest_os: "fedora",
+    guest_os: "linux",
+    guest_os_name: "",
     guest_os_version: "",
-    edition: "server",
-    architecture: "x86_64"
+    edition: "",
+    architecture: "",
+    system_only: false
 };
+
+const guestTypes = ["linux", "windows", "bsd"];
+const knownLinuxDistributions = ["almalinux", "alpine", "amzn", "arch", "centos", "debian", "endeavouros", "fedora", "linuxmint", "manjaro", "ol", "opensuse", "opensuse-leap", "opensuse-tumbleweed", "oracle", "pop", "rhel", "rocky", "sled", "sles", "ubuntu"];
+
+function preparationFamily(template: VMTemplate | undefined) {
+    const guestOS = template?.guest_os.toLowerCase() ?? "";
+    if (guestOS === "linux" || knownLinuxDistributions.includes(guestOS)) {
+        return "linux";
+    }
+    if (guestOS === "windows" || guestOS.startsWith("windows-")) {
+        return "windows";
+    }
+    if (guestOS === "bsd" || guestOS === "freebsd") {
+        return "freebsd";
+    }
+    return "";
+}
 
 function preflightFor(template: VMTemplate): PreflightResult | null {
     try {
@@ -84,32 +109,33 @@ function preflightFor(template: VMTemplate): PreflightResult | null {
     }
 }
 
+function templateErrorMessage(error: unknown) {
+    return error instanceof Error && error.message.trim() ? error.message : "Template operation failed.";
+}
+
 export function TemplateCatalog({ request, onError, onNotice }: Props) {
     const [templates, setTemplates] = useState<VMTemplateRecord[]>([]);
     const [form, setForm] = useState<TemplateForm>(emptyForm);
     const [aliasesText, setAliasesText] = useState("");
     const [editingId, setEditingId] = useState<number | null>(null);
     const [aliasDrafts, setAliasDrafts] = useState<Record<number, string>>({});
-    const [rootVerified, setRootVerified] = useState<Record<number, boolean>>({});
-    const [accountRemoved, setAccountRemoved] = useState<Record<number, boolean>>({});
+    const [preparingTemplateId, setPreparingTemplateId] = useState<number | null>(null);
+    const [usernamesText, setUsernamesText] = useState("");
     const [proxmoxConfigured, setProxmoxConfigured] = useState(false);
-    const [insecureTLS, setInsecureTLS] = useState(false);
     const [busy, setBusy] = useState(false);
     const [formOpen, setFormOpen] = useState(false);
     const [searchText, setSearchText] = useState("");
     const [readinessFilter, setReadinessFilter] = useState<"all" | "ready" | "not_ready">("all");
     const formDialog = useRef<HTMLDialogElement>(null);
+    const prepareDialog = useRef<HTMLDialogElement>(null);
 
     const refresh = useCallback(async () => {
         const [catalog, connection] = await Promise.all([
             request<{ templates: VMTemplateRecord[] }>("/admin/vm-templates"),
-            request<{ configured: boolean; insecure_tls: boolean }>("/admin/proxmox/status")
+            request<{ configured: boolean }>("/admin/proxmox/status")
         ]);
         setTemplates(catalog.templates ?? []);
-        setRootVerified(Object.fromEntries((catalog.templates ?? []).map(({ template }) => [template.id, template.guest_agent_root_verified])));
-        setAccountRemoved(Object.fromEntries((catalog.templates ?? []).map(({ template }) => [template.id, template.provisioning_account_removed])));
         setProxmoxConfigured(connection.configured);
-        setInsecureTLS(connection.insecure_tls);
     }, [request]);
 
     useEffect(() => {
@@ -125,6 +151,15 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
         }
     }, [formOpen]);
 
+    useEffect(() => {
+        const dialog = prepareDialog.current;
+        if (preparingTemplateId !== null && dialog && !dialog.open) {
+            dialog.showModal();
+        } else if (preparingTemplateId === null && dialog?.open) {
+            dialog.close();
+        }
+    }, [preparingTemplateId]);
+
     function closeTemplateForm() {
         setFormOpen(false);
         setEditingId(null);
@@ -132,7 +167,7 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
         setAliasesText("");
     }
 
-    function changeForm(field: keyof TemplateForm, value: string) {
+    function changeForm<Field extends keyof TemplateForm>(field: Field, value: TemplateForm[Field]) {
         setForm((current) => ({ ...current, [field]: value }));
     }
 
@@ -141,7 +176,7 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
         setBusy(true);
         try {
             if (editingId === null) {
-                await request("/admin/vm-templates", "POST", {
+                const result = await request<{ detection: PreflightResult }>("/admin/vm-templates", "POST", {
                     ...form,
                     execution_method: "qemu_guest_agent",
                     aliases: aliasesText.split(",").map((alias) => alias.trim()).filter(Boolean)
@@ -149,7 +184,7 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                 setForm(emptyForm);
                 setAliasesText("");
                 setFormOpen(false);
-                onNotice("Source VM added to the catalog. It is not ready for provisioning yet.");
+                onNotice(`Source added: ${result.detection.guest_os_name} ${result.detection.guest_os_version} · ${result.detection.guest_architecture}. Prepare it before provisioning.`);
             } else {
                 await request(`/admin/vm-templates/${editingId}`, "PUT", {
                     ...form,
@@ -158,11 +193,11 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                 setEditingId(null);
                 setForm(emptyForm);
                 setFormOpen(false);
-                onNotice("Template metadata saved. Preflight and readiness checks need to be repeated.");
+                onNotice("Template metadata saved. Run preparation again before provisioning from this source.");
             }
             await refresh();
         } catch (error) {
-            onError((error as Error).message);
+            onError(templateErrorMessage(error));
         } finally {
             setBusy(false);
         }
@@ -174,10 +209,12 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
             display_name: record.template.display_name,
             description: record.template.description,
             source_id: record.template.source_id,
-            guest_os: record.template.guest_os,
+            guest_os: knownLinuxDistributions.includes(record.template.guest_os) ? "linux" : record.template.guest_os === "freebsd" ? "bsd" : record.template.guest_os,
+            guest_os_name: record.template.guest_os_name,
             guest_os_version: record.template.guest_os_version,
             edition: record.template.edition,
-            architecture: record.template.architecture
+            architecture: record.template.architecture,
+            system_only: record.template.system_only
         });
         setFormOpen(true);
     }
@@ -213,12 +250,15 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
         }
     }
 
-    async function runPreflight(templateId: number) {
+    async function deleteTemplate(template: VMTemplate) {
+        if (!window.confirm(`Remove ${template.display_name} (VMID ${template.source_id}) from the Organesson catalog? The Proxmox VM will not be deleted, but its aliases will no longer be available for provisioning.`)) {
+            return;
+        }
         setBusy(true);
         try {
-            const result = await request<{ preflight: PreflightResult }>(`/admin/vm-templates/${templateId}/preflight`, "POST", {});
+            await request(`/admin/vm-templates/${template.id}`, "DELETE");
             await refresh();
-            onNotice(result.preflight.passed ? "Source checks passed. Complete the remaining readiness check." : "Source checks found issues that need attention.");
+            onNotice("Source VM removed from the Organesson catalog.");
         } catch (error) {
             onError((error as Error).message);
         } finally {
@@ -226,30 +266,75 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
         }
     }
 
-    async function updateReadiness(templateId: number) {
+    async function runPreflight(templateId: number) {
         setBusy(true);
-        onError("");
         try {
-            await request(`/admin/vm-templates/${templateId}/readiness`, "PUT", {
-                guest_agent_root_verified: rootVerified[templateId] === true,
-                provisioning_account_removed: accountRemoved[templateId] === true
-            });
+            const result = await request<{ preflight: PreflightResult }>(`/admin/vm-templates/${templateId}/preflight`, "POST", {});
             await refresh();
-            onNotice("Template readiness saved.");
+            onNotice(result.preflight.passed ? "Source checks passed." : "Source checks found issues that need attention.");
         } catch (error) {
             onError((error as Error).message);
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    async function prepareTemplate(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        if (preparingTemplateId === null) {
+            return;
+        }
+        const template = templates.find(({ template: source }) => source.id === preparingTemplateId)?.template;
+        const family = preparationFamily(template);
+        const scripts: Record<string, string> = {};
+        setBusy(true);
+        try {
+            const loadScript = async (key: string, path: string) => {
+                const response = await fetch(path);
+                if (!response.ok) {
+                    throw new Error(`Could not load the ${key} preparation script from the frontend.`);
+                }
+                scripts[key] = await response.text();
+            };
+            if (family === "linux") {
+                await loadScript("linux", "/scripts/template-prep/linux/og-prep-linux.sh");
+            } else if (family === "windows") {
+                const detectedWindows = `${template?.guest_os_name} ${template?.guest_os_version}`.toLowerCase();
+                const windowsServer = detectedWindows.includes("server") && detectedWindows.includes("2025");
+                await Promise.all([
+                    loadScript("windows-common", "/scripts/template-prep/windows/og-prep-windows-common.ps1"),
+                    loadScript("windows-entry", windowsServer ? "/scripts/template-prep/windows/og-prep-windows-server2025.ps1" : "/scripts/template-prep/windows/og-prep-windows11.ps1")
+                ]);
+            } else if (family === "freebsd") {
+                await loadScript("freebsd", "/scripts/template-prep/freebsd/og-prep-freebsd.sh");
+            } else {
+                throw new Error("Select a supported guest OS family before preparation.");
+            }
+            const result = await request<{ template: VMTemplateRecord }>(`/admin/vm-templates/${preparingTemplateId}/prepare`, "POST", {
+                scripts,
+                usernames: usernamesText.split(/[\s,]+/).map((username) => username.trim()).filter(Boolean)
+            });
+            await refresh();
+            setPreparingTemplateId(null);
+            setUsernamesText("");
+            onNotice(result.template.template.provisioning_ready ? "Source preparation completed and template is ready." : "Source preparation completed, but the template is not ready.");
+        } catch (error) {
+            onError(templateErrorMessage(error));
         } finally {
             setBusy(false);
         }
     }
 
     const query = searchText.trim().toLowerCase();
+    const preparingTemplate = templates.find(({ template }) => template.id === preparingTemplateId)?.template;
+    const preparingFamily = preparationFamily(preparingTemplate);
     const visibleTemplates = templates.filter(({ template, aliases }) => {
         const matchesQuery = !query || [
             template.display_name,
             template.description,
             template.source_id,
             template.guest_os,
+            template.guest_os_name,
             template.guest_os_version,
             template.edition,
             template.architecture,
@@ -273,15 +358,6 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                 </div>
             </div>
 
-            <div className={`connection-note${proxmoxConfigured && !insecureTLS ? " is-connected" : ""}`}>
-                {proxmoxConfigured && !insecureTLS ? <ShieldCheck size={17} /> : <CircleAlert size={17} />}
-                <span>{!proxmoxConfigured
-                    ? "Proxmox preflight is not configured. Add the API URL, token ID, and token secret to the backend config.toml, then restart the backend."
-                    : insecureTLS
-                        ? "Warning: Proxmox TLS certificate verification is disabled. Use only for isolated testing; a server impersonator could intercept credentials."
-                        : "Proxmox read-only preflight is configured with TLS certificate verification."}</span>
-            </div>
-
             <dialog className="template-form-dialog" ref={formDialog} onClose={closeTemplateForm} onClick={(event) => {
                 if (event.target === event.currentTarget) {
                     closeTemplateForm();
@@ -294,15 +370,28 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                     </div>
                     <div className="template-fields">
                         <label>Display name<input value={form.display_name} onChange={(event) => changeForm("display_name", event.target.value)} required maxLength={128} placeholder="Fedora Workstation" /></label>
-                        <label>Proxmox VMID<input inputMode="numeric" value={form.source_id} onChange={(event) => changeForm("source_id", event.target.value)} required placeholder="156" /></label>
-                        <label>Guest OS ID<input value={form.guest_os} onChange={(event) => changeForm("guest_os", event.target.value)} required placeholder="fedora" /></label>
-                        <label>OS version<input value={form.guest_os_version} onChange={(event) => changeForm("guest_os_version", event.target.value)} required placeholder="44" /></label>
-                        <label>Edition<input value={form.edition} onChange={(event) => changeForm("edition", event.target.value)} required placeholder="workstation or server" /></label>
-                        <label>Architecture<select value={form.architecture} onChange={(event) => changeForm("architecture", event.target.value)}><option value="x86_64">x86_64</option><option value="aarch64">aarch64</option></select></label>
+                        <label>Proxmox VMID<input inputMode="numeric" value={form.source_id} onChange={(event) => changeForm("source_id", event.target.value)} required placeholder="156" disabled={editingId !== null} /></label>
+                        <label>Guest type<select value={form.guest_os} onChange={(event) => changeForm("guest_os", event.target.value)} required disabled={editingId !== null}>{guestTypes.map((guestType) => <option value={guestType} key={guestType}>{guestType === "bsd" ? "BSD (FreeBSD)" : guestType === "linux" ? "Linux" : "Windows"}</option>)}</select></label>
+                        {editingId === null && <p className="template-detection-note">Registration briefly starts the VM to detect its OS and test QEMU Guest Agent, then shuts it down.</p>}
                         <label className="template-description">Description<textarea value={form.description} onChange={(event) => changeForm("description", event.target.value)} maxLength={2048} rows={2} /></label>
+                        <label className="template-system-only"><input type="checkbox" checked={form.system_only} onChange={(event) => changeForm("system_only", event.target.checked)} /> System only — available to platform-managed resources, not deployment VM requests</label>
                         {editingId === null && <label className="template-alias-entry">Aliases<input value={aliasesText} onChange={(event) => setAliasesText(event.target.value)} required placeholder="og-template-fedora-workstation-latest, fedora-workstation" /><small>Comma-separated. Each alias must be unique.</small></label>}
                     </div>
                     <div className="template-form-actions"><button className="secondary-action" type="button" onClick={closeTemplateForm} disabled={busy}>Cancel</button><button className="primary-action" type="submit" disabled={busy}><Plus size={15} />{busy ? "Saving…" : editingId === null ? "Add source VM" : "Save metadata"}</button></div>
+                </form>
+            </dialog>
+
+            <dialog className="template-form-dialog" ref={prepareDialog} onClose={() => { setPreparingTemplateId(null); setUsernamesText(""); }} onClick={(event) => {
+                if (event.target === event.currentTarget) {
+                    setPreparingTemplateId(null);
+                    setUsernamesText("");
+                }
+            }}>
+                <form className="template-form" onSubmit={prepareTemplate}>
+                    <div className="template-form-heading"><h3>Prepare source VM</h3><button className="icon-button" type="button" aria-label="Close" disabled={busy} onClick={() => setPreparingTemplateId(null)}><X size={16} /></button></div>
+                    <p>The source will be powered on if needed, prepared through QEMU Guest Agent, then shut down. Readiness is removed before the run and restored only after every check passes.</p>
+                    <label>Accounts to remove<input value={usernamesText} onChange={(event) => setUsernamesText(event.target.value)} placeholder="administrator, temporary-user" /><small>Optional. {preparingFamily === "windows" ? "Windows local account names" : preparingFamily === "freebsd" ? "FreeBSD account names" : "Linux account names"} separated by commas or spaces. Active and system accounts are protected; account profiles and home directories are removed.</small></label>
+                    <div className="template-form-actions"><button className="secondary-action" type="button" disabled={busy} onClick={() => setPreparingTemplateId(null)}>Cancel</button><button className="primary-action" type="submit" disabled={busy || preparingTemplateId === null}><ShieldCheck size={15} />{busy ? "Preparing…" : "Run preparation"}</button></div>
                 </form>
             </dialog>
 
@@ -316,14 +405,11 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                     {visibleTemplates.map((record) => {
                         const { template } = record;
                         const preflight = preflightFor(template);
-                        const rootCheck = preflight?.checks?.find((check) => check.name === "guest_agent_root_execution");
-                        const linuxRootCheck = !template.guest_os.toLowerCase().includes("windows");
-                        const canConfirmReadiness = preflight?.passed && preflight.power_state === "running" && preflight.agent_reachable;
                         return (
                             <article className="template-card" key={template.id}>
                                 <div className="template-card-heading">
-                                    <div><p className="eyebrow">{template.guest_os} {template.guest_os_version} · {template.edition}</p><h3>{template.display_name}</h3><p className="template-source-id">VMID {template.source_id} · {template.architecture} · {record.aliases.length} aliases</p></div>
-                                    <span className={`template-status${template.provisioning_ready ? " is-ready" : ""}`}>{template.provisioning_ready ? <><Check size={13} /> Ready</> : "Not ready"}</span>
+                                    <div><p className="eyebrow">{template.guest_os_name || template.guest_os}</p><h3>{template.display_name}</h3><p className="template-source-id">VMID {template.source_id} · {template.guest_os_version} · {template.architecture} · {record.aliases.length} aliases</p></div>
+                                    <div className="template-status-stack">{template.system_only && <span className="template-status">System only</span>}<span className={`template-status${template.provisioning_ready ? " is-ready" : ""}`}>{template.provisioning_ready ? <><Check size={13} /> Ready</> : "Not ready"}</span></div>
                                 </div>
                                 <details className="template-management">
                                     <summary><span>Manage source</span><ChevronDown size={15} /></summary>
@@ -333,14 +419,9 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                                             {record.aliases.map((alias) => <span className="template-alias" key={alias.id}><code>{alias.alias}</code><button type="button" disabled={busy || record.aliases.length < 2} onClick={() => removeAlias(template.id, alias.id)} aria-label={`Remove alias ${alias.alias}`}><Trash2 size={13} /></button></span>)}
                                         </div>
                                         <div className="template-alias-add"><input aria-label={`New alias for ${template.display_name}`} value={aliasDrafts[template.id] ?? ""} onChange={(event) => setAliasDrafts((current) => ({ ...current, [template.id]: event.target.value }))} placeholder="Add another alias" /><button className="secondary-action" type="button" disabled={busy || !aliasDrafts[template.id]?.trim()} onClick={() => addAlias(template.id)}><Plus size={14} /> Add alias</button></div>
-                                        <div className="template-card-actions"><button className="secondary-action" type="button" disabled={busy} onClick={() => startEditing(record)}><Pencil size={14} /> Edit metadata</button><button className="secondary-action" type="button" disabled={busy || !proxmoxConfigured} onClick={() => runPreflight(template.id)}><RefreshCw size={14} /> Check source</button></div>
+                                        <div className="template-card-actions"><button className="secondary-action" type="button" disabled={busy} onClick={() => startEditing(record)}><Pencil size={14} /> Edit metadata</button><button className="secondary-action" type="button" disabled={busy || !proxmoxConfigured} onClick={() => runPreflight(template.id)}><RefreshCw size={14} /> Check source</button><button className="secondary-action danger-action" type="button" disabled={busy} onClick={() => deleteTemplate(template)}><Trash2 size={14} /> Delete catalog entry</button></div>
                                         {preflight && <div className="preflight-results"><div className="preflight-summary"><strong>{preflight.passed ? "Preflight passed" : "Preflight needs attention"}</strong><time dateTime={preflight.checked_at}>{new Date(preflight.checked_at).toLocaleString()}</time></div>{preflight.checks?.map((check) => <p className={`preflight-check${check.passed ? " is-passed" : ""}`} key={check.name}><span>{check.passed ? "✓" : check.required ? "!" : "·"}</span>{check.details}</p>)}</div>}
-                                        <div className="template-readiness">
-                                            {linuxRootCheck ? <p className="template-readiness-status">Linux guest-agent system-level check: {rootCheck?.passed && preflight?.guest_agent_root_verified ? "verified" : "not verified"}</p> : <label><input type="checkbox" checked={rootVerified[template.id] ?? template.guest_agent_root_verified} onChange={(event) => setRootVerified((current) => ({ ...current, [template.id]: event.target.checked }))} /> I verified the guest agent executes as SYSTEM and the guest OS matches this record.</label>}
-                                            <label><input type="checkbox" checked={accountRemoved[template.id] ?? template.provisioning_account_removed} onChange={(event) => setAccountRemoved((current) => ({ ...current, [template.id]: event.target.checked }))} /> The temporary provisioning account has been removed.</label>
-                                            {!canConfirmReadiness && <p className="template-readiness-status">Start the source VM and rerun preflight to verify guest access.</p>}
-                                            <button className="secondary-action" type="button" disabled={busy || !canConfirmReadiness || linuxRootCheck && (!rootCheck?.passed || !preflight?.guest_agent_root_verified) || !linuxRootCheck && rootVerified[template.id] !== true && !template.guest_agent_root_verified || accountRemoved[template.id] !== true && !template.provisioning_account_removed} onClick={() => updateReadiness(template.id)}><ShieldCheck size={14} /> Confirm readiness</button>
-                                        </div>
+                                        <div className="template-readiness"><p className="template-readiness-status">{template.provisioning_ready ? "Prepared source is stopped and ready to clone." : "Preparation runs the OS script, removes only accounts listed, then shuts down and validates the source."}</p><button className="secondary-action" type="button" disabled={busy || !proxmoxConfigured || !preparationFamily(template)} onClick={() => { setUsernamesText(""); setPreparingTemplateId(template.id); }}><ShieldCheck size={14} /> {template.provisioning_ready ? "Prepare / update" : "Prepare source"}</button></div>
                                     </div>
                                 </details>
                             </article>

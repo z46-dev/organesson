@@ -128,8 +128,8 @@ func TestManagedNetworkOwnsRouterLifecycle(t *testing.T) {
 		case "POST /api/v1/deployments/1/virtual-machines":
 			var payload map[string]any
 			_ = json.Unmarshal(body, &payload)
-			if payload["provisioning_mode"] != "proxmox" || payload["parent_node_id"] != float64(11) || payload["template"] != "router-template" {
-				t.Errorf("router VM create did not use the internal group and requested template: %#v", payload)
+			if payload["provisioning_mode"] != "proxmox" || payload["parent_node_id"] != float64(11) || payload["template"] != nil || payload["pool"] != nil || payload["storage"] != nil {
+				t.Errorf("router VM create should defer template and placement to platform policy: %#v", payload)
 			}
 			_, _ = response.Write([]byte(`{"resource":{"id":12,"ownership_id":11,"external_id":"9001","external_node":"tungsten","name":"demo-router","power_state":"running"}}`))
 		case "POST /api/v1/deployments/1/networks":
@@ -195,7 +195,7 @@ func TestManagedNetworkOwnsRouterLifecycle(t *testing.T) {
 	var data *schema.ResourceData = schema.TestResourceDataRaw(t, resource.Schema, map[string]interface{}{
 		"deployment_id": "1", "name": "demo", "ipv4_subnet": "192.168.44.0/24", "ipv4_gateway": "192.168.44.1",
 		"dhcp_start": "192.168.44.30", "dhcp_end": "192.168.44.40", "dns_servers": []interface{}{"192.168.44.1"},
-		"router_template": "router-template", "router_pool": "organesson", "router_storage": "laas", "egress_enabled": true,
+		"egress_enabled":             true,
 		"egress_environment_network": "cyber.lab", "egress_address_pool_request_id": "20", "egress_ipv4_method": "static",
 	})
 	if diagnostics := resource.CreateContext(context.Background(), data, client); diagnostics.HasError() {
@@ -224,7 +224,7 @@ func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {
 	}
 	defer store.Close()
 	var authentication *localauth.Service
-	if authentication, err = localauth.New(store); err != nil {
+	if authentication, err = localauth.New(store, ""); err != nil {
 		t.Fatalf("create authentication service: %v", err)
 	}
 	var bootstrapToken string
@@ -249,7 +249,7 @@ func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {
 		accounts[setup.QualifiedName] = account
 	}
 	var apiToken *localauth.APITokenCredential
-	if apiToken, err = authentication.CreateAPIToken(administrator.ID, "provider integration test", 24*time.Hour); err != nil {
+	if apiToken, err = authentication.CreateAPIToken(administrator.ID, administrator.ID, "provider integration test", 24*time.Hour); err != nil {
 		t.Fatalf("create provider bearer token: %v", err)
 	}
 
@@ -415,7 +415,7 @@ func TestProviderProxmoxVMCreateRefreshDelete(t *testing.T) {
 	}
 	defer store.Close()
 	var authentication *localauth.Service
-	if authentication, err = localauth.New(store); err != nil {
+	if authentication, err = localauth.New(store, ""); err != nil {
 		t.Fatalf("create authentication service: %v", err)
 	}
 	var activation string
@@ -427,27 +427,35 @@ func TestProviderProxmoxVMCreateRefreshDelete(t *testing.T) {
 		t.Fatalf("activate administrator: %v", err)
 	}
 	var credential *localauth.APITokenCredential
-	if credential, err = authentication.CreateAPIToken(administrator.ID, "Proxmox provider lifecycle", 24*time.Hour); err != nil {
+	if credential, err = authentication.CreateAPIToken(administrator.ID, administrator.ID, "Proxmox provider lifecycle", 24*time.Hour); err != nil {
 		t.Fatalf("create administrator API token: %v", err)
 	}
 	var service *domain.Service = domain.New(store)
 	var template *domain.VMTemplateRecord
 	if template, err = service.CreateVMTemplate(administrator.ID, domain.VMTemplateInput{
 		DisplayName: "Fedora Server", Description: "Provider acceptance source", SourceID: "157", GuestOS: "fedora",
-		GuestOSVersion: "44", Edition: "server", Architecture: "x86_64", ExecutionMethod: "qemu_guest_agent",
+		GuestOSName: "Fedora Linux 44", GuestOSVersion: "44", Edition: "server", Architecture: "x86_64", ExecutionMethod: "qemu_guest_agent",
 	}, []string{"fedora-server-latest"}); err != nil {
 		t.Fatalf("register ready source metadata: %v", err)
 	}
-	var preflight proxmox.PreflightResult = proxmox.PreflightResult{
-		SourceID: "157", PowerState: "running", GuestOSID: "fedora", AgentReachable: true,
+	var preparationResult proxmox.PreflightResult = proxmox.PreflightResult{
+		SourceID: "157", PowerState: "stopped", GuestOSID: "fedora", GuestOSName: "Fedora Linux 44", GuestOSVersion: "44",
+		GuestArchitecture: "x86_64", AgentConfigured: true, AgentReachable: true, IsQEMU: true,
 		GuestAgentRootVerified: true, Passed: true, CheckedAt: time.Now().UTC(),
-		Checks: []proxmox.Check{{Name: "guest_agent_root_execution", Passed: true, Required: true}},
+		Checks: []proxmox.Check{
+			{Name: "source_exists", Passed: true, Required: true},
+			{Name: "qemu_guest_agent_enabled", Passed: true, Required: true},
+			{Name: "guest_os_matches", Passed: true, Required: true},
+			{Name: "guest_agent_root_execution", Passed: true, Required: true},
+			{Name: "preparation_script", Passed: true, Required: true},
+			{Name: "requested_accounts_removed", Passed: true, Required: true},
+		},
 	}
-	if _, err = service.RecordVMTemplatePreflight(administrator.ID, template.Template.ID, preflight, nil); err != nil {
-		t.Fatalf("record successful source preflight: %v", err)
+	if err = service.BeginVMTemplatePreparation(administrator.ID, template.Template.ID); err != nil {
+		t.Fatalf("begin source preparation: %v", err)
 	}
-	if _, err = service.SetVMTemplateReadiness(administrator.ID, template.Template.ID, true, true); err != nil {
-		t.Fatalf("mark source provisioning-ready: %v", err)
+	if _, err = service.CompleteVMTemplatePreparation(administrator.ID, template.Template.ID, preparationResult, nil); err != nil {
+		t.Fatalf("record prepared source: %v", err)
 	}
 	var policy proxmox.ResourcePolicy = proxmox.ResourcePolicy{
 		Limits:        proxmox.CapacityLimits{VirtualCPUs: 8, MemoryMiB: 16384, StorageGiB: 256},

@@ -824,11 +824,31 @@ func createVirtualMachine(services common.Services) (handler fiber.Handler) {
 			if !validation.Valid {
 				return ctx.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "The Proxmox resource policy no longer matches current inventory.", "validation": validation})
 			}
-			if request.Pool == "" && len(policy.ResourcePools) == 1 {
-				request.Pool = policy.ResourcePools[0]
+			var parentNode *db.OwnershipNode
+			if parentNode, err = services.Store.OwnershipNodes.Select(request.ParentNodeID); err != nil {
+				return common.DomainError(ctx, err)
 			}
-			if request.Storage == "" && len(policy.Storages) == 1 {
-				request.Storage = policy.Storages[0]
+			if parentNode == nil || parentNode.DeploymentID != deploymentID {
+				return ctx.SendStatus(fiber.StatusNotFound)
+			}
+			if err = services.Domain.Require(accountID, db.PermissionDeploymentManage, request.ParentNodeID); err != nil {
+				return common.DomainError(ctx, err)
+			}
+			if parentNode.Kind == db.OwnershipNodeKindInternal {
+				var routerPolicy proxmox.ManagedNetworkRouterPolicy = policy.ManagedNetworkRouter
+				if routerPolicy.TemplateAlias == "" || routerPolicy.Pool == "" || routerPolicy.Storage == "" {
+					return ctx.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Configure a ready template, authorized pool, and authorized storage for managed network routers in platform settings."})
+				}
+				request.Template = routerPolicy.TemplateAlias
+				request.Pool = routerPolicy.Pool
+				request.Storage = routerPolicy.Storage
+			} else {
+				if request.Pool == "" && len(policy.ResourcePools) == 1 {
+					request.Pool = policy.ResourcePools[0]
+				}
+				if request.Storage == "" && len(policy.Storages) == 1 {
+					request.Storage = policy.Storages[0]
+				}
 			}
 			var spec proxmox.VMCloneRequest = proxmox.VMCloneRequest{
 				TemplateAlias: request.Template,
@@ -856,7 +876,7 @@ func createVirtualMachine(services common.Services) (handler fiber.Handler) {
 				var placement proxmox.VMPlacement
 				if placement, err = services.Proxmox.CloneVM(ctx, proxmox.VMCloneRequest{
 					SourceVMID:    template.SourceID,
-					TemplateAlias: request.Template,
+					TemplateAlias: spec.TemplateAlias,
 					Name:          spec.Name,
 					Pool:          spec.Pool,
 					Storage:       spec.Storage,
