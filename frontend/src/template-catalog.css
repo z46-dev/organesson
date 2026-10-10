@@ -81,6 +81,40 @@
     line-height: 1.5;
 }
 
+.template-preparation-log {
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--theme-border-soft);
+    border-radius: 6px;
+    background: var(--theme-surface);
+}
+
+.template-preparation-log-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    color: var(--theme-text);
+    font-size: 12px;
+}
+
+.template-preparation-log pre {
+    box-sizing: border-box;
+    max-height: min(38dvh, 280px);
+    min-height: 88px;
+    margin: 0;
+    overflow: auto;
+    padding: 9px;
+    border-radius: 4px;
+    background: #17211c;
+    color: #e5eee8;
+    font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 .template-form > label {
     display: grid;
     gap: 7px;

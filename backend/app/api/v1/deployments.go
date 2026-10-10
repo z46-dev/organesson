@@ -58,6 +58,7 @@ type (
 
 	createNetworkAttachmentRequest struct {
 		Name                      string `json:"name"`
+		Model                     string `json:"model"`
 		EnvironmentNetwork        string `json:"environment_network"`
 		LogicalNetworkID          int    `json:"logical_network_id"`
 		AddressPoolRequestID      int    `json:"address_pool_request_id"`
@@ -125,6 +126,8 @@ func initDeployments(parent fiber.Router, services common.Services) {
 	parent.Post("/vm-snapshots/:snapshot_id/restore", common.RequireActor(services.Authentication), restoreVMSnapshot(services))
 	parent.Delete("/vm-snapshots/:snapshot_id", common.RequireActor(services.Authentication), deleteVMSnapshot(services))
 	parent.Post("/virtual-machines/:resource_id/guest-setup", common.RequireActor(services.Authentication), executeGuestArtifactHandler(services))
+	parent.Post("/virtual-machines/:resource_id/guest-reboot-wait", common.RequireActor(services.Authentication), waitForGuestRebootHandler(services))
+	parent.Post("/virtual-machines/:resource_id/guest-windows-first-boot-wait", common.RequireActor(services.Authentication), waitForWindowsFirstBootHandler(services))
 	parent.Get("/virtual-machines/:resource_id", common.RequireActor(services.Authentication), getVirtualMachine(services))
 	parent.Get("/address-pool-requests/:resource_id", common.RequireActor(services.Authentication), getAddressPoolRequestHandler(services))
 	parent.Delete("/address-pool-requests/:resource_id", common.RequireActor(services.Authentication), deleteAddressPoolRequestHandler(services))

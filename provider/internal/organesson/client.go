@@ -97,6 +97,16 @@ func (client *apiClient) requestBytes(ctx context.Context, method string, path s
 	return
 }
 
+// requestWithTimeout sends one authenticated API request with a caller-selected duration limit.
+func (client *apiClient) requestWithTimeout(ctx context.Context, method string, path string, requestBody any, result any, timeout time.Duration) (err error) {
+	var requestClient apiClient = *client
+	var httpClient http.Client = *client.client
+	httpClient.Timeout = timeout
+	requestClient.client = &httpClient
+	err = requestClient.request(ctx, method, path, requestBody, result)
+	return
+}
+
 // configuredClient validates endpoint and creates the bounded HTTP client used by provider resources.
 func configuredClient(endpoint string, token string, caCertFiles ...string) (client *apiClient, err error) {
 	var caCertFile string

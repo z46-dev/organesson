@@ -190,3 +190,57 @@ func TestVMTemplateCatalogRequiresPlatformAdministrator(t *testing.T) {
 		t.Fatalf("expected non-admin source deletion to be forbidden, got %v", err)
 	}
 }
+
+// TestWindowsTemplateReadinessRequiresFirstBootSpecialize prevents Sysprep-only Windows sources from becoming cloneable.
+func TestWindowsTemplateReadinessRequiresFirstBootSpecialize(t *testing.T) {
+	var store *db.Store
+	var err error
+	if store, err = db.Open(filepath.Join(t.TempDir(), "organesson.db"), golog.New(), false); err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+
+	var administrator *db.Account
+	if administrator, _, err = store.InitialAdministrator(); err != nil {
+		t.Fatalf("load administrator: %v", err)
+	}
+	var service *Service = New(store)
+	var record *VMTemplateRecord
+	if record, err = service.CreateVMTemplate(administrator.ID, VMTemplateInput{
+		DisplayName: "Windows Server", SourceID: "160", GuestOS: "windows", GuestOSName: "Microsoft Windows Server 2025",
+		GuestOSVersion: "2025", Edition: "server", Architecture: "x86_64", ExecutionMethod: "qemu_guest_agent",
+	}, []string{"og-template-windows-server-latest"}); err != nil {
+		t.Fatalf("create Windows source: %v", err)
+	}
+	var result proxmox.PreflightResult = proxmox.PreflightResult{
+		SourceID: "160", Node: "pve1", PowerState: "stopped", GuestOSID: "windows", AgentConfigured: true,
+		AgentReachable: true, GuestAgentRootVerified: true, IsQEMU: true, Passed: true,
+		Checks: []proxmox.Check{
+			{Name: "source_exists", Passed: true, Required: true},
+			{Name: "qemu_guest_agent_enabled", Passed: true, Required: true},
+			{Name: "guest_os_matches", Passed: true, Required: true},
+			{Name: "guest_agent_root_execution", Passed: true, Required: true},
+			{Name: "preparation_script", Passed: true, Required: true},
+			{Name: "requested_accounts_removed", Passed: true, Required: true},
+		},
+	}
+	if err = service.BeginVMTemplatePreparation(administrator.ID, record.Template.ID); err != nil {
+		t.Fatalf("begin Windows preparation: %v", err)
+	}
+	if record, err = service.CompleteVMTemplatePreparation(administrator.ID, record.Template.ID, result, nil); err != nil {
+		t.Fatalf("complete Windows preparation without first-boot check: %v", err)
+	}
+	if record.Template.ProvisioningReady {
+		t.Fatal("Windows source became ready without a successful specialize/OOBE first-boot check")
+	}
+	if err = service.BeginVMTemplatePreparation(administrator.ID, record.Template.ID); err != nil {
+		t.Fatalf("begin Windows validation retry: %v", err)
+	}
+	result.Checks = append(result.Checks, proxmox.Check{Name: "windows_first_boot_specialize", Passed: true, Required: true})
+	if record, err = service.CompleteVMTemplatePreparation(administrator.ID, record.Template.ID, result, nil); err != nil {
+		t.Fatalf("complete Windows preparation with first-boot check: %v", err)
+	}
+	if !record.Template.ProvisioningReady {
+		t.Fatal("Windows source should be ready after all required checks pass")
+	}
+}

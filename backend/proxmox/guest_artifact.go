@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,7 @@ type (
 		VMOperationKey string `json:"vm_operation_key"`
 		Entrypoint     string `json:"entrypoint"`
 		SHA256         string `json:"sha256"`
+		GuestOSFamily  string `json:"guest_os_family"`
 		Archive        []byte `json:"-"`
 	}
 
@@ -70,6 +72,11 @@ type guestAgentExecStatus struct {
 
 // waitForGuestExecExit polls QEMU Guest Agent status without relying on provider response fields that vary by PVE version.
 func waitForGuestExecExit(ctx context.Context, settings config.ProxmoxConfiguration, node string, vmid int, pid int, timeoutSeconds int) (status guestAgentExecStatus, err error) {
+	status, err = waitForGuestExecExitWithProgress(ctx, settings, node, vmid, pid, timeoutSeconds, nil)
+	return
+}
+
+func waitForGuestExecExitWithProgress(ctx context.Context, settings config.ProxmoxConfiguration, node string, vmid int, pid int, timeoutSeconds int, progress func(string)) (status guestAgentExecStatus, err error) {
 	var service *Service = &Service{settings: settings}
 	var transport *http.Transport
 	if transport, err = service.consoleTransport(); err != nil {
@@ -89,8 +96,14 @@ func waitForGuestExecExit(ctx context.Context, settings config.ProxmoxConfigurat
 	apiURL.RawQuery = query.Encode()
 	var timeout <-chan time.Time = time.After(time.Duration(timeoutSeconds) * time.Second)
 	var ticker *time.Ticker = time.NewTicker(2 * time.Second)
+	var started time.Time = time.Now()
+	var nextProgress time.Time = started.Add(15 * time.Second)
 	defer ticker.Stop()
 	for {
+		if progress != nil && time.Now().After(nextProgress) {
+			progress(fmt.Sprintf("Guest command is still running (%s elapsed).", time.Since(started).Round(5*time.Second)))
+			nextProgress = time.Now().Add(15 * time.Second)
+		}
 		var request *http.Request
 		if request, err = http.NewRequestWithContext(ctx, http.MethodGet, apiURL.String(), nil); err != nil {
 			return
@@ -101,12 +114,13 @@ func waitForGuestExecExit(ctx context.Context, settings config.ProxmoxConfigurat
 			return
 		}
 		var payload struct {
-			Data struct {
+			Data *struct {
 				Exited   int    `json:"exited"`
 				ExitCode int    `json:"exitcode"`
 				OutData  string `json:"out-data"`
 				ErrData  string `json:"err-data"`
 			} `json:"data"`
+			Message string `json:"message"`
 		}
 		if response.StatusCode != http.StatusOK {
 			response.Body.Close()
@@ -118,6 +132,10 @@ func waitForGuestExecExit(ctx context.Context, settings config.ProxmoxConfigurat
 			return
 		}
 		response.Body.Close()
+		if payload.Data == nil {
+			err = fmt.Errorf("Proxmox no longer has guest command status for pid %d: %s", pid, strings.TrimSpace(payload.Message))
+			return
+		}
 		if payload.Data.Exited != 0 {
 			status.ExitCode = payload.Data.ExitCode
 			status.OutData = payload.Data.OutData
@@ -147,7 +165,7 @@ func (executionError *GuestArtifactExitError) Error() (message string) {
 	return
 }
 
-// ExecuteGuestArtifact validates, delivers, and runs an artifact on a managed Linux VM.
+// ExecuteGuestArtifact validates, delivers, and runs an artifact on a managed Linux, Windows, or BSD VM.
 func (service *Service) ExecuteGuestArtifact(ctx context.Context, request GuestArtifactRequest) (result GuestArtifactResult, err error) {
 	if service == nil || service.guestArtifactDriver == nil || !service.Configured() {
 		err = ErrNotConfigured
@@ -157,9 +175,37 @@ func (service *Service) ExecuteGuestArtifact(ctx context.Context, request GuestA
 	if files, err = validateGuestArtifact(request); err != nil {
 		return
 	}
-	service.lifecycleLock.Lock()
-	defer service.lifecycleLock.Unlock()
+	var unlock func() = service.lockGuestOperation(request.Node, request.VMID)
+	defer unlock()
 	result, err = service.guestArtifactDriver.Execute(ctx, request, files)
+	return
+}
+
+// RestartGuestAfterSetup asks Proxmox to reboot a managed guest and waits for QEMU Guest Agent readiness.
+func (service *Service) RestartGuestAfterSetup(ctx context.Context, request GuestArtifactRequest, timeout time.Duration) (err error) {
+	if service == nil || service.guestArtifactDriver == nil || !service.Configured() {
+		err = ErrNotConfigured
+		return
+	}
+	var unlock func() = service.lockGuestOperation(request.Node, request.VMID)
+	defer unlock()
+	err = service.guestArtifactDriver.RestartAndWait(ctx, request, timeout)
+	return
+}
+
+// WaitForWindowsFirstBoot waits outside the guest process for unattended Windows setup to finish.
+func (service *Service) WaitForWindowsFirstBoot(ctx context.Context, request GuestArtifactRequest) (err error) {
+	if service == nil || service.guestArtifactDriver == nil || !service.Configured() {
+		err = ErrNotConfigured
+		return
+	}
+	if request.GuestOSFamily != "windows" {
+		err = errors.New("first-boot readiness is supported for Windows guests only")
+		return
+	}
+	var unlock func() = service.lockGuestOperation(request.Node, request.VMID)
+	defer unlock()
+	err = service.guestArtifactDriver.WaitWindowsFirstBoot(ctx, request)
 	return
 }
 
@@ -173,6 +219,10 @@ func ValidateGuestArtifactArchive(request GuestArtifactRequest) (err error) {
 func validateGuestArtifact(request GuestArtifactRequest) (files []GuestArtifactFile, err error) {
 	if request.Node == "" || request.VMID == "" || request.VMOperationKey == "" {
 		err = errors.New("artifact execution requires a managed Proxmox VM identity")
+		return
+	}
+	if request.GuestOSFamily != "linux" && request.GuestOSFamily != "windows" && request.GuestOSFamily != "bsd" {
+		err = errors.New("artifact execution requires a supported Linux, Windows, or BSD guest family")
 		return
 	}
 	if len(request.Archive) == 0 || len(request.Archive) > MaxGuestArtifactArchiveBytes {
@@ -294,18 +344,43 @@ func (driver *apiGuestArtifactDriver) Execute(ctx context.Context, request Guest
 	if err = waitForGuestAgent(ctx, vm); err != nil {
 		return
 	}
+	if request.GuestOSFamily == "windows" {
+		result, err = driver.executeWindows(ctx, vm, request, files)
+		return
+	}
+	result, err = driver.executeUnix(ctx, vm, request, files)
+	return
+}
+
+// executeUnix runs a verified artifact using the guest family's native shell and base utilities.
+func (driver *apiGuestArtifactDriver) executeUnix(ctx context.Context, vm *pve.VirtualMachine, request GuestArtifactRequest, files []GuestArtifactFile) (result GuestArtifactResult, err error) {
 	var operationNonce [16]byte
 	if _, err = rand.Read(operationNonce[:]); err != nil {
 		return
 	}
+	var vmid int
+	if vmid, err = parseVMID(request.VMID); err != nil {
+		return
+	}
 	var workDirectory string = "/run/organesson-artifact-" + hex.EncodeToString(operationNonce[:])
+	var shellCommand string = "/usr/bin/bash"
+	var runnerScript string = guestArtifactScript()
+	var mkdirArguments []string = []string{"/usr/bin/mkdir", "-m", "0700", "--"}
+	var removeArguments []string = []string{"/usr/bin/rm", "-rf", "--"}
+	if request.GuestOSFamily == "bsd" {
+		workDirectory = "/tmp/organesson-artifact-" + hex.EncodeToString(operationNonce[:])
+		shellCommand = "/bin/sh"
+		runnerScript = guestBSDArtifactScript()
+		mkdirArguments = []string{"/bin/mkdir", "-m", "0700"}
+		removeArguments = []string{"/bin/rm", "-rf"}
+	}
 	var cleanup func() error = func() (cleanupErr error) {
 		var cleanupContext context.Context
 		var cancel context.CancelFunc
 		cleanupContext, cancel = context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		var cleanupPID int
-		if cleanupPID, cleanupErr = vm.AgentExec(cleanupContext, guestAgentCommand("/usr/bin/rm", "-rf", "--", workDirectory), ""); cleanupErr == nil {
+		if cleanupPID, cleanupErr = vm.AgentExec(cleanupContext, guestAgentCommand(append(removeArguments, workDirectory)...), ""); cleanupErr == nil {
 			var cleanupStatus guestAgentExecStatus
 			if cleanupStatus, cleanupErr = waitForGuestExecExit(cleanupContext, driver.settings, request.Node, vmid, cleanupPID, 10); cleanupErr == nil && cleanupStatus.ExitCode != 0 {
 				cleanupErr = errors.New("guest did not remove its temporary artifact workspace")
@@ -319,7 +394,7 @@ func (driver *apiGuestArtifactDriver) Execute(ctx context.Context, request Guest
 		}
 	}()
 	var mkdirPID int
-	if mkdirPID, err = vm.AgentExec(ctx, guestAgentCommand("/usr/bin/mkdir", "-m", "0700", "--", workDirectory), ""); err != nil {
+	if mkdirPID, err = vm.AgentExec(ctx, guestAgentCommand(append(mkdirArguments, workDirectory)...), ""); err != nil {
 		return
 	}
 	var mkdirStatus guestAgentExecStatus
@@ -342,22 +417,22 @@ func (driver *apiGuestArtifactDriver) Execute(ctx context.Context, request Guest
 				end = len(file.Contents)
 			}
 			var chunkPath string = fmt.Sprintf("%s/part-%03d-%05d", workDirectory, fileIndex, chunkIndex)
-			if err = vm.AgentFileWrite(ctx, chunkPath, file.Contents[offset:end]); err != nil {
+			if err = writeGuestArtifactFile(ctx, driver.settings, vm, vmid, request.GuestOSFamily, chunkPath, file.Contents[offset:end]); err != nil {
 				return
 			}
 			offset = end
 		}
 	}
 	var manifestPath string = workDirectory + "/manifest"
-	if err = vm.AgentFileWrite(ctx, manifestPath, []byte(manifest.String())); err != nil {
+	if err = writeGuestArtifactFile(ctx, driver.settings, vm, vmid, request.GuestOSFamily, manifestPath, []byte(manifest.String())); err != nil {
 		return
 	}
 	var scriptPath string = workDirectory + "/run.sh"
-	if err = vm.AgentFileWrite(ctx, scriptPath, []byte(guestArtifactScript())); err != nil {
+	if err = writeGuestArtifactFile(ctx, driver.settings, vm, vmid, request.GuestOSFamily, scriptPath, []byte(runnerScript)); err != nil {
 		return
 	}
 	var pid int
-	if pid, err = vm.AgentExec(ctx, guestAgentCommand("/usr/bin/bash", scriptPath, workDirectory, request.Entrypoint), ""); err != nil {
+	if pid, err = vm.AgentExec(ctx, guestAgentCommand(shellCommand, scriptPath, workDirectory, request.Entrypoint), ""); err != nil {
 		return
 	}
 	var status guestAgentExecStatus
@@ -373,8 +448,217 @@ func (driver *apiGuestArtifactDriver) Execute(ctx context.Context, request Guest
 	return
 }
 
+// writeGuestArtifactFile uses guest-exec stdin on FreeBSD, where QGA file-write can time out.
+func writeGuestArtifactFile(ctx context.Context, settings config.ProxmoxConfiguration, vm *pve.VirtualMachine, vmid int, guestOSFamily string, path string, content []byte) (err error) {
+	if guestOSFamily == "bsd" {
+		err = writeFreeBSDGuestFile(ctx, settings, vm, vmid, path, content)
+		return
+	}
+	err = vm.AgentFileWrite(ctx, path, content)
+	return
+}
+
+// RestartAndWait asks PVE to restart a managed guest and observes QEMU Guest Agent return.
+func (driver *apiGuestArtifactDriver) RestartAndWait(ctx context.Context, request GuestArtifactRequest, timeout time.Duration) (err error) {
+	var client *pve.Client
+	if client, err = newAPIClient(driver.settings); err != nil {
+		return
+	}
+	var node *pve.Node
+	if node, err = client.Node(ctx, request.Node); err != nil {
+		return
+	}
+	var vmid int
+	if vmid, err = parseVMID(request.VMID); err != nil {
+		return
+	}
+	var vm *pve.VirtualMachine
+	if vm, err = node.VirtualMachine(ctx, vmid); err != nil {
+		return
+	}
+	if err = verifyManagedVM(vm, request.VMOperationKey); err != nil {
+		return
+	}
+	if _, err = vm.Reboot(ctx); err != nil {
+		return
+	}
+	err = driver.waitForReboot(ctx, request, timeout)
+	return
+}
+
+// WaitWindowsFirstBoot retries QEMU Guest Agent checks across guest-initiated setup reboots.
+func (driver *apiGuestArtifactDriver) WaitWindowsFirstBoot(ctx context.Context, request GuestArtifactRequest) (err error) {
+	var vm *pve.VirtualMachine
+	if vm, err = (&Service{settings: driver.settings}).consoleVM(ctx, request.Node, request.VMID, request.VMOperationKey); err != nil {
+		return
+	}
+	var vmid int
+	if vmid, err = parseVMID(request.VMID); err != nil {
+		return
+	}
+	err = waitForWindowsSpecialize(ctx, driver.settings, vm, vmid, nil)
+	return
+}
+
+// waitForReboot confirms that a managed guest agent disappeared and returned after its restart.
+func (driver *apiGuestArtifactDriver) waitForReboot(ctx context.Context, request GuestArtifactRequest, timeout time.Duration) (err error) {
+	var client *pve.Client
+	if client, err = newAPIClient(driver.settings); err != nil {
+		return
+	}
+	var node *pve.Node
+	if node, err = client.Node(ctx, request.Node); err != nil {
+		return
+	}
+	var vmid int
+	if vmid, err = parseVMID(request.VMID); err != nil {
+		return
+	}
+	var vm *pve.VirtualMachine
+	if vm, err = node.VirtualMachine(ctx, vmid); err != nil {
+		return
+	}
+	if err = verifyManagedVM(vm, request.VMOperationKey); err != nil {
+		return
+	}
+	if timeout < time.Minute {
+		err = errors.New("guest reboot wait timeout must be at least one minute")
+		return
+	}
+	var deadline time.Time = time.Now().Add(timeout)
+	var ticker *time.Ticker = time.NewTicker(250 * time.Millisecond)
+	var agentDownAt time.Time
+	var agentReturnedAt time.Time
+	defer ticker.Stop()
+	for {
+		if time.Now().After(deadline) {
+			err = fmt.Errorf("guest did not complete its expected reboot within %s", timeout.Round(time.Second))
+			return
+		}
+		if pingErr := vm.AgentPing(ctx); pingErr != nil {
+			if agentDownAt.IsZero() {
+				agentDownAt = time.Now()
+			}
+			agentReturnedAt = time.Time{}
+		} else if !agentDownAt.IsZero() {
+			if time.Since(agentDownAt) >= 4*time.Second {
+				if agentReturnedAt.IsZero() {
+					agentReturnedAt = time.Now()
+				} else if time.Since(agentReturnedAt) >= 20*time.Second {
+					return
+				}
+			} else {
+				agentDownAt = time.Time{}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// executeWindows delivers validated files to a private temporary directory and runs its PowerShell entrypoint as LocalSystem.
+func (driver *apiGuestArtifactDriver) executeWindows(ctx context.Context, vm *pve.VirtualMachine, request GuestArtifactRequest, files []GuestArtifactFile) (result GuestArtifactResult, err error) {
+	var operationNonce [16]byte
+	if _, err = rand.Read(operationNonce[:]); err != nil {
+		return
+	}
+	var workDirectory string = `C:\Windows\Temp\OrganessonArtifact-` + hex.EncodeToString(operationNonce[:])
+	var cleanup func() error = func() (cleanupErr error) {
+		var cleanupContext context.Context
+		var cancel context.CancelFunc
+		cleanupContext, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_, cleanupErr = runWindowsArtifactCommand(cleanupContext, driver.settings, vm, request.Node, request.VMID, "Remove-Item -LiteralPath "+powershellSingleQuoted(workDirectory)+" -Recurse -Force -ErrorAction SilentlyContinue", 10)
+		return
+	}
+	defer func() {
+		if cleanupErr := cleanup(); err == nil {
+			err = cleanupErr
+		}
+	}()
+	if _, err = runWindowsArtifactCommand(ctx, driver.settings, vm, request.Node, request.VMID, "New-Item -ItemType Directory -Force -Path "+powershellSingleQuoted(workDirectory)+" | Out-Null", 30); err != nil {
+		return
+	}
+	var directories map[string]struct{} = make(map[string]struct{})
+	for _, file := range files {
+		for directory := path.Dir(file.Path); directory != "."; directory = path.Dir(directory) {
+			directories[directory] = struct{}{}
+		}
+	}
+	var orderedDirectories []string = make([]string, 0, len(directories))
+	for directory := range directories {
+		orderedDirectories = append(orderedDirectories, directory)
+	}
+	sort.Slice(orderedDirectories, func(left int, right int) bool {
+		if strings.Count(orderedDirectories[left], "/") == strings.Count(orderedDirectories[right], "/") {
+			return orderedDirectories[left] < orderedDirectories[right]
+		}
+		return strings.Count(orderedDirectories[left], "/") < strings.Count(orderedDirectories[right], "/")
+	})
+	for _, directory := range orderedDirectories {
+		var windowsDirectory string = workDirectory + `\` + strings.ReplaceAll(directory, "/", `\`)
+		if _, err = runWindowsArtifactCommand(ctx, driver.settings, vm, request.Node, request.VMID, "New-Item -ItemType Directory -Force -Path "+powershellSingleQuoted(windowsDirectory)+" | Out-Null", 30); err != nil {
+			return
+		}
+	}
+	for _, file := range files {
+		var target string = workDirectory + `\` + strings.ReplaceAll(file.Path, "/", `\`)
+		if err = vm.AgentFileWrite(ctx, target, file.Contents); err != nil {
+			return
+		}
+	}
+	var entrypoint string = workDirectory + `\` + strings.ReplaceAll(request.Entrypoint, "/", `\`)
+	var command string = "Set-Location -LiteralPath " + powershellSingleQuoted(workDirectory) + "; & " + powershellSingleQuoted(entrypoint) + "; if (-not $?) { exit 1 }"
+	var status guestAgentExecStatus
+	if status, err = runWindowsArtifactCommand(ctx, driver.settings, vm, request.Node, request.VMID, command, 1800); err != nil {
+		return
+	}
+	if status.ExitCode != 0 {
+		result = GuestArtifactResult{SHA256: request.SHA256, Status: "failed", ExitCode: status.ExitCode}
+		err = fmt.Errorf("Windows guest artifact exited with status %d: %s", status.ExitCode, strings.TrimSpace(status.ErrData+" "+status.OutData))
+		return
+	}
+	result = GuestArtifactResult{SHA256: request.SHA256, Status: "succeeded", ExitCode: status.ExitCode}
+	return
+}
+
+// runWindowsArtifactCommand executes one PowerShell command through QEMU Guest Agent as LocalSystem.
+func runWindowsArtifactCommand(ctx context.Context, settings config.ProxmoxConfiguration, vm *pve.VirtualMachine, node string, vmidText string, command string, timeoutSeconds int) (status guestAgentExecStatus, err error) {
+	var vmid int
+	if vmid, err = strconv.Atoi(vmidText); err != nil {
+		return
+	}
+	var pid int
+	if pid, err = vm.AgentExec(ctx, []string{windowsPowerShellPath, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command}, ""); err != nil {
+		return
+	}
+	if status, err = waitForGuestExecExit(ctx, settings, node, vmid, pid, timeoutSeconds); err != nil {
+		return
+	}
+	if status.ExitCode != 0 {
+		err = fmt.Errorf("Windows guest command failed (exit %d): %s", status.ExitCode, strings.TrimSpace(status.ErrData+" "+status.OutData))
+	}
+	return
+}
+
+// powershellSingleQuoted returns a PowerShell single-quoted string literal.
+func powershellSingleQuoted(value string) (quoted string) {
+	quoted = "'" + strings.ReplaceAll(value, "'", "''") + "'"
+	return
+}
+
 func guestArtifactScript() (script string) {
 	script = "#!/usr/bin/bash\nset -eu\nwork=$1\nentrypoint=$2\nroot=\"$work/root\"\ncleanup() { cd /; /usr/bin/rm -rf -- \"$work\"; }\ntrap cleanup EXIT\ntrap 'cleanup; exit 129' HUP\ntrap 'cleanup; exit 130' INT\ntrap 'cleanup; exit 143' TERM\n/usr/bin/install -d -m 0700 -- \"$root\"\ntab=$(printf '\\t')\nwhile IFS=\"$tab\" read -r index mode expected_digest relative; do\n    [ -n \"$index\" ] || continue\n    target=\"$root/$relative\"\n    case \"$target\" in \"$root\"/*) ;; *) echo 'unsafe artifact path' >&2; exit 1 ;; esac\n    /usr/bin/install -d -m 0755 -- \"$(/usr/bin/dirname -- \"$target\")\"\n    : > \"$target\"\n    for part in \"$work\"/part-\"$index\"-*; do\n        [ -f \"$part\" ] || continue\n        /usr/bin/cat -- \"$part\" >> \"$target\"\n    done\n    actual_digest=$(/usr/bin/sha256sum -- \"$target\")\n    actual_digest=${actual_digest%% *}\n    [ \"$actual_digest\" = \"$expected_digest\" ] || { echo 'artifact file integrity check failed' >&2; exit 1; }\n    /usr/bin/chmod \"$mode\" -- \"$target\"\ndone < \"$work/manifest\"\ncd \"$root\"\n/usr/bin/bash \"$root/$entrypoint\"\n"
+	return
+}
+
+// guestBSDArtifactScript installs verified package files with FreeBSD base-system tools.
+func guestBSDArtifactScript() (script string) {
+	script = "#!/bin/sh\nset -eu\nwork=$1\nentrypoint=$2\nroot=\"$work/root\"\ncleanup() { cd /; /bin/rm -rf \"$work\"; }\ntrap cleanup EXIT\ntrap 'cleanup; exit 129' HUP\ntrap 'cleanup; exit 130' INT\ntrap 'cleanup; exit 143' TERM\n/usr/bin/install -d -m 0700 \"$root\"\ntab=$(printf '\\t')\nwhile IFS=\"$tab\" read -r index mode expected_digest relative; do\n    [ -n \"$index\" ] || continue\n    target=\"$root/$relative\"\n    case \"$target\" in \"$root\"/*) ;; *) echo 'unsafe artifact path' >&2; exit 1 ;; esac\n    /usr/bin/install -d -m 0755 \"$(/usr/bin/dirname \"$target\")\"\n    : > \"$target\"\n    for part in \"$work\"/part-\"$index\"-*; do\n        [ -f \"$part\" ] || continue\n        /bin/cat \"$part\" >> \"$target\"\n    done\n    actual_digest=$(/sbin/sha256 -q \"$target\")\n    [ \"$actual_digest\" = \"$expected_digest\" ] || { echo 'artifact file integrity check failed' >&2; exit 1; }\n    /bin/chmod \"$mode\" \"$target\"\ndone < \"$work/manifest\"\ncd \"$root\"\n/bin/sh \"$root/$entrypoint\"\n"
 	return
 }
 

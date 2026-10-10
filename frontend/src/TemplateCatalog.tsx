@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Check, ChevronDown, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, Copy, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, X } from "lucide-react";
 import "./template-catalog.css";
 
 type VMTemplate = {
@@ -121,6 +121,9 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
     const [aliasDrafts, setAliasDrafts] = useState<Record<number, string>>({});
     const [preparingTemplateId, setPreparingTemplateId] = useState<number | null>(null);
     const [usernamesText, setUsernamesText] = useState("");
+    const [preparationProgressID, setPreparationProgressID] = useState("");
+    const [preparationLog, setPreparationLog] = useState<string[]>([]);
+    const [preparationComplete, setPreparationComplete] = useState(false);
     const [proxmoxConfigured, setProxmoxConfigured] = useState(false);
     const [busy, setBusy] = useState(false);
     const [formOpen, setFormOpen] = useState(false);
@@ -287,10 +290,14 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
         const template = templates.find(({ template: source }) => source.id === preparingTemplateId)?.template;
         const family = preparationFamily(template);
         const scripts: Record<string, string> = {};
+        const progressID = crypto.randomUUID();
+        setPreparationProgressID(progressID);
+        setPreparationLog(["Loading the guest preparation script…"]);
+        setPreparationComplete(false);
         setBusy(true);
         try {
             const loadScript = async (key: string, path: string) => {
-                const response = await fetch(path);
+                const response = await fetch(path, { cache: "no-store" });
                 if (!response.ok) {
                     throw new Error(`Could not load the ${key} preparation script from the frontend.`);
                 }
@@ -299,29 +306,67 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
             if (family === "linux") {
                 await loadScript("linux", "/scripts/template-prep/linux/og-prep-linux.sh");
             } else if (family === "windows") {
-                const detectedWindows = `${template?.guest_os_name} ${template?.guest_os_version}`.toLowerCase();
-                const windowsServer = detectedWindows.includes("server") && detectedWindows.includes("2025");
-                await Promise.all([
-                    loadScript("windows-common", "/scripts/template-prep/windows/og-prep-windows-common.ps1"),
-                    loadScript("windows-entry", windowsServer ? "/scripts/template-prep/windows/og-prep-windows-server2025.ps1" : "/scripts/template-prep/windows/og-prep-windows11.ps1")
-                ]);
+                await loadScript("windows", "/scripts/template-prep/windows/og-prep-windows.ps1");
             } else if (family === "freebsd") {
                 await loadScript("freebsd", "/scripts/template-prep/freebsd/og-prep-freebsd.sh");
             } else {
                 throw new Error("Select a supported guest OS family before preparation.");
             }
-            const result = await request<{ template: VMTemplateRecord }>(`/admin/vm-templates/${preparingTemplateId}/prepare`, "POST", {
+            const preparationPromise = request<{ template: VMTemplateRecord }>(`/admin/vm-templates/${preparingTemplateId}/prepare`, "POST", {
                 scripts,
-                usernames: usernamesText.split(/[\s,]+/).map((username) => username.trim()).filter(Boolean)
+                usernames: usernamesText.split(/[\s,]+/).map((username) => username.trim()).filter(Boolean),
+                progress_id: progressID
             });
+            let settled = false;
+            const resultPromise = preparationPromise.then(
+                (result) => { settled = true; return { result }; },
+                (error: unknown) => { settled = true; return { error }; }
+            );
+            while (!settled) {
+                await new Promise((resolve) => window.setTimeout(resolve, 900));
+                try {
+                    const progress = await request<{ lines: string[]; complete: boolean }>(`/admin/vm-template-preparations/${progressID}`);
+                    setPreparationLog(progress.lines ?? []);
+                    if (progress.complete) {
+                        break;
+                    }
+                } catch {
+                    // The prepare request may fail before a progress record is created.
+                }
+            }
+            const outcome = await resultPromise;
+            if ("error" in outcome) {
+                throw outcome.error;
+            }
+            const result = outcome.result;
+            try {
+                const progress = await request<{ lines: string[]; complete: boolean }>(`/admin/vm-template-preparations/${progressID}`);
+                setPreparationLog(progress.lines ?? []);
+            } catch {
+                // The operation result remains authoritative if the optional log fetch fails.
+            }
+            setPreparationComplete(true);
             await refresh();
-            setPreparingTemplateId(null);
-            setUsernamesText("");
             onNotice(result.template.template.provisioning_ready ? "Source preparation completed and template is ready." : "Source preparation completed, but the template is not ready.");
         } catch (error) {
+            try {
+                const progress = await request<{ lines: string[]; complete: boolean }>(`/admin/vm-template-preparations/${progressID}`);
+                setPreparationLog([...(progress.lines ?? []), `Request failed: ${templateErrorMessage(error)}`]);
+            } catch {
+                setPreparationLog((current) => [...current, `Request failed: ${templateErrorMessage(error)}`]);
+            }
             onError(templateErrorMessage(error));
         } finally {
             setBusy(false);
+        }
+    }
+
+    async function copyPreparationLog() {
+        try {
+            await navigator.clipboard.writeText(preparationLog.join("\n"));
+            onNotice("Preparation log copied.");
+        } catch {
+            onError("Could not copy the preparation log.");
         }
     }
 
@@ -381,8 +426,8 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                 </form>
             </dialog>
 
-            <dialog className="template-form-dialog" ref={prepareDialog} onClose={() => { setPreparingTemplateId(null); setUsernamesText(""); }} onClick={(event) => {
-                if (event.target === event.currentTarget) {
+            <dialog className="template-form-dialog" ref={prepareDialog} onClose={() => { setPreparingTemplateId(null); setUsernamesText(""); setPreparationProgressID(""); setPreparationLog([]); setPreparationComplete(false); }} onClick={(event) => {
+                if (!busy && event.target === event.currentTarget) {
                     setPreparingTemplateId(null);
                     setUsernamesText("");
                 }
@@ -390,8 +435,10 @@ export function TemplateCatalog({ request, onError, onNotice }: Props) {
                 <form className="template-form" onSubmit={prepareTemplate}>
                     <div className="template-form-heading"><h3>Prepare source VM</h3><button className="icon-button" type="button" aria-label="Close" disabled={busy} onClick={() => setPreparingTemplateId(null)}><X size={16} /></button></div>
                     <p>The source will be powered on if needed, prepared through QEMU Guest Agent, then shut down. Readiness is removed before the run and restored only after every check passes.</p>
-                    <label>Accounts to remove<input value={usernamesText} onChange={(event) => setUsernamesText(event.target.value)} placeholder="administrator, temporary-user" /><small>Optional. {preparingFamily === "windows" ? "Windows local account names" : preparingFamily === "freebsd" ? "FreeBSD account names" : "Linux account names"} separated by commas or spaces. Active and system accounts are protected; account profiles and home directories are removed.</small></label>
-                    <div className="template-form-actions"><button className="secondary-action" type="button" disabled={busy} onClick={() => setPreparingTemplateId(null)}>Cancel</button><button className="primary-action" type="submit" disabled={busy || preparingTemplateId === null}><ShieldCheck size={15} />{busy ? "Preparing…" : "Run preparation"}</button></div>
+                    {preparingFamily === "windows" && <p>Preparation creates a temporary random-password administrator only when needed to run Sysprep, then clears its automatic sign-in. A network-disconnected clone verifies OOBE completes without asking deployment users to create an account or configure networking.</p>}
+                    <label>Accounts to remove<input value={usernamesText} onChange={(event) => setUsernamesText(event.target.value)} placeholder="administrator, temporary-user" disabled={busy} /><small>Optional. {preparingFamily === "windows" ? "Windows local account names" : preparingFamily === "freebsd" ? "FreeBSD account names" : "Linux account names"} separated by commas or spaces. Active and system accounts are protected; account profiles and home directories are removed.</small></label>
+                    {preparationProgressID && <section className="template-preparation-log" aria-label="Preparation progress"><div className="template-preparation-log-heading"><strong>{preparationComplete ? "Preparation log" : "Preparing source…"}</strong><button className="secondary-action" type="button" onClick={copyPreparationLog} disabled={preparationLog.length === 0}><Copy size={13} /> Copy log</button></div><pre aria-live="polite">{preparationLog.join("\n") || "Waiting for progress…"}</pre></section>}
+                    <div className="template-form-actions"><button className="secondary-action" type="button" disabled={busy} onClick={() => setPreparingTemplateId(null)}>{preparationComplete ? "Close" : "Cancel"}</button><button className="primary-action" type="submit" disabled={busy || preparationComplete || preparingTemplateId === null}><ShieldCheck size={15} />{busy ? "Preparing…" : preparationComplete ? "Complete" : "Run preparation"}</button></div>
                 </form>
             </dialog>
 

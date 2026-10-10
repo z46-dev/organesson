@@ -3386,6 +3386,35 @@ h2 {
     gap: 12px;
 }
 
+.user-password-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.user-reset-link {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    max-width: min(480px, 100%);
+}
+
+.user-reset-link input {
+    min-width: 0;
+    width: 260px;
+    padding: 5px 7px;
+    font-size: 11px;
+}
+
+.user-reset-link a {
+    overflow: hidden;
+    color: var(--theme-accent-text);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .user-primary {
     min-width: 0;
     flex: 1;
@@ -3479,6 +3508,11 @@ h2 {
     }
 
     .admin-user-toggle {
+        width: 100%;
+        margin-left: 40px;
+    }
+
+    .user-password-actions {
         width: 100%;
         margin-left: 40px;
     }

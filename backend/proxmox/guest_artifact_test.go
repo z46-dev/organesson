@@ -24,7 +24,7 @@ func TestValidateGuestArtifactArchiveRejectsUnsafeArchives(t *testing.T) {
 	var digest [sha256.Size]byte = sha256.Sum256(validArchive)
 	var validRequest GuestArtifactRequest = GuestArtifactRequest{
 		Node: "pve1", VMID: "901", VMOperationKey: "og-test", Entrypoint: "entrypoint.sh",
-		SHA256: hex.EncodeToString(digest[:]), Archive: validArchive,
+		SHA256: hex.EncodeToString(digest[:]), GuestOSFamily: "linux", Archive: validArchive,
 	}
 	var files []GuestArtifactFile
 	var err error
@@ -35,6 +35,12 @@ func TestValidateGuestArtifactArchiveRejectsUnsafeArchives(t *testing.T) {
 	if err = ValidateGuestArtifactArchive(validRequest); err == nil {
 		t.Fatal("artifact with a mismatched digest was accepted")
 	}
+	validRequest.SHA256 = hex.EncodeToString(digest[:])
+	validRequest.GuestOSFamily = "bsd"
+	if err = ValidateGuestArtifactArchive(validRequest); err != nil {
+		t.Fatalf("valid BSD artifact rejected: %v", err)
+	}
+	validRequest.GuestOSFamily = "linux"
 	for _, testCase := range []struct {
 		name    string
 		entries []artifactTestEntry
@@ -57,6 +63,13 @@ func TestValidateGuestArtifactArchiveRejectsUnsafeArchives(t *testing.T) {
 				t.Fatal("unsafe artifact was accepted")
 			}
 		})
+	}
+}
+
+// TestWindowsArtifactPowerShellQuoting keeps guest paths safe as PowerShell string literals.
+func TestWindowsArtifactPowerShellQuoting(t *testing.T) {
+	if quoted := powershellSingleQuoted(`C:\Windows\Temp\O'Brien`); quoted != `'C:\Windows\Temp\O''Brien'` {
+		t.Fatalf("PowerShell path quoting = %q", quoted)
 	}
 }
 
@@ -93,7 +106,7 @@ func TestGuestArtifactDriverTransfersFilesAndAlwaysCleansWorkspace(t *testing.T)
 				command = append(command, argument.(string))
 			}
 			commands = append(commands, command)
-			if len(command) > 4 && command[4] == "/usr/bin/bash" {
+			if len(command) > 4 && (command[4] == "/usr/bin/bash" || command[4] == "/bin/sh") {
 				runnerPID = len(commands)
 			}
 			writePVEData(response, map[string]any{"pid": len(commands)})
@@ -116,7 +129,7 @@ func TestGuestArtifactDriverTransfersFilesAndAlwaysCleansWorkspace(t *testing.T)
 	var digest [sha256.Size]byte = sha256.Sum256(archive)
 	var request GuestArtifactRequest = GuestArtifactRequest{
 		Node: "pve1", VMID: "901", VMOperationKey: "og-test", Entrypoint: "entrypoint.sh",
-		SHA256: hex.EncodeToString(digest[:]), Archive: archive,
+		SHA256: hex.EncodeToString(digest[:]), GuestOSFamily: "linux", Archive: archive,
 	}
 	var result GuestArtifactResult
 	var err error
@@ -141,7 +154,30 @@ func TestGuestArtifactDriverTransfersFilesAndAlwaysCleansWorkspace(t *testing.T)
 	if !strings.Contains(commands[1][2], "exec \"$@\"") {
 		t.Fatalf("SELinux dispatch wrapper does not preserve the root command: %#v", commands[1])
 	}
+	var bsdCommandStart int = len(commands)
+	request.GuestOSFamily = "bsd"
+	if result, err = service.ExecuteGuestArtifact(context.Background(), request); err != nil {
+		t.Fatalf("execute BSD artifact: %v", err)
+	}
+	var bsdTeeCount int
+	var bsdRunnerFound bool
+	for _, command := range commands[bsdCommandStart:] {
+		if command[0] == "/usr/bin/tee" || len(command) > 4 && command[4] == "/usr/bin/tee" {
+			bsdTeeCount++
+		}
+		if len(command) > 4 && command[4] == "/bin/sh" {
+			bsdRunnerFound = true
+		}
+	}
+	if result.Status != "succeeded" || len(writes) != 3 || !bsdRunnerFound || bsdTeeCount < 3 {
+		t.Fatalf("BSD guest did not use guest-exec stdin and its POSIX artifact runner: result=%#v writes=%d commands=%#v", result, len(writes), commands[bsdCommandStart:])
+	}
+	if !strings.Contains(guestBSDArtifactScript(), "/sbin/sha256 -q") {
+		t.Fatal("BSD artifact runner did not verify guest file integrity with the FreeBSD checksum tool")
+	}
 	runExitCode = 9
+	request.GuestOSFamily = "linux"
+	var failedRunCommandStart int = len(commands)
 	if result, err = service.ExecuteGuestArtifact(context.Background(), request); err == nil {
 		t.Fatal("non-zero guest exit status was accepted")
 	} else {
@@ -150,8 +186,8 @@ func TestGuestArtifactDriverTransfersFilesAndAlwaysCleansWorkspace(t *testing.T)
 			t.Fatalf("guest failure did not preserve the entrypoint exit code: result=%#v err=%v", result, err)
 		}
 	}
-	if len(commands) != 6 || commands[5][4] != "/usr/bin/rm" || commands[5][5] != "-rf" {
-		t.Fatalf("failed execution did not attempt workspace cleanup: commands=%#v", commands)
+	if len(commands) <= failedRunCommandStart || commands[len(commands)-1][4] != "/usr/bin/rm" || commands[len(commands)-1][5] != "-rf" {
+		t.Fatalf("failed execution did not attempt workspace cleanup: commands=%#v", commands[failedRunCommandStart:])
 	}
 }
 

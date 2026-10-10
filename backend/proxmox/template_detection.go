@@ -114,6 +114,11 @@ func (driver *apiTemplateDetectionDriver) Detect(ctx context.Context, sourceID s
 		result.GuestOSVersion = strings.TrimSpace(osInfo.Version)
 	}
 	result.GuestArchitecture = normalizeGuestArchitecture(osInfo.Machine)
+	if guestType == "bsd" && (result.GuestOSID == "" || result.GuestOSName == "" || result.GuestOSVersion == "" || result.GuestArchitecture == "") {
+		if err = detectFreeBSDGuestMetadata(ctx, driver.settings, vm, vmid, &result); err != nil {
+			return
+		}
+	}
 	if !guestOSMatchesTemplate(guestType, result.GuestOSID) {
 		err = fmt.Errorf("selected guest type %q does not match detected guest OS %q", guestType, result.GuestOSID)
 		return
@@ -162,6 +167,42 @@ func (driver *apiTemplateDetectionDriver) Detect(ctx context.Context, sourceID s
 	}
 	result.PowerState = "stopped"
 	result.CheckedAt = time.Now().UTC()
+	return
+}
+
+// detectFreeBSDGuestMetadata identifies FreeBSD guests when QEMU Guest Agent omits OS metadata.
+func detectFreeBSDGuestMetadata(ctx context.Context, settings config.ProxmoxConfiguration, vm *pve.VirtualMachine, vmid int, result *PreflightResult) (err error) {
+	const command string = `if [ "$(uname -s)" != "FreeBSD" ]; then exit 1; fi
+if [ -r /etc/version ]; then
+    printf 'freebsd\npfSense\n'
+    cat /etc/version
+else
+    printf 'freebsd\nFreeBSD\n'
+    uname -r
+fi
+uname -m`
+	var status guestAgentExecStatus
+	if status, err = runGuestCommand(ctx, settings, vm, vmid, []string{"/bin/sh", "-c", command}, 15); err != nil {
+		return
+	}
+	err = parseFreeBSDGuestMetadata(status.OutData, result)
+	return
+}
+
+// parseFreeBSDGuestMetadata maps uname-based output into the template catalog's guest metadata.
+func parseFreeBSDGuestMetadata(output string, result *PreflightResult) (err error) {
+	var fields []string = strings.Split(strings.TrimSpace(output), "\n")
+	if len(fields) != 4 || fields[0] != "freebsd" || strings.TrimSpace(fields[1]) == "" || strings.TrimSpace(fields[2]) == "" {
+		err = errors.New("QEMU Guest Agent could not identify a FreeBSD guest")
+		return
+	}
+	result.GuestOSID = fields[0]
+	result.GuestOSName = strings.TrimSpace(fields[1])
+	result.GuestOSVersion = strings.TrimSpace(fields[2])
+	result.GuestArchitecture = normalizeGuestArchitecture(fields[3])
+	if result.GuestArchitecture == "" {
+		err = fmt.Errorf("FreeBSD guest architecture %q is not supported", strings.TrimSpace(fields[3]))
+	}
 	return
 }
 

@@ -33,17 +33,25 @@ func TestCloneVMUsesPVECloneTasksAndAppliesTheRequestedSafeBaseline(t *testing.T
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/status":
 			writePVEData(response, []any{})
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/resources":
-			var resources []map[string]any = []map[string]any{{"type": "qemu", "vmid": 156, "node": "pve1", "name": "fedora-source", "status": "stopped"}}
+			var resources []map[string]any = []map[string]any{
+				{"type": "node", "node": "pve1", "status": "online", "maxcpu": 16, "maxmem": 17179869184, "mem": 8589934592, "cpu": 0.2},
+				{"type": "node", "node": "pve2", "status": "online", "maxcpu": 16, "maxmem": 17179869184, "mem": 2147483648, "cpu": 0.05},
+				{"type": "qemu", "vmid": 156, "node": "pve1", "name": "fedora-source", "status": "stopped", "maxcpu": 4, "maxmem": 8589934592},
+			}
 			if cloneCreated {
-				resources = append(resources, map[string]any{"type": "qemu", "vmid": 900, "node": "pve1", "name": "alice-fedora", "status": "stopped"})
+				resources = append(resources, map[string]any{"type": "qemu", "vmid": 900, "node": "pve2", "name": "alice-fedora", "status": "stopped", "maxcpu": 2, "maxmem": 4294967296})
 			}
 			writePVEData(response, resources)
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/storage":
+			writePVEData(response, []map[string]any{{"storage": "laas", "type": "nfs", "shared": 1, "content": "images,backup,rootdir"}})
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve1/status":
 			writePVEData(response, map[string]any{"node": "pve1", "status": "online"})
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve2/status":
+			writePVEData(response, map[string]any{"node": "pve2", "status": "online"})
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve1/qemu/156/status/current":
 			writePVEData(response, map[string]any{"vmid": "156", "name": "fedora-source", "status": "stopped"})
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve1/qemu/156/config":
-			writePVEData(response, map[string]any{"name": "fedora-source", "scsi0": "local-lvm:vm-156-disk-0,size=32G", "net0": "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0"})
+			writePVEData(response, map[string]any{"name": "fedora-source", "scsi0": "laas:vm-156-disk-0,size=32G", "net0": "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0"})
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/nextid":
 			writePVEData(response, "900")
 		case request.Method == http.MethodPost && request.URL.Path == "/api2/json/nodes/pve1/qemu/156/clone":
@@ -53,16 +61,16 @@ func TestCloneVMUsesPVECloneTasksAndAppliesTheRequestedSafeBaseline(t *testing.T
 			writePVEData(response, "UPID:pve1:1:1:1:qmclone:900:root@pam:")
 		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/tasks/UPID:pve1:1:1:1:qmclone:900:root@pam:/status"):
 			writePVEData(response, map[string]any{"status": "stopped", "exitstatus": "OK"})
-		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve1/qemu/900/status/current":
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve2/qemu/900/status/current":
 			writePVEData(response, map[string]any{"vmid": "900", "name": "alice-fedora", "status": "stopped"})
-		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve1/qemu/900/config":
-			writePVEData(response, map[string]any{"name": "alice-fedora", "description": "Organesson managed resource og-test", "boot": "order=scsi0;ide2;net0", "scsi0": "local-lvm:vm-900-disk-0,size=" + bootDiskSize, "ide2": "isos:iso/fedora.iso,media=cdrom", "net0": "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0"})
-		case request.Method == http.MethodPost && request.URL.Path == "/api2/json/nodes/pve1/qemu/900/config":
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve2/qemu/900/config":
+			writePVEData(response, map[string]any{"name": "alice-fedora", "description": "Organesson managed resource og-test", "boot": "order=scsi0;ide2;net0", "scsi0": "laas:vm-900-disk-0,size=" + bootDiskSize, "ide2": "isos:iso/fedora.iso,media=cdrom", "net0": "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0"})
+		case request.Method == http.MethodPost && request.URL.Path == "/api2/json/nodes/pve2/qemu/900/config":
 			configRequest = body
 			writePVEData(response, "UPID:pve1:2:2:2:qmconfig:900:root@pam:")
 		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/tasks/UPID:pve1:2:2:2:qmconfig:900:root@pam:/status"):
 			writePVEData(response, map[string]any{"status": "stopped", "exitstatus": "OK"})
-		case request.Method == http.MethodPut && request.URL.Path == "/api2/json/nodes/pve1/qemu/900/resize":
+		case request.Method == http.MethodPut && request.URL.Path == "/api2/json/nodes/pve2/qemu/900/resize":
 			resizeCount++
 			if resizeCount == 1 {
 				response.WriteHeader(http.StatusInternalServerError)
@@ -90,7 +98,7 @@ func TestCloneVMUsesPVECloneTasksAndAppliesTheRequestedSafeBaseline(t *testing.T
 	var placement VMPlacement
 	var err error
 	var cloneRequestInput VMCloneRequest = VMCloneRequest{
-		SourceVMID: "156", Name: "alice-fedora", Pool: "class-labs", Storage: "local-lvm", Cores: 2,
+		SourceVMID: "156", Name: "alice-fedora", Pool: "class-labs", Storage: "laas", Cores: 2,
 		MemoryMiB: 4096, BootDiskGiB: 64, OperationKey: "og-test",
 	}
 	if _, err = driver.Clone(context.Background(), cloneRequestInput); err == nil {
@@ -102,10 +110,10 @@ func TestCloneVMUsesPVECloneTasksAndAppliesTheRequestedSafeBaseline(t *testing.T
 	if placement, err = driver.Clone(context.Background(), cloneRequestInput); err != nil {
 		t.Fatalf("recover interrupted clone: %v", err)
 	}
-	if placement.VMID != "900" || placement.Node != "pve1" || placement.PowerState != "stopped" || cloneCount != 1 || resizeCount != 2 {
+	if placement.VMID != "900" || placement.Node != "pve2" || placement.PowerState != "stopped" || cloneCount != 1 || resizeCount != 2 {
 		t.Fatalf("unexpected Proxmox placement: %#v", placement)
 	}
-	if cloneRequest["full"] != float64(1) || cloneRequest["name"] != "alice-fedora" || cloneRequest["pool"] != "class-labs" || cloneRequest["storage"] != "local-lvm" || cloneRequest["description"] != "Organesson managed resource og-test" {
+	if cloneRequest["full"] != float64(1) || cloneRequest["name"] != "alice-fedora" || cloneRequest["pool"] != "class-labs" || cloneRequest["storage"] != "laas" || cloneRequest["target"] != "pve2" || cloneRequest["description"] != "Organesson managed resource og-test" {
 		t.Fatalf("clone request did not apply target metadata: %#v", cloneRequest)
 	}
 	if configRequest["cores"] != float64(2) || configRequest["memory"] != float64(4096) || configRequest["delete"] != "ide2,net0" || configRequest["boot"] != "order=scsi0" {

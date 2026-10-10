@@ -69,6 +69,15 @@ func TestValidateNetworkAttachmentRequestRequiresMarkedVNet(t *testing.T) {
 	if err := validateNetworkAttachmentRequest(request); err != nil {
 		t.Fatalf("rejected marked VNet attachment: %v", err)
 	}
+	request.Model = "e1000e"
+	if err := validateNetworkAttachmentRequest(request); err != nil {
+		t.Fatalf("rejected supported e1000e model: %v", err)
+	}
+	request.Model = "unknown"
+	if err := validateNetworkAttachmentRequest(request); err == nil {
+		t.Fatal("accepted an unsupported Proxmox NIC model")
+	}
+	request.Model = ""
 	request.NetworkOperationKey = ""
 	request.Bridge = "vmbr0,tag=4"
 	if err := validateNetworkAttachmentRequest(request); err == nil {
@@ -190,6 +199,27 @@ func TestRouterForwardingFirewallRulesAreLimitedToClientSubnets(t *testing.T) {
 	var entries []string = networkAttachmentIPFilterEntries(request)
 	if len(entries) != 2 || entries[0] != "192.0.2.0/24" || entries[1] != "2001:db8:2::/64" {
 		t.Fatalf("router source filter entries = %v, want configured client subnets", entries)
+	}
+}
+
+func TestNetworkPeerFirewallRulesAreLimitedToApprovedSubnetsAndDevice(t *testing.T) {
+	var request NetworkAttachmentRequest = NetworkAttachmentRequest{
+		Node: "pve1", VMID: "100", VMOperationKey: "vm-operation", Bridge: "on123456", NetworkOperationKey: "network-operation",
+		AttachmentOperationKey: "attachment-operation", EnforceAddressFilter: true,
+		AllowedAddresses: []string{"192.0.2.10"}, AllowedPeerSubnets: []string{"192.0.2.0/24", "2001:db8::/64"},
+	}
+	var rules []*pve.FirewallRule = networkPeerFirewallRules("net1", request)
+	if len(rules) != 2 {
+		t.Fatalf("expected one peer allowance per subnet, got %d", len(rules))
+	}
+	for index, rule := range rules {
+		if rule.Type != "in" || rule.Action != "ACCEPT" || rule.Enable != 1 || rule.Iface != "net1" || rule.Source != request.AllowedPeerSubnets[index] || rule.Proto != "" || rule.Dport != "" {
+			t.Fatalf("network peer rule is broader or differently scoped than expected: %+v", rule)
+		}
+	}
+	request.AllowedPeerSubnets = []string{"192.0.2.1/24"}
+	if err := validateNetworkAttachmentRequest(request); err == nil {
+		t.Fatal("non-canonical peer subnet was accepted")
 	}
 }
 

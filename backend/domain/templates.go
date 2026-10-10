@@ -389,6 +389,9 @@ func (service *Service) CompleteVMTemplatePreparation(actorID int, templateID in
 		strings.TrimSpace(result.GuestOSID) != "" && successfulChecks["source_exists"] && successfulChecks["qemu_guest_agent_enabled"] &&
 		successfulChecks["guest_os_matches"] && successfulChecks["guest_agent_root_execution"] &&
 		successfulChecks["preparation_script"] && successfulChecks["requested_accounts_removed"]
+	if strings.Contains(strings.ToLower(result.GuestOSID), "windows") {
+		succeeded = succeeded && successfulChecks["windows_first_boot_specialize"]
+	}
 	var now time.Time = service.now()
 	template.LastPreflightAt = &now
 	template.LastPreflightJSON = string(encoded)

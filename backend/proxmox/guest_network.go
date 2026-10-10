@@ -59,7 +59,7 @@ func (service *Service) ConfigureGuestNetwork(ctx context.Context, request Guest
 	return
 }
 
-// ReadGuestNetwork verifies that NetworkManager still matches the saved managed configuration.
+// ReadGuestNetwork verifies that the active Linux network manager still matches the saved managed configuration.
 func (service *Service) ReadGuestNetwork(ctx context.Context, request GuestNetworkRequest) (err error) {
 	if service == nil || service.guestNetworkDriver == nil || !service.Configured() {
 		err = ErrNotConfigured
@@ -157,7 +157,7 @@ func (driver *apiGuestNetworkDriver) execute(ctx context.Context, request GuestN
 		return
 	}
 	var status guestAgentExecStatus
-	if status, err = waitForGuestExecExit(ctx, driver.settings, vm.Node, vmid, pid, 60); err != nil {
+	if status, err = waitForGuestExecExit(ctx, driver.settings, vm.Node, vmid, pid, 120); err != nil {
 		return
 	}
 	if status.ExitCode != 0 {
@@ -371,9 +371,10 @@ func ValidateSLAACAllocation(prefix string, mac string, addresses []string) (err
 
 func guestNetworkScript(request GuestNetworkRequest, remove bool) (script string) {
 	var connection string = "organesson-" + strings.ReplaceAll(strings.ToLower(request.Placement.MAC), ":", "")
+	var networkFile string = "/etc/systemd/network/05-organesson-" + strings.ReplaceAll(strings.ToLower(request.Placement.MAC), ":", "") + ".network"
 	var operation string
 	if remove {
-		operation = "nmcli connection delete \"$connection\" 2>/dev/null || true"
+		operation = "if command -v netconfig >/dev/null 2>&1; then\n    netconfig remove --service " + shellQuote(connection) + " --interface \"$interface\" || true\nfi\nif [ -f " + shellQuote(networkFile) + " ]; then\n    rm -f " + shellQuote(networkFile) + "\n    networkctl reload\n    networkctl reconfigure \"$interface\"\nelif nmcli -t -f RUNNING general 2>/dev/null | /usr/bin/grep -Fxq running; then\n    nmcli connection delete \"$connection\" 2>/dev/null || true\nfi"
 	} else {
 		var method string = request.Method
 		var nmcliMethod string = "auto"
@@ -414,12 +415,74 @@ func guestNetworkScript(request GuestNetworkRequest, remove bool) (script string
 		if request.IPv6Method == "dhcp" {
 			options += " ipv6.dhcp-duid ll ipv6.dhcp-iaid mac"
 		}
-		operation = "if nmcli -t -f NAME connection show | /usr/bin/grep -Fxq \"$connection\"; then\n    nmcli connection modify \"$connection\" " + options + "\nelse\n    nmcli connection add type ethernet ifname \"$interface\" con-name \"$connection\" connection.autoconnect yes ethernet.mac-address " + shellQuote(request.Placement.MAC) + " " + options + "\nfi\nnmcli connection up \"$connection\""
+		var networkd string = guestNetworkdProfile(request)
+		operation = "network_manager_ready=false\nwicked_owns_network=false\nif command -v systemctl >/dev/null 2>&1; then\n    if systemctl is-active --quiet wicked.service || systemctl is-active --quiet network.service || { [ -L /etc/systemd/system/network.service ] && readlink -f /etc/systemd/system/network.service | /usr/bin/grep -Fq '/wicked.service'; }; then\n        wicked_owns_network=true\n    fi\nfi\nif command -v nmcli >/dev/null 2>&1; then\n    if [ \"$(nmcli -t -f RUNNING general 2>/dev/null || true)\" != running ] && [ \"$wicked_owns_network\" != true ] && command -v systemctl >/dev/null 2>&1; then\n        systemctl start NetworkManager.service || true\n    fi\n    for attempt in $(seq 1 30); do\n        if [ \"$(nmcli -t -f RUNNING general 2>/dev/null || true)\" = running ]; then\n            nmcli device set \"$interface\" managed yes >/dev/null 2>&1 || true\n            if nmcli -g GENERAL.NM-MANAGED device show \"$interface\" 2>/dev/null | /usr/bin/grep -Fxq yes; then\n                network_manager_ready=true\n                break\n            fi\n        fi\n        sleep 2\n    done\nfi\nif [ \"$network_manager_ready\" = true ]; then\n    if nmcli -t -f NAME connection show | /usr/bin/grep -Fxq \"$connection\"; then\n        nmcli connection modify \"$connection\" " + options + "\n    else\n        nmcli connection add type ethernet ifname \"$interface\" con-name \"$connection\" connection.autoconnect yes ethernet.mac-address " + shellQuote(request.Placement.MAC) + " " + options + "\n    fi\n    nmcli connection up \"$connection\"\nelif command -v networkctl >/dev/null 2>&1; then\n    if command -v nmcli >/dev/null 2>&1 && [ \"$(nmcli -t -f RUNNING general 2>/dev/null || true)\" = running ]; then\n        nmcli device set \"$interface\" managed no >/dev/null 2>&1 || true\n    fi\n    install -d -o root -g root -m 0755 /etc/systemd/network\n    cat > " + shellQuote(networkFile) + " <<'ORGANESSON_NETWORK'\n" + networkd + "ORGANESSON_NETWORK\n    chmod 0644 " + shellQuote(networkFile) + "\n    systemctl enable --now systemd-networkd.service\n    networkctl reload\n    networkctl reconfigure \"$interface\"\nelse\n    echo 'guest has neither a ready NetworkManager NIC nor systemd-networkd support' >&2\n    exit 1\nfi\n" + guestNetworkNetconfigOperation(request)
+		operation += "\n" + guestNetworkManagerReconcileOperation()
 		if request.EnforceAddressFilter && (request.Method == "dhcp" || request.IPv6Method == "dhcp" || request.IPv6Method == "slaac") {
 			operation += "\n" + guestAllocatedAddressCheck(request, "interface")
 		}
 	}
 	script = "#!/usr/bin/bash\nset -eu\ntrap 'rm -f \"$0\"' EXIT\nmac=" + shellQuote(strings.ToLower(request.Placement.MAC)) + "\nconnection=" + shellQuote(connection) + "\ninterface=\nfor address_file in /sys/class/net/*/address; do\n    [ -r \"$address_file\" ] || continue\n    if [ \"$(tr '[:upper:]' '[:lower:]' < \"$address_file\")\" = \"$mac\" ]; then\n        interface=${address_file%/address}\n        interface=${interface##*/}\n        break\n    fi\ndone\n[ -n \"$interface\" ] || { echo 'managed NIC MAC was not found' >&2; exit 1; }\n" + operation + "\n"
+	return
+}
+
+// guestNetworkManagerReconcileOperation retires other active profiles on the managed NIC.
+func guestNetworkManagerReconcileOperation() (operation string) {
+	operation = "if [ \"$network_manager_ready\" = true ]; then\n    organesson_uuid=$(nmcli -g connection.uuid connection show \"$connection\")\n    while IFS=: read -r active_uuid active_device; do\n        [ \"$active_device\" = \"$interface\" ] || continue\n        [ \"$active_uuid\" = \"$organesson_uuid\" ] && continue\n        nmcli connection modify \"$active_uuid\" connection.autoconnect no\n        nmcli connection down \"$active_uuid\" || true\n    done < <(nmcli -t -f UUID,DEVICE connection show --active)\n    nmcli connection up \"$connection\"\nfi"
+	return
+}
+
+// guestNetworkNetconfigOperation publishes static per-interface DNS through SUSE netconfig when available.
+func guestNetworkNetconfigOperation(request GuestNetworkRequest) (operation string) {
+	var dnsServers []string = append(append([]string{}, request.DNS...), request.IPv6DNS...)
+	var connection string = "organesson-" + strings.ReplaceAll(strings.ToLower(request.Placement.MAC), ":", "")
+	if len(dnsServers) == 0 {
+		operation = "if command -v netconfig >/dev/null 2>&1; then\n    netconfig remove --service " + shellQuote(connection) + " --interface \"$interface\" || true\nfi"
+		return
+	}
+	operation = "if command -v netconfig >/dev/null 2>&1; then\n    printf \"INTERFACE='%s'\\nDNSSERVERS='%s'\\n\" \"$interface\" " + shellQuote(strings.Join(dnsServers, " ")) + " | netconfig modify --service " + shellQuote(connection) + " --interface \"$interface\"\nfi"
+	return
+}
+
+// guestNetworkdProfile renders one MAC-bound systemd-networkd profile for Linux guests without NetworkManager.
+func guestNetworkdProfile(request GuestNetworkRequest) (profile string) {
+	var dhcp string = "no"
+	if request.Method == "dhcp" {
+		dhcp = "ipv4"
+	}
+	if request.IPv6Method == "dhcp" {
+		if dhcp == "ipv4" {
+			dhcp = "yes"
+		} else {
+			dhcp = "ipv6"
+		}
+	}
+	var acceptRA string = "no"
+	if request.IPv6Method == "slaac" {
+		acceptRA = "yes"
+	}
+	profile = "[Match]\nMACAddress=" + strings.ToLower(request.Placement.MAC) + "\n\n[Network]\nDHCP=" + dhcp + "\nIPv6AcceptRA=" + acceptRA + "\n"
+	if request.Method == "static" {
+		profile += "Address=" + request.Address + "\n"
+		if request.Gateway != "" && !request.NeverDefault {
+			profile += "Gateway=" + request.Gateway + "\n"
+		}
+		for _, dns := range request.DNS {
+			profile += "DNS=" + dns + "\n"
+		}
+	}
+	if request.IPv6Method == "static" {
+		profile += "Address=" + request.IPv6Address + "\n"
+		if request.IPv6Gateway != "" && !request.IPv6NeverDefault {
+			profile += "Gateway=" + request.IPv6Gateway + "\n"
+		}
+		for _, dns := range request.IPv6DNS {
+			profile += "DNS=" + dns + "\n"
+		}
+	}
+	if request.NeverDefault {
+		profile += "\n[DHCPv4]\nUseGateway=no\n\n[DHCPv6]\nUseGateway=no\n"
+	}
 	return
 }
 
@@ -442,6 +505,8 @@ func networkManagerIPv6Method(method string) (mapped string) {
 
 func guestNetworkReadScript(request GuestNetworkRequest) (script string) {
 	var connection string = "organesson-" + strings.ReplaceAll(strings.ToLower(request.Placement.MAC), ":", "")
+	var networkFile string = "/etc/systemd/network/05-organesson-" + strings.ReplaceAll(strings.ToLower(request.Placement.MAC), ":", "") + ".network"
+	var networkdProfile string = guestNetworkdProfile(request)
 	var expectedMethod string = "auto"
 	var checks string
 	if request.Method == "static" {
@@ -475,12 +540,31 @@ func guestNetworkReadScript(request GuestNetworkRequest) (script string) {
 	if request.EnforceAddressFilter {
 		checks += guestAllocatedAddressCheck(request, "interface")
 	}
-	script = "#!/usr/bin/bash\nset -eu\ntrap 'rm -f \"$0\"' EXIT\nconnection=" + shellQuote(connection) + "\nmac=" + shellQuote(strings.ToLower(request.Placement.MAC)) + "\ninterface=\nfor address_file in /sys/class/net/*/address; do\n    [ -r \"$address_file\" ] || continue\n    if [ \"$(tr '[:upper:]' '[:lower:]' < \"$address_file\")\" = \"$mac\" ]; then\n        interface=${address_file%/address}\n        interface=${interface##*/}\n        break\n    fi\ndone\n[ -n \"$interface\" ] || { echo 'managed NIC MAC was not found' >&2; exit 1; }\nactual_method=$(nmcli -g ipv4.method connection show \"$connection\" 2>/dev/null)\n[ \"$actual_method\" = " + shellQuote(expectedMethod) + " ] || { echo 'guest IPv4 method drift detected' >&2; exit 1; }\n" + checks
+	var networkdRead string = "network_file=" + shellQuote(networkFile) + "\nif [ -f \"$network_file\" ]; then\n    systemctl is-active --quiet systemd-networkd.service || { echo 'systemd-networkd profile is present but the service is not active' >&2; exit 1; }\n    command -v networkctl >/dev/null 2>&1 || { echo 'systemd-networkd profile is present but networkctl is unavailable' >&2; exit 1; }\n    expected_file=$(mktemp)\n    trap 'rm -f \"$0\" \"$expected_file\"' EXIT\n    cat > \"$expected_file\" <<'ORGANESSON_EXPECTED_NETWORK'\n" + strings.TrimSuffix(networkdProfile, "\n") + "\nORGANESSON_EXPECTED_NETWORK\n    cmp -s \"$network_file\" \"$expected_file\" || { echo 'systemd-networkd profile drift detected' >&2; exit 1; }\n    networkctl status --no-pager \"$interface\" >/dev/null 2>&1 || { echo 'systemd-networkd no longer reports the managed NIC' >&2; exit 1; }\n    exit 0\nfi\n"
+	if request.EnforceAddressFilter {
+		var allocatedCheck string = guestAllocatedAddressCheckNetworkd(request, "interface")
+		networkdRead = strings.Replace(networkdRead, "    exit 0\nfi\n", allocatedCheck+"    exit 0\nfi\n", 1)
+	}
+	script = "#!/usr/bin/bash\nset -eu\ntrap 'rm -f \"$0\"' EXIT\nconnection=" + shellQuote(connection) + "\nmac=" + shellQuote(strings.ToLower(request.Placement.MAC)) + "\ninterface=\nfor address_file in /sys/class/net/*/address; do\n    [ -r \"$address_file\" ] || continue\n    if [ \"$(tr '[:upper:]' '[:lower:]' < \"$address_file\")\" = \"$mac\" ]; then\n        interface=${address_file%/address}\n        interface=${interface##*/}\n        break\n    fi\ndone\n[ -n \"$interface\" ] || { echo 'managed NIC MAC was not found' >&2; exit 1; }\n" + networkdRead + "actual_method=$(nmcli -g ipv4.method connection show \"$connection\" 2>/dev/null)\n[ \"$actual_method\" = " + shellQuote(expectedMethod) + " ] || { echo 'guest IPv4 method drift detected' >&2; exit 1; }\n" + checks
 	return
 }
 
 // guestAllocatedAddressCheck rejects dynamically acquired addresses outside the interface's reservation.
 func guestAllocatedAddressCheck(request GuestNetworkRequest, interfaceName string) (script string) {
+	var reader string = "actual=$(nmcli -g \"$family\" device show \"$" + interfaceName + "\" | cut -d/ -f1 | tr -d '\\\\')"
+	script = guestAllocatedAddressCheckWithReader(request, interfaceName, reader)
+	return
+}
+
+// guestAllocatedAddressCheckNetworkd verifies exact allocation addresses from systemd-networkd's kernel interface state.
+func guestAllocatedAddressCheckNetworkd(request GuestNetworkRequest, interfaceName string) (script string) {
+	var reader string = "case \"$family\" in\n    IP4.ADDRESS) address_family=4 ;;\n    IP6.ADDRESS) address_family=6 ;;\n    *) echo 'unknown allocated address family' >&2; exit 2 ;;\nesac\nactual=$(ip -o -\"$address_family\" address show dev \"$" + interfaceName + "\" | awk '{print $4}' | cut -d/ -f1)"
+	script = guestAllocatedAddressCheckWithReader(request, interfaceName, reader)
+	return
+}
+
+// guestAllocatedAddressCheckWithReader validates exact reserved addresses from the selected guest network manager.
+func guestAllocatedAddressCheckWithReader(request GuestNetworkRequest, interfaceName string, addressReader string) (script string) {
 	var checks []string
 	if request.Method == "dhcp" {
 		var allowedIPv4 []string = exactAllowedHostAddresses(request.AllowedAddresses, true)
@@ -494,7 +578,7 @@ func guestAllocatedAddressCheck(request GuestNetworkRequest, interfaceName strin
 			checks = append(checks, "verify_allocated_family IP6.ADDRESS "+shellQuote(strings.Join(allowedIPv6, " "))+" 1")
 		}
 	}
-	script = "verify_allocated_family() {\n    family=$1\n    allowed=$2\n    ignore_link_local=$3\n    attempt=0\n    last_actual=\n    while [ \"$attempt\" -lt 15 ]; do\n        actual=$(nmcli -g \"$family\" device show \"$" + interfaceName + "\" | cut -d/ -f1 | tr -d '\\\\')\n        last_actual=$actual\n        found=0\n        if [ -n \"$actual\" ]; then\n            while IFS= read -r address; do\n                [ -n \"$address\" ] || continue\n                if [ \"$ignore_link_local\" = 1 ]; then\n                    case \"$address\" in fe80:*|::1) continue ;; esac\n                fi\n                case \" $allowed \" in *\" $address \"*) found=1 ;; *) echo 'guest acquired an address outside its Organesson allocation' >&2; exit 1 ;; esac\n            done <<EOF\n$actual\nEOF\n        fi\n        [ \"$found\" = 1 ] && return 0\n        attempt=$((attempt + 1))\n        sleep 2\n    done\n    echo \"guest has no allocated address for filtered family $family (last observed: ${last_actual:-none})\" >&2\n    exit 1\n}\n"
+	script = "verify_allocated_family() {\n    family=$1\n    allowed=$2\n    ignore_link_local=$3\n    attempt=0\n    last_actual=\n    while [ \"$attempt\" -lt 15 ]; do\n        " + addressReader + "\n        last_actual=$actual\n        found=0\n        if [ -n \"$actual\" ]; then\n            while IFS= read -r address; do\n                [ -n \"$address\" ] || continue\n                if [ \"$ignore_link_local\" = 1 ]; then\n                    case \"$address\" in fe80:*|::1) continue ;; esac\n                fi\n                case \" $allowed \" in *\" $address \"*) found=1 ;; *) echo 'guest acquired an address outside its Organesson allocation' >&2; exit 1 ;; esac\n            done <<EOF\n$actual\nEOF\n        fi\n        [ \"$found\" = 1 ] && return 0\n        attempt=$((attempt + 1))\n        sleep 2\n    done\n    echo \"guest has no allocated address for filtered family $family (last observed: ${last_actual:-none})\" >&2\n    exit 1\n}\n"
 	for _, check := range checks {
 		script += check + "\n"
 	}

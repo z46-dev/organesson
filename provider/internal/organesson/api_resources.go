@@ -56,15 +56,19 @@ type (
 	}
 	addressPoolRequestResult struct {
 		Resource struct {
-			ID          int    `json:"id"`
-			OwnershipID int    `json:"ownership_id"`
-			Name        string `json:"name"`
+			ID           int    `json:"id"`
+			DeploymentID int    `json:"deployment_id"`
+			OwnershipID  int    `json:"ownership_id"`
+			Name         string `json:"name"`
 		} `json:"resource"`
 		Allocation struct {
+			DeploymentID       int      `json:"deployment_id"`
 			LogicalNetworkID   int      `json:"logical_network_id"`
 			RangeStart         string   `json:"range_start"`
 			RangeEnd           string   `json:"range_end"`
 			EnvironmentNetwork string   `json:"environment_network"`
+			AddressFamily      string   `json:"address_family"`
+			AddressCount       int      `json:"address_count"`
 			Addresses          []string `json:"addresses"`
 			PoolName           string   `json:"pool_name"`
 			Prefix             string   `json:"prefix"`
@@ -109,16 +113,26 @@ type (
 			PowerState string `json:"power_state"`
 		} `json:"resource"`
 		Configuration struct {
-			Addresses          []string `json:"addresses"`
-			IPv6Addresses      []string `json:"ipv6_addresses"`
-			AddressFamily      string   `json:"address_family"`
-			AddressPrefix      string   `json:"address_prefix"`
-			AddressGateway     string   `json:"address_gateway"`
-			AddressDNS         []string `json:"address_dns"`
-			IPv6AddressPrefix  string   `json:"ipv6_address_prefix"`
-			IPv6AddressGateway string   `json:"ipv6_address_gateway"`
-			IPv6AddressDNS     []string `json:"ipv6_address_dns"`
-			Placement          struct {
+			Request struct {
+				Model string `json:"model"`
+			} `json:"request"`
+			VirtualMachineID          int      `json:"virtual_machine_id"`
+			LogicalNetworkID          int      `json:"logical_network_id"`
+			EnvironmentNetwork        string   `json:"environment_network"`
+			AddressPoolRequestID      int      `json:"address_pool_request_id"`
+			RequestedAddressCount     int      `json:"requested_address_count"`
+			IPv6AddressPoolRequestID  int      `json:"ipv6_address_pool_request_id"`
+			RequestedIPv6AddressCount int      `json:"requested_ipv6_address_count"`
+			Addresses                 []string `json:"addresses"`
+			IPv6Addresses             []string `json:"ipv6_addresses"`
+			AddressFamily             string   `json:"address_family"`
+			AddressPrefix             string   `json:"address_prefix"`
+			AddressGateway            string   `json:"address_gateway"`
+			AddressDNS                []string `json:"address_dns"`
+			IPv6AddressPrefix         string   `json:"ipv6_address_prefix"`
+			IPv6AddressGateway        string   `json:"ipv6_address_gateway"`
+			IPv6AddressDNS            []string `json:"ipv6_address_dns"`
+			Placement                 struct {
 				Device string `json:"device"`
 				MAC    string `json:"mac"`
 			} `json:"placement"`
@@ -195,7 +209,10 @@ func addressPoolRequestOperations() (operations remoteResourceOperations) {
 		var result addressPoolRequestResult
 		err = client.request(ctx, http.MethodGet, "/api/v1/address-pool-requests/"+id, nil, &result)
 		if err == nil {
+			_ = data.Set("deployment_id", strconv.Itoa(result.Allocation.DeploymentID))
 			_ = data.Set("name", result.Resource.Name)
+			_ = data.Set("address_family", result.Allocation.AddressFamily)
+			_ = data.Set("address_count", result.Allocation.AddressCount)
 			_ = data.Set("addresses", result.Allocation.Addresses)
 			_ = data.Set("prefix", result.Allocation.Prefix)
 			_ = data.Set("gateway", result.Allocation.Gateway)
@@ -340,6 +357,7 @@ func networkAttachmentOperations() (operations remoteResourceOperations) {
 		}
 		var body map[string]any = map[string]any{
 			"name":                         data.Get("name").(string),
+			"model":                        data.Get("model").(string),
 			"environment_network":          data.Get("environment_network").(string),
 			"address_pool_request_id":      0,
 			"requested_address_count":      data.Get("requested_address_count").(int),
@@ -391,6 +409,14 @@ func networkAttachmentOperations() (operations remoteResourceOperations) {
 		err = client.request(ctx, http.MethodGet, "/api/v1/network-attachments/"+id, nil, &result)
 		if err == nil {
 			_ = data.Set("name", result.Resource.Name)
+			_ = data.Set("virtual_machine_id", strconv.Itoa(result.Configuration.VirtualMachineID))
+			_ = data.Set("logical_network_id", optionalRemoteID(result.Configuration.LogicalNetworkID))
+			_ = data.Set("environment_network", result.Configuration.EnvironmentNetwork)
+			_ = data.Set("model", result.Configuration.Request.Model)
+			_ = data.Set("address_pool_request_id", optionalRemoteID(result.Configuration.AddressPoolRequestID))
+			_ = data.Set("requested_address_count", result.Configuration.RequestedAddressCount)
+			_ = data.Set("ipv6_address_pool_request_id", optionalRemoteID(result.Configuration.IPv6AddressPoolRequestID))
+			_ = data.Set("requested_ipv6_address_count", result.Configuration.RequestedIPv6AddressCount)
 			_ = data.Set("addresses", result.Configuration.Addresses)
 			_ = data.Set("ipv6_addresses", result.Configuration.IPv6Addresses)
 			_ = data.Set("address_family", result.Configuration.AddressFamily)
@@ -777,6 +803,13 @@ func remoteID(value string) (id string, err error) {
 		return
 	}
 	id = strconv.Itoa(parsed)
+	return
+}
+
+func optionalRemoteID(value int) (id string) {
+	if value > 0 {
+		id = strconv.Itoa(value)
+	}
 	return
 }
 

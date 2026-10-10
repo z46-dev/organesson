@@ -38,6 +38,7 @@ func Provider() (provider *schema.Provider) {
 			"organesson_deployment":                  resourceDeployment(),
 			"organesson_guest_network_configuration": resourceGuestNetworkConfiguration(),
 			"organesson_guest_setup":                 resourceGuestSetup(),
+			"organesson_guest_workflow":              guestWorkflowResource(),
 			"organesson_logical_group":               resourceLogicalGroup(),
 			"organesson_managed_network":             resourceManagedNetwork(),
 			"organesson_unmanaged_network":           resourceNetworkMode("unmanaged-layer-2"),

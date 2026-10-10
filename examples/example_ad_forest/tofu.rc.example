@@ -1,0 +1,7 @@
+provider_installation {
+    dev_overrides {
+        "tofu.organesson.dev/organesson/organesson" = "/home/egp1042/organesson/.bin"
+    }
+
+    direct {}
+}

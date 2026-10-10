@@ -153,7 +153,7 @@ func (driver *apiVMDriver) Clone(ctx context.Context, request VMCloneRequest) (p
 		return
 	}
 	var resources pve.ClusterResources
-	if resources, err = cluster.Resources(ctx, "vm"); err != nil {
+	if resources, err = cluster.Resources(ctx); err != nil {
 		return
 	}
 	if placement, err = findExistingClone(ctx, client, resources, request); err != nil || placement.VMID != "" {
@@ -194,21 +194,33 @@ func (driver *apiVMDriver) Clone(ctx context.Context, request VMCloneRequest) (p
 		err = errors.New("Proxmox source must be stopped before cloning")
 		return
 	}
+	var storages pve.ClusterStorages
+	if storages, err = client.ClusterStorages(ctx); err != nil {
+		return
+	}
+	var targetNode string
+	if targetNode, err = selectVMCloneTarget(resources, storages, sourceNode, source.VirtualMachineConfig, request); err != nil {
+		return
+	}
 	var vmid int
 	var cloneTask *pve.Task
-	if vmid, cloneTask, err = source.Clone(ctx, &pve.VirtualMachineCloneOptions{
+	var cloneOptions *pve.VirtualMachineCloneOptions = &pve.VirtualMachineCloneOptions{
 		Full:        true,
 		Name:        request.Name,
 		Pool:        request.Pool,
 		Storage:     request.Storage,
 		Description: "Organesson managed resource " + request.OperationKey,
-	}); err != nil {
+	}
+	if targetNode != sourceNode {
+		cloneOptions.Target = targetNode
+	}
+	if vmid, cloneTask, err = source.Clone(ctx, cloneOptions); err != nil {
 		return
 	}
 	if err = waitTask(ctx, client, cloneTask); err != nil {
 		return
 	}
-	if placement, err = driver.applyBaseline(ctx, client, sourceNode, vmid, request); err != nil {
+	if placement, err = driver.applyBaseline(ctx, client, targetNode, vmid, request); err != nil {
 		return
 	}
 	return

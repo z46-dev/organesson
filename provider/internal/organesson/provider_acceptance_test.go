@@ -535,10 +535,10 @@ func TestProviderProxmoxVMCreateRefreshDelete(t *testing.T) {
 	createRemoteResource(t, ctx, provider.ResourcesMap["organesson_address_pool_request"], addressRequest, client)
 	var attachment *schema.ResourceData = schema.TestResourceDataRaw(t, provider.ResourcesMap["organesson_network_attachment"].Schema, map[string]interface{}{
 		"address_pool_request_id": addressRequest.Id(), "environment_network": "cyber.lab", "name": "internet",
-		"requested_address_count": 1, "virtual_machine_id": vm.Id(),
+		"model": "e1000e", "requested_address_count": 1, "virtual_machine_id": vm.Id(),
 	})
 	createRemoteResource(t, ctx, provider.ResourcesMap["organesson_network_attachment"], attachment, client)
-	if attachment.Get("net_device") != "net1" || attachment.Get("mac_address") != "02:11:22:33:44:55" || len(attachment.Get("addresses").([]interface{})) != 1 {
+	if attachment.Get("net_device") != "net1" || attachment.Get("mac_address") != "02:11:22:33:44:55" || len(attachment.Get("addresses").([]interface{})) != 1 || attachmentDriver.model != "e1000e" {
 		t.Fatalf("provider NIC create did not retain placement and claimed address: device=%v mac=%v addresses=%v", attachment.Get("net_device"), attachment.Get("mac_address"), attachment.Get("addresses"))
 	}
 	readRemoteResource(t, ctx, provider.ResourcesMap["organesson_network_attachment"], attachment, client)
@@ -600,6 +600,7 @@ type acceptanceSDNNetworkDriver struct {
 
 type acceptanceNetworkAttachmentDriver struct {
 	detached bool
+	model    string
 }
 
 type acceptanceGuestNetworkDriver struct {
@@ -623,7 +624,8 @@ func (driver *acceptanceGuestNetworkDriver) Remove(_ context.Context, _ proxmox.
 	return
 }
 
-func (*acceptanceNetworkAttachmentDriver) Attach(_ context.Context, _ proxmox.NetworkAttachmentRequest) (placement proxmox.NetworkAttachmentPlacement, err error) {
+func (driver *acceptanceNetworkAttachmentDriver) Attach(_ context.Context, request proxmox.NetworkAttachmentRequest) (placement proxmox.NetworkAttachmentPlacement, err error) {
+	driver.model = request.Model
 	placement = proxmox.NetworkAttachmentPlacement{Device: "net1", MAC: "02:11:22:33:44:55"}
 	return
 }

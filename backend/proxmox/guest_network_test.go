@@ -4,6 +4,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGuestNetworkScriptsAreValidAndNICScoped(t *testing.T) {
@@ -25,9 +26,103 @@ func TestGuestNetworkScriptsAreValidAndNICScoped(t *testing.T) {
 	if !strings.Contains(guestNetworkScript(request, false), "trap 'rm -f \"$0\"' EXIT") {
 		t.Fatal("ephemeral guest setup script must remove itself after execution")
 	}
+	if !strings.Contains(guestNetworkScript(request, false), "systemctl start NetworkManager.service") || !strings.Contains(guestNetworkScript(request, false), "nmcli device set \"$interface\" managed yes") || !strings.Contains(guestNetworkScript(request, false), "GENERAL.NM-MANAGED") {
+		t.Fatal("guest network configuration does not wait for and manage its cloned NetworkManager NIC")
+	}
+	if !strings.Contains(guestNetworkScript(request, false), "systemd-networkd.service") || !strings.Contains(guestNetworkScript(request, false), "MACAddress=02:11:22:33:44:55") {
+		t.Fatal("guest network configuration does not support MAC-bound systemd-networkd profiles")
+	}
+	if !strings.Contains(guestNetworkScript(request, false), "nmcli device set \"$interface\" managed no") {
+		t.Fatal("systemd-networkd fallback does not release the NIC from NetworkManager")
+	}
+	if !strings.Contains(guestNetworkScript(request, false), "netconfig modify --service 'organesson-021122334455'") || !strings.Contains(guestNetworkScript(request, true), "netconfig remove --service 'organesson-021122334455'") {
+		t.Fatal("guest network configuration does not publish and clean up per-interface DNS for netconfig guests")
+	}
+	if !strings.Contains(guestNetworkScript(request, false), "connection.autoconnect no") || !strings.Contains(guestNetworkScript(request, false), "nmcli connection down \"$active_uuid\"") {
+		t.Fatal("guest network configuration does not retire competing profiles on the managed NIC")
+	}
 	request.NeverDefault = true
 	if !strings.Contains(guestNetworkScript(request, false), "ipv4.never-default yes") || !strings.Contains(guestNetworkReadScript(request), "guest IPv4 route preference drift detected") {
 		t.Fatal("guest setup does not preserve and verify the non-default-route preference")
+	}
+}
+
+func TestGuestNetworkReadScriptSupportsSystemdNetworkd(t *testing.T) {
+	var request GuestNetworkRequest = GuestNetworkRequest{
+		Node: "pve1", VMID: "901", VMOperationKey: "og-vm",
+		AttachmentKey: "og-nic", Bridge: "vmbr0", Placement: NetworkAttachmentPlacement{Device: "net1", MAC: "02:11:22:33:44:55"},
+		Method: "static", Address: "172.24.172.34/19", Gateway: "172.24.160.1", DNS: []string{"172.24.160.1"},
+	}
+	var script string = guestNetworkReadScript(request)
+	for _, expected := range []string{
+		"/etc/systemd/network/05-organesson-021122334455.network",
+		"systemctl is-active --quiet systemd-networkd.service",
+		"cmp -s \"$network_file\" \"$expected_file\"",
+		"networkctl status --no-pager \"$interface\"",
+		"Address=172.24.172.34/19",
+		"Gateway=172.24.160.1",
+	} {
+		if !strings.Contains(script, expected) {
+			t.Fatalf("systemd-networkd guest network verification is missing %q: %s", expected, script)
+		}
+	}
+	var command *exec.Cmd = exec.Command("bash", "-n")
+	command.Stdin = strings.NewReader(script)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("systemd-networkd guest read script is invalid shell: %v: %s\n%s", err, output, script)
+	}
+}
+
+func TestSystemdNetworkdReadScriptKeepsDynamicAddressFiltering(t *testing.T) {
+	var request GuestNetworkRequest = GuestNetworkRequest{
+		Node: "pve1", VMID: "903", VMOperationKey: "og-vm",
+		AttachmentKey: "og-nic", Bridge: "vnet123", Placement: NetworkAttachmentPlacement{Device: "net1", MAC: "02:11:22:33:44:55"},
+		Method: "dhcp", IPv6Method: "slaac", EnforceAddressFilter: true,
+		AllowedAddresses: []string{"192.0.2.10", "2001:db8::10"}, IPv6Prefix: "2001:db8::/64",
+	}
+	var script string = guestNetworkReadScript(request)
+	if !strings.Contains(script, "ip -o -\"$address_family\" address show dev \"$interface\"") || !strings.Contains(script, "guest acquired an address outside its Organesson allocation") {
+		t.Fatalf("systemd-networkd read script does not retain allocation enforcement: %s", script)
+	}
+	var command *exec.Cmd = exec.Command("bash", "-n")
+	command.Stdin = strings.NewReader(script)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("systemd-networkd allocation read script is invalid shell: %v: %s\n%s", err, output, script)
+	}
+}
+
+func TestGuestOperationLocksArePerVM(t *testing.T) {
+	var service Service
+	var unlockFirst func() = service.lockGuestOperation("pve1", "901")
+	var secondGuestReady chan struct{} = make(chan struct{})
+	go func() {
+		var unlockSecond func() = service.lockGuestOperation("pve1", "902")
+		unlockSecond()
+		close(secondGuestReady)
+	}()
+	select {
+	case <-secondGuestReady:
+	case <-time.After(time.Second):
+		unlockFirst()
+		t.Fatal("an operation on another VM was serialized behind the first guest")
+	}
+	var sameGuestReady chan struct{} = make(chan struct{})
+	go func() {
+		var unlockSame func() = service.lockGuestOperation("pve1", "901")
+		unlockSame()
+		close(sameGuestReady)
+	}()
+	select {
+	case <-sameGuestReady:
+		unlockFirst()
+		t.Fatal("overlapping operations on the same VM were not serialized")
+	case <-time.After(25 * time.Millisecond):
+	}
+	unlockFirst()
+	select {
+	case <-sameGuestReady:
+	case <-time.After(time.Second):
+		t.Fatal("the waiting operation did not continue after its guest lock was released")
 	}
 }
 

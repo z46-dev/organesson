@@ -4,6 +4,7 @@ go 1.26.8
 
 require (
 	github.com/alexflint/go-arg v1.6.1
+	github.com/BurntSushi/toml v1.6.0
 	github.com/fasthttp/websocket v1.5.12
 	github.com/go-ldap/ldap/v3 v3.4.15
 	github.com/gofiber/fiber/v3 v3.5.0
@@ -19,7 +20,6 @@ require (
 
 require (
 	github.com/Azure/go-ntlmssp v0.1.1 // indirect
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/agext/levenshtein v1.2.2 // indirect
 	github.com/alexflint/go-scalar v1.2.0 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect

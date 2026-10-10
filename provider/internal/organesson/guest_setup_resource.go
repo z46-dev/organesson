@@ -12,6 +12,7 @@ type guestSetupResult struct {
 	SHA256   string `json:"sha256"`
 	Status   string `json:"status"`
 	ExitCode int    `json:"exit_code"`
+	Reused   bool   `json:"reused"`
 }
 
 // guestSetupResource performs one audited guest operation while retaining only the result metadata in state.
@@ -23,7 +24,7 @@ func guestSetupResource() (resource *schema.Resource) {
 		Importer:      &schema.ResourceImporter{StateContext: schema.ImportStatePassthroughContext},
 		Schema: map[string]*schema.Schema{
 			"artifact_id":        {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The local artifact manifest resource identifier."},
-			"entrypoint":         {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The entrypoint path within the artifact package."},
+			"entrypoint":         {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The Bash or PowerShell entrypoint path within the artifact package."},
 			"execution_status":   {Type: schema.TypeString, Computed: true, Description: "Guest execution result."},
 			"exit_code":          {Type: schema.TypeInt, Computed: true, Description: "Guest entrypoint exit code."},
 			"inline_files":       {Type: schema.TypeMap, Optional: true, ForceNew: true, Sensitive: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Generated non-secret regular files packaged with the artifact."},

@@ -1,0 +1,75 @@
+name = "Example AD forest bootstrap"
+
+[[steps]]
+name = "prepare-domain-controller"
+target = "domain_controller"
+source_directory = "artifacts/windows-bootstrap"
+entrypoint = "prepare-windows.ps1"
+wait_for_windows_first_boot = true
+
+[[steps]]
+name = "prepare-workstation"
+target = "workstation"
+source_directory = "artifacts/windows-bootstrap"
+entrypoint = "prepare-windows.ps1"
+wait_for_windows_first_boot = true
+
+[[steps]]
+name = "rename-domain-controller"
+target = "domain_controller"
+source_directory = "artifacts/dc-rename"
+entrypoint = "rename-domain-controller.ps1"
+depends_on = ["prepare-domain-controller"]
+reboot_after = true
+
+[[steps]]
+name = "rename-workstation"
+target = "workstation"
+source_directory = "artifacts/workstation-rename"
+entrypoint = "rename-workstation.ps1"
+depends_on = ["prepare-workstation"]
+reboot_after = true
+
+[[steps]]
+name = "promote-domain-controller"
+target = "domain_controller"
+source_directory = "artifacts/dc-promote"
+entrypoint = "promote-domain-controller.ps1"
+depends_on = ["rename-domain-controller"]
+reboot_after = true
+
+[[steps]]
+name = "create-test-user"
+target = "domain_controller"
+source_directory = "artifacts/dc-create-test-user"
+entrypoint = "create-test-user.ps1"
+depends_on = ["promote-domain-controller"]
+
+[[steps]]
+name = "verify-domain-controller"
+target = "domain_controller"
+source_directory = "artifacts/dc-verify"
+entrypoint = "verify-domain-controller.ps1"
+depends_on = ["create-test-user"]
+
+[[steps]]
+name = "join-workstation"
+target = "workstation"
+source_directory = "artifacts/workstation-join"
+entrypoint = "join-workstation.ps1"
+depends_on = ["rename-workstation", "verify-domain-controller"]
+reboot_after = true
+
+[[steps]]
+name = "wait-for-workstation"
+target = "domain_controller"
+source_directory = "artifacts/dc-wait"
+entrypoint = "wait-for-workstation.ps1"
+depends_on = ["join-workstation"]
+
+[[steps]]
+name = "verify-workstation"
+target = "workstation"
+source_directory = "artifacts/workstation-verify"
+entrypoint = "verify-workstation.ps1"
+depends_on = ["wait-for-workstation"]

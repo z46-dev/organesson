@@ -31,8 +31,18 @@ type GuestArtifactInput struct {
 	SHA256     string
 }
 
-// ResolveGuestArtifact authorizes one-time root execution on an owned, Linux Proxmox VM.
+// ResolveGuestArtifact authorizes one-time privileged execution on an owned Proxmox VM.
 func (service *Service) ResolveGuestArtifact(actorID int, resourceID int, input GuestArtifactInput) (request proxmox.GuestArtifactRequest, err error) {
+	if request, err = service.ResolveGuestVM(actorID, resourceID); err != nil {
+		return
+	}
+	request.Entrypoint = input.Entrypoint
+	request.SHA256 = input.SHA256
+	return
+}
+
+// ResolveGuestVM authorizes a guest workflow operation on a deployment-owned VM.
+func (service *Service) ResolveGuestVM(actorID int, resourceID int) (request proxmox.GuestArtifactRequest, err error) {
 	var resource *db.ManagedResource
 	if resource, err = service.store.ManagedResources.Select(resourceID); err != nil {
 		return
@@ -49,17 +59,48 @@ func (service *Service) ResolveGuestArtifact(actorID int, resourceID int, input 
 		return
 	}
 	var template *db.VMTemplate
-	if template, err = service.ProvisioningVMTemplate(configuration.TemplateAlias); err != nil {
+	var actor *db.Account
+	if actor, err = service.store.Accounts.Select(actorID); err != nil {
 		return
 	}
-	var guestOS string = strings.ToLower(template.GuestOS)
-	if !isSupportedArtifactLinux(guestOS) {
-		err = fmt.Errorf("%w: guest artifacts currently support prepared Linux sources only", ErrInvalidInput)
+	var nodes []*db.OwnershipNode
+	if nodes, err = service.store.OwnershipNodes.SelectAll(); err != nil {
+		return
+	}
+	var nodesByID map[int]*db.OwnershipNode = make(map[int]*db.OwnershipNode, len(nodes))
+	for _, node := range nodes {
+		nodesByID[node.ID] = node
+	}
+	var owner *db.OwnershipNode = nodesByID[resource.OwnershipID]
+	if actor != nil && actor.PlatformAdministrator && service.hasInternalAncestor(owner, nodesByID) {
+		template, err = service.ProvisioningSystemVMTemplate(configuration.TemplateAlias)
+	} else {
+		template, err = service.ProvisioningVMTemplate(configuration.TemplateAlias)
+	}
+	if err != nil {
+		return
+	}
+	var guestOSFamily string
+	if guestOSFamily = artifactGuestOSFamily(template.GuestOS); guestOSFamily == "" {
+		err = fmt.Errorf("%w: guest artifacts currently support prepared Linux, Windows, and BSD sources only", ErrInvalidInput)
 		return
 	}
 	request = proxmox.GuestArtifactRequest{
 		Node: resource.ExternalNode, VMID: resource.ExternalID, VMOperationKey: resource.OperationKey,
-		Entrypoint: input.Entrypoint, SHA256: input.SHA256,
+		GuestOSFamily: guestOSFamily,
+	}
+	return
+}
+
+// artifactGuestOSFamily returns the execution family allowed for a prepared source template.
+func artifactGuestOSFamily(guestOS string) (family string) {
+	guestOS = strings.ToLower(strings.TrimSpace(guestOS))
+	if isSupportedArtifactLinux(guestOS) {
+		family = "linux"
+	} else if strings.Contains(guestOS, "windows") {
+		family = "windows"
+	} else if strings.Contains(guestOS, "bsd") || strings.Contains(guestOS, "pfsense") {
+		family = "bsd"
 	}
 	return
 }

@@ -23,6 +23,7 @@ type (
 		VMID                   string   `json:"vmid"`
 		VMOperationKey         string   `json:"vm_operation_key"`
 		Bridge                 string   `json:"bridge"`
+		Model                  string   `json:"model,omitempty"`
 		NetworkOperationKey    string   `json:"network_operation_key,omitempty"`
 		AttachmentOperationKey string   `json:"attachment_operation_key"`
 		EnforceAddressFilter   bool     `json:"enforce_address_filter,omitempty"`
@@ -30,6 +31,7 @@ type (
 		AllowDHCPv6Server      bool     `json:"allow_dhcpv6_server,omitempty"`
 		AllowedAddresses       []string `json:"allowed_addresses,omitempty"`
 		AllowedClientSubnets   []string `json:"allowed_client_subnets,omitempty"`
+		AllowedPeerSubnets     []string `json:"allowed_peer_subnets,omitempty"`
 	}
 
 	// NetworkAttachmentPlacement is the stable PVE virtual NIC identity.
@@ -83,6 +85,9 @@ func (service *Service) DetachNetwork(ctx context.Context, request NetworkAttach
 func (driver *apiNetworkAttachmentDriver) Attach(ctx context.Context, request NetworkAttachmentRequest) (placement NetworkAttachmentPlacement, err error) {
 	if err = validateNetworkAttachmentRequest(request); err != nil {
 		return
+	}
+	if request.Model == "" {
+		request.Model = "virtio"
 	}
 	var client *pve.Client
 	if client, err = newAPIClient(driver.settings); err != nil {
@@ -144,6 +149,11 @@ func (driver *apiNetworkAttachmentDriver) Attach(ctx context.Context, request Ne
 					return
 				}
 			}
+			if len(request.AllowedPeerSubnets) > 0 {
+				if err = ensureVMInterfacePeerTrafficRules(ctx, vm, device, request); err != nil {
+					return
+				}
+			}
 			return
 		}
 	}
@@ -159,7 +169,7 @@ func (driver *apiNetworkAttachmentDriver) Attach(ctx context.Context, request Ne
 		}
 		firewallOption = ",firewall=1"
 	}
-	if task, err = vm.Config(ctx, pve.VirtualMachineOption{Name: device, Value: "virtio=" + mac + ",bridge=" + request.Bridge + firewallOption}); err != nil {
+	if task, err = vm.Config(ctx, pve.VirtualMachineOption{Name: device, Value: request.Model + "=" + mac + ",bridge=" + request.Bridge + firewallOption}); err != nil {
 		return
 	}
 	if err = waitTask(ctx, client, task); err != nil {
@@ -186,6 +196,11 @@ func (driver *apiNetworkAttachmentDriver) Attach(ctx context.Context, request Ne
 			return
 		}
 		if err = ensureVMInterfaceRouterDNSRules(ctx, vm, device, request); err != nil {
+			return
+		}
+	}
+	if len(request.AllowedPeerSubnets) > 0 {
+		if err = ensureVMInterfacePeerTrafficRules(ctx, vm, device, request); err != nil {
 			return
 		}
 	}
@@ -273,6 +288,11 @@ func (driver *apiNetworkAttachmentDriver) Read(ctx context.Context, request Netw
 			return
 		}
 	}
+	if len(request.AllowedPeerSubnets) > 0 {
+		if err = verifyVMInterfacePeerTrafficRules(ctx, vm, placement.Device, request); err != nil {
+			return
+		}
+	}
 	err = verifyAttachmentTarget(ctx, client, node, request)
 	return
 }
@@ -324,6 +344,11 @@ func (driver *apiNetworkAttachmentDriver) Detach(ctx context.Context, request Ne
 			return
 		}
 		if err = removeVMInterfaceRouterDNSRules(ctx, vm, device, request); err != nil {
+			return
+		}
+	}
+	if len(request.AllowedPeerSubnets) > 0 {
+		if err = removeVMInterfacePeerTrafficRules(ctx, vm, device, request); err != nil {
 			return
 		}
 	}
@@ -413,6 +438,35 @@ func routerForwardingFirewallRules(device string, request NetworkAttachmentReque
 			Comment: "Organesson router forwarding " + request.AttachmentOperationKey + " " + subnet,
 		})
 	}
+	return
+}
+
+// networkPeerFirewallRules allows traffic from approved peers on the same managed L2 network.
+func networkPeerFirewallRules(device string, request NetworkAttachmentRequest) (rules []*pve.FirewallRule) {
+	for _, subnet := range request.AllowedPeerSubnets {
+		rules = append(rules, &pve.FirewallRule{
+			Type: "in", Action: "ACCEPT", Enable: 1, Iface: device, Source: subnet,
+			Comment: "Organesson network peers " + request.AttachmentOperationKey + " " + subnet,
+		})
+	}
+	return
+}
+
+// ensureVMInterfacePeerTrafficRules applies only the approved managed-network peer allowances.
+func ensureVMInterfacePeerTrafficRules(ctx context.Context, vm *pve.VirtualMachine, device string, request NetworkAttachmentRequest) (err error) {
+	err = ensureVMInterfaceFirewallRules(ctx, vm, networkPeerFirewallRules(device, request), "network peer")
+	return
+}
+
+// verifyVMInterfacePeerTrafficRules checks that managed-network peer allowances remain intact.
+func verifyVMInterfacePeerTrafficRules(ctx context.Context, vm *pve.VirtualMachine, device string, request NetworkAttachmentRequest) (err error) {
+	err = verifyVMInterfaceFirewallRules(ctx, vm, networkPeerFirewallRules(device, request), "network peer")
+	return
+}
+
+// removeVMInterfacePeerTrafficRules removes only peer allowances owned by this attachment.
+func removeVMInterfacePeerTrafficRules(ctx context.Context, vm *pve.VirtualMachine, device string, request NetworkAttachmentRequest) (err error) {
+	err = removeVMInterfaceFirewallRules(ctx, vm, networkPeerFirewallRules(device, request), "network peer")
 	return
 }
 
@@ -912,6 +966,10 @@ func validateNetworkAttachmentRequest(request NetworkAttachmentRequest) (err err
 		err = errors.New("network attachment requires managed VM identity and a valid approved bridge")
 		return
 	}
+	if request.Model != "" && request.Model != "virtio" && request.Model != "e1000e" {
+		err = errors.New("network attachment model must be virtio or e1000e")
+		return
+	}
 	if request.NetworkOperationKey == "" && strings.HasPrefix(request.Bridge, "on") {
 		err = errors.New("Organesson SDN VNets require their ownership operation key")
 		return
@@ -923,6 +981,23 @@ func validateNetworkAttachmentRequest(request NetworkAttachmentRequest) (err err
 	if len(request.AllowedClientSubnets) > 0 && (!request.EnforceAddressFilter || request.NetworkOperationKey == "") {
 		err = errors.New("router client subnets require a filtered, Organesson-managed network attachment")
 		return
+	}
+	if len(request.AllowedPeerSubnets) > 0 && (!request.EnforceAddressFilter || request.NetworkOperationKey == "" || request.AttachmentOperationKey == "") {
+		err = errors.New("peer subnets require a filtered, Organesson-managed network attachment")
+		return
+	}
+	var peerSubnetFamilies map[bool]bool = make(map[bool]bool)
+	for _, value := range request.AllowedPeerSubnets {
+		var prefix netip.Prefix
+		if prefix, err = netip.ParsePrefix(value); err != nil || prefix != prefix.Masked() {
+			err = fmt.Errorf("network peer subnet %q is not a canonical network prefix", value)
+			return
+		}
+		if peerSubnetFamilies[prefix.Addr().Is6()] {
+			err = fmt.Errorf("network peer subnet family is duplicated: %q", value)
+			return
+		}
+		peerSubnetFamilies[prefix.Addr().Is6()] = true
 	}
 	var subnetFamilies map[bool]bool = make(map[bool]bool)
 	for _, value := range request.AllowedClientSubnets {
@@ -1007,7 +1082,7 @@ func networkOptionMap(value string) (options map[string]string) {
 		var pair []string = strings.SplitN(option, "=", 2)
 		if len(pair) == 2 {
 			options[strings.ToLower(pair[0])] = pair[1]
-			if (pair[0] == "virtio" || pair[0] == "e1000" || pair[0] == "rtl8139") && strings.Contains(pair[1], ":") {
+			if (pair[0] == "virtio" || pair[0] == "e1000" || pair[0] == "e1000e" || pair[0] == "rtl8139") && strings.Contains(pair[1], ":") {
 				options["macaddr"] = pair[1]
 			}
 		} else if len(pair) == 1 && strings.Contains(pair[0], ":") {

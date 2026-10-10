@@ -806,6 +806,19 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 	if !executionResult.Execution.Reused || fakeArtifactDriver.callCount != 1 {
 		t.Fatalf("successful artifact retry reran guest code: reused=%t executions=%d", executionResult.Execution.Reused, fakeArtifactDriver.callCount)
 	}
+	var rebootPath string = "/api/v1/virtual-machines/" + strconv.Itoa(vmResult.Resource.ID) + "/guest-reboot-wait"
+	response = performRequest(t, application, jar, http.MethodPost, rebootPath, `{"timeout_seconds":60}`, csrfToken)
+	var rebootResult struct {
+		Ready bool `json:"ready"`
+	}
+	if response.StatusCode != fiber.StatusOK || json.NewDecoder(response.Body).Decode(&rebootResult) != nil {
+		response.Body.Close()
+		t.Fatalf("authorized guest reboot wait failed: status %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if !rebootResult.Ready || fakeArtifactDriver.rebootWaitCount != 1 {
+		t.Fatalf("guest reboot wait did not reach Proxmox: ready=%t calls=%d", rebootResult.Ready, fakeArtifactDriver.rebootWaitCount)
+	}
 	response = performRequest(t, application, jar, http.MethodPost, createPath, createBody, csrfToken)
 	var idempotentVMResult struct {
 		Resource struct {
@@ -949,9 +962,10 @@ type fakeProxmoxVMDriver struct {
 }
 
 type fakeGuestArtifactDriver struct {
-	callCount int
-	files     []proxmox.GuestArtifactFile
-	failNext  bool
+	callCount       int
+	rebootWaitCount int
+	files           []proxmox.GuestArtifactFile
+	failNext        bool
 }
 
 func (driver *fakeGuestArtifactDriver) Execute(_ context.Context, request proxmox.GuestArtifactRequest, files []proxmox.GuestArtifactFile) (result proxmox.GuestArtifactResult, err error) {
@@ -964,6 +978,15 @@ func (driver *fakeGuestArtifactDriver) Execute(_ context.Context, request proxmo
 		return
 	}
 	result = proxmox.GuestArtifactResult{SHA256: request.SHA256, Status: "succeeded", ExitCode: 0}
+	return
+}
+
+func (driver *fakeGuestArtifactDriver) RestartAndWait(_ context.Context, _ proxmox.GuestArtifactRequest, _ time.Duration) (err error) {
+	driver.rebootWaitCount++
+	return
+}
+
+func (driver *fakeGuestArtifactDriver) WaitWindowsFirstBoot(_ context.Context, _ proxmox.GuestArtifactRequest) (err error) {
 	return
 }
 

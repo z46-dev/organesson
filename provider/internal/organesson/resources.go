@@ -250,6 +250,7 @@ func resourceNetworkAttachment() (resource *schema.Resource) {
 			ExactlyOneOf: []string{"environment_network", "logical_network_id"},
 			Description:  "The deployment virtual network identifier.",
 		},
+		"model":                {Type: schema.TypeString, Optional: true, Default: "virtio", ForceNew: true, ValidateFunc: validation.StringInSlice([]string{"virtio", "e1000e"}, false), Description: "Proxmox virtual NIC model. Use e1000e for Windows guests without an installed VirtIO network driver."},
 		"addresses":            {Type: schema.TypeList, Computed: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "IPv4 addresses claimed from the referenced address pool."},
 		"ipv6_addresses":       {Type: schema.TypeList, Computed: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "IPv6 addresses claimed from the referenced address pool."},
 		"address_family":       {Type: schema.TypeString, Computed: true, Description: "Address family of this interface's allocated pool."},

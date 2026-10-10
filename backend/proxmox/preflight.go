@@ -21,6 +21,11 @@ var ErrNotConfigured = errors.New("Proxmox connection is not configured")
 var ErrSDNNetworkNotFound = errors.New("Organesson Proxmox SDN network is missing")
 
 type (
+	guestOperationLock struct {
+		mutex sync.Mutex
+		users int
+	}
+
 	// Check is one read-only source-VM preflight result.
 	Check struct {
 		Name     string `json:"name"`
@@ -88,6 +93,8 @@ type (
 	// GuestArtifactDriver transfers and runs a validated Linux artifact through QEMU Guest Agent.
 	GuestArtifactDriver interface {
 		Execute(context.Context, GuestArtifactRequest, []GuestArtifactFile) (GuestArtifactResult, error)
+		RestartAndWait(context.Context, GuestArtifactRequest, time.Duration) error
+		WaitWindowsFirstBoot(context.Context, GuestArtifactRequest) error
 	}
 
 	// TemplatePreparationDriver prepares a registered source VM without adopting it as a managed deployment resource.
@@ -121,11 +128,41 @@ type (
 		templatePreparationDriver TemplatePreparationDriver
 		templateDetectionDriver   TemplateDetectionDriver
 		lifecycleLock             sync.Mutex
+		guestOperationLocksMu     sync.Mutex
+		guestOperationLocks       map[string]*guestOperationLock
 		routerPollingLock         sync.Mutex
 		routerPollingCache        map[string]cachedRouterPollingResult
 		alwaysConfigured          bool
 	}
 )
+
+// lockGuestOperation serializes side effects per VM while allowing unrelated guests to provision concurrently.
+func (service *Service) lockGuestOperation(node string, vmid string) (unlock func()) {
+	var key string = node + "/" + vmid
+	service.guestOperationLocksMu.Lock()
+	if service.guestOperationLocks == nil {
+		service.guestOperationLocks = make(map[string]*guestOperationLock)
+	}
+	var operation *guestOperationLock = service.guestOperationLocks[key]
+	if operation == nil {
+		operation = &guestOperationLock{}
+		service.guestOperationLocks[key] = operation
+	}
+	operation.users++
+	service.guestOperationLocksMu.Unlock()
+
+	operation.mutex.Lock()
+	unlock = func() {
+		operation.mutex.Unlock()
+		service.guestOperationLocksMu.Lock()
+		operation.users--
+		if operation.users == 0 {
+			delete(service.guestOperationLocks, key)
+		}
+		service.guestOperationLocksMu.Unlock()
+	}
+	return
+}
 
 // New creates a Proxmox preflight service using the supported Go API client.
 func New(settings config.ProxmoxConfiguration) (service *Service) {
@@ -363,6 +400,11 @@ func (inspector *apiInspector) Inspect(ctx context.Context, sourceID string, exp
 				result.GuestOSVersion = strings.TrimSpace(osInfo.Version)
 			}
 			result.GuestArchitecture = normalizeGuestArchitecture(osInfo.Machine)
+			if TemplatePreparationOSFamily(expectedOS) == "freebsd" && (result.GuestOSID == "" || result.GuestOSName == "" || result.GuestOSVersion == "" || result.GuestArchitecture == "") {
+				if err = detectFreeBSDGuestMetadata(ctx, inspector.settings, vm, vmID, &result); err != nil {
+					err = nil
+				}
+			}
 			var osMatches bool = expectedOS == "" || guestOSMatchesTemplate(expectedOS, result.GuestOSID)
 			result.Checks = append(result.Checks, Check{Name: "guest_agent_reachable", Passed: true, Required: true, Details: "QEMU Guest Agent returned operating-system information."})
 			result.Checks = append(result.Checks, Check{

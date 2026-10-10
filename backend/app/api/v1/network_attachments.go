@@ -35,7 +35,7 @@ func createNetworkAttachmentHandler(services common.Services) (handler fiber.Han
 		var resource *db.ManagedResource
 		var configuration domain.ManagedNetworkAttachmentConfiguration
 		if resource, configuration, err = services.Domain.ReserveNetworkAttachment(actorID, domain.NetworkAttachmentRequest{
-			Name: request.Name, VirtualMachineID: vmResourceID, EnvironmentNetwork: request.EnvironmentNetwork,
+			Name: request.Name, Model: request.Model, VirtualMachineID: vmResourceID, EnvironmentNetwork: request.EnvironmentNetwork,
 			LogicalNetworkID: request.LogicalNetworkID, AddressPoolRequestID: request.AddressPoolRequestID,
 			RequestedAddressCount: request.RequestedAddressCount, IPv6AddressPoolRequestID: request.IPv6AddressPoolRequestID,
 			RequestedIPv6AddressCount: request.RequestedIPv6AddressCount,
@@ -51,6 +51,7 @@ func createNetworkAttachmentHandler(services common.Services) (handler fiber.Han
 		}
 		configuration.Placement = placement
 		if err = syncManagedNetworkRouterDHCPReservations(ctx, services, request.LogicalNetworkID, 0); err != nil {
+			log.Printf("network attachment %d router DHCP reservation sync failed: %v", resource.ID, err)
 			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "The managed router did not confirm its reserved DHCP addresses."})
 		}
 		err = ctx.Status(fiber.StatusCreated).JSON(fiber.Map{"resource": resource, "configuration": configuration})
@@ -104,7 +105,7 @@ func syncManagedNetworkRouterDHCPReservations(ctx fiber.Ctx, services common.Ser
 		if err = json.Unmarshal([]byte(resource.ConfigurationJSON), &attachment); err != nil {
 			return
 		}
-		if attachment.LogicalNetworkID != network.ID || attachment.Placement.MAC == "" {
+		if attachment.LogicalNetworkID != network.ID || attachment.VirtualMachineID == routerResourceID || attachment.Placement.MAC == "" {
 			continue
 		}
 		for _, value := range attachment.Addresses {
@@ -193,7 +194,7 @@ func configureGuestNetworkHandler(services common.Services) (handler fiber.Handl
 	return
 }
 
-// getGuestNetworkConfigurationHandler checks saved guest setup against NetworkManager through QGA.
+// getGuestNetworkConfigurationHandler checks saved guest setup against the active Linux network manager through QGA.
 func getGuestNetworkConfigurationHandler(services common.Services) (handler fiber.Handler) {
 	handler = func(ctx fiber.Ctx) (err error) {
 		var actorID int

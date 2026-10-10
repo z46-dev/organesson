@@ -17,6 +17,7 @@ type (
 	// NetworkAttachmentRequest reserves one VM-owned attachment and addresses when its network requires filtering.
 	NetworkAttachmentRequest struct {
 		Name                      string `json:"name"`
+		Model                     string `json:"model,omitempty"`
 		VirtualMachineID          int    `json:"virtual_machine_id"`
 		EnvironmentNetwork        string `json:"environment_network,omitempty"`
 		LogicalNetworkID          int    `json:"logical_network_id,omitempty"`
@@ -58,8 +59,16 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 	defer service.provisioningLock.Unlock()
 	request.Name = strings.TrimSpace(request.Name)
 	request.EnvironmentNetwork = strings.TrimSpace(request.EnvironmentNetwork)
+	request.Model = strings.TrimSpace(request.Model)
+	if request.Model == "" {
+		request.Model = "virtio"
+	}
 	if request.Name == "" || len(request.Name) > 128 || request.VirtualMachineID < 1 || (request.EnvironmentNetwork == "") == (request.LogicalNetworkID == 0) || request.RequestedAddressCount < 0 || request.RequestedIPv6AddressCount < 0 || request.AddressPoolRequestID > 0 && request.AddressPoolRequestID == request.IPv6AddressPoolRequestID {
 		err = fmt.Errorf("%w: network attachment is invalid", ErrInvalidInput)
+		return
+	}
+	if request.Model != "virtio" && request.Model != "e1000e" {
+		err = fmt.Errorf("%w: network attachment model must be virtio or e1000e", ErrInvalidInput)
 		return
 	}
 	var vm *db.ManagedResource
@@ -87,6 +96,7 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 	var allowDHCPv4Server bool
 	var allowDHCPv6Server bool
 	var allowedClientSubnets []string
+	var allowedPeerSubnets []string
 	var managedIPv4Subnet string
 	var managedIPv6Subnet string
 	if request.LogicalNetworkID > 0 {
@@ -127,6 +137,14 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 		allowManagedNetworkSubnet = enforceAddressFilter && !allowUnallocatedRouterLAN
 		allowDHCPv4Server = allowUnallocatedRouterLAN && networkConfiguration.Request.DHCPEnabled
 		allowDHCPv6Server = allowUnallocatedRouterLAN && networkConfiguration.Request.IPv6DHCPEnabled
+		if allowManagedNetworkSubnet {
+			if networkConfiguration.Request.Subnet != "" {
+				allowedPeerSubnets = append(allowedPeerSubnets, networkConfiguration.Request.Subnet)
+			}
+			if networkConfiguration.Request.IPv6Subnet != "" {
+				allowedPeerSubnets = append(allowedPeerSubnets, networkConfiguration.Request.IPv6Subnet)
+			}
+		}
 		if allowUnallocatedRouterLAN {
 			configuration.Addresses = []string{networkConfiguration.Request.Gateway}
 			if networkConfiguration.Request.IPv6Gateway != "" {
@@ -272,9 +290,9 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 	}
 	configuration.Request = proxmox.NetworkAttachmentRequest{
 		Node: vm.ExternalNode, VMID: vm.ExternalID, VMOperationKey: vm.OperationKey,
-		Bridge: pveNetwork, NetworkOperationKey: networkOperationKey, AttachmentOperationKey: operationKey,
+		Bridge: pveNetwork, Model: request.Model, NetworkOperationKey: networkOperationKey, AttachmentOperationKey: operationKey,
 		EnforceAddressFilter: enforceAddressFilter, AllowDHCPv4Server: allowDHCPv4Server, AllowDHCPv6Server: allowDHCPv6Server,
-		AllowedAddresses: allowedAddresses, AllowedClientSubnets: allowedClientSubnets,
+		AllowedAddresses: allowedAddresses, AllowedClientSubnets: allowedClientSubnets, AllowedPeerSubnets: allowedPeerSubnets,
 	}
 	var node *db.OwnershipNode = &db.OwnershipNode{
 		DeploymentID: vm.DeploymentID, ParentID: &vm.OwnershipID, Kind: db.OwnershipNodeKindResource,

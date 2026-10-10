@@ -12,6 +12,8 @@ type ViewMode = "login" | "bootstrap" | "activate";
 type Theme = "light" | "dark";
 type Accent = "green" | "blue" | "violet" | "amber";
 
+const initialPasswordResetToken = new URLSearchParams(window.location.hash.slice(1)).get("password-reset") ?? "";
+
 const accentOptions: { name: Accent; swatch: string }[] = [
     { name: "green", swatch: "#26734f" },
     { name: "blue", swatch: "#3475c5" },
@@ -22,14 +24,15 @@ const accentOptions: { name: Accent; swatch: string }[] = [
 // Owns authentication, shared application chrome, and top-level navigation.
 export function App() {
     const [status, setStatus] = useState<AuthStatus | null>(null);
-    const [mode, setMode] = useState<ViewMode>("login");
+    const [mode, setMode] = useState<ViewMode>(initialPasswordResetToken ? "activate" : "login");
     const [pathname, setPathname] = useState(window.location.pathname);
     const [toasts, setToasts] = useState<ToastNotice[]>([]);
     const [busy, setBusy] = useState(false);
     const [loginName, setLoginName] = useState("");
     const [realm, setRealm] = useState("");
     const [password, setPassword] = useState("");
-    const [oneTimeToken, setOneTimeToken] = useState("");
+    const [oneTimeToken, setOneTimeToken] = useState(initialPasswordResetToken);
+    const [passwordResetFlow, setPasswordResetFlow] = useState(Boolean(initialPasswordResetToken));
     const [newPassword, setNewPassword] = useState("");
     const [theme, setTheme] = useState<Theme>(() => localStorage.getItem("organesson-theme") === "dark" ? "dark" : "light");
     const [accent, setAccent] = useState<Accent>(() => {
@@ -67,6 +70,12 @@ export function App() {
             active = false;
         };
     }, [onError]);
+
+    useEffect(() => {
+        if (initialPasswordResetToken) {
+            window.history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
+        }
+    }, []);
 
     useEffect(() => {
         const realms = status?.realms ?? [];
@@ -139,7 +148,9 @@ export function App() {
         try {
             if (mode === "activate") {
                 await apiRequest("/auth/password/redeem", "POST", { token: oneTimeToken, password: newPassword });
+                setPasswordResetFlow(false);
                 setMode("login");
+                setStatus({ setup_required: false, authenticated: false, realms: status?.realms });
                 setLoginName("");
                 setPassword("");
                 setOneTimeToken("");
@@ -165,14 +176,34 @@ export function App() {
     }
 
     async function signOut() {
+        let logoutError: Error | undefined;
         try {
             await apiRequest("/auth/logout", "POST", {});
-            setStatus({ setup_required: false, authenticated: false, realms: status?.realms });
-            onNotice("Signed out.");
-            navigate("/");
         } catch (requestError) {
-            onError((requestError as Error).message);
+            logoutError = requestError as Error;
         }
+
+        if (logoutError) {
+            try {
+                const currentStatus = await apiRequest<AuthStatus>("/auth/status");
+                if (currentStatus.authenticated) {
+                    onError(logoutError.message);
+                    return;
+                }
+                setStatus(currentStatus);
+            } catch {
+                onError(logoutError.message);
+                return;
+            }
+        } else {
+            setStatus({ setup_required: false, authenticated: false, realms: status?.realms });
+        }
+
+        if (profileMenu.current) {
+            profileMenu.current.open = false;
+        }
+        onNotice("Signed out.");
+        navigate("/");
     }
 
     const account = status?.authenticated ? status.account : undefined;
@@ -186,7 +217,7 @@ export function App() {
                     <img className="wordmark-mark" src="/organesson-mark.svg" alt="" />
                     <span>organesson</span>
                 </a>
-                {account ? (
+                {account && !passwordResetFlow ? (
                     <div className="header-actions">
                         <nav className="primary-nav" aria-label="Main navigation">
                             <a className="nav-link" href="/" aria-current={route === "dashboard" ? "page" : undefined} onClick={(event) => handleNavigation(event, "/")}>Dashboard</a>
@@ -212,7 +243,7 @@ export function App() {
             </header>}
 
             <main className={`main-content${detachedConsole ? " console-only-main" : account && route === "dashboard" ? " dashboard-main" : account && route === "admin" ? " admin-main" : ""}`}>
-                {!status ? <section className="auth-card"><p className="eyebrow">Connecting</p><h1>Loading Organesson…</h1></section> : account ? (
+                {!status ? <section className="auth-card"><p className="eyebrow">Loading Organesson…</p><h1>Connecting</h1></section> : account && !passwordResetFlow ? (
                     route === "dashboard" ? <Dashboard request={apiRequest} onError={onError} />
                         : route === "admin" ? <AdminPage request={apiRequest} onError={onError} onNotice={onNotice} />
                             : route === "console" ? <VMConsolePage resourceID={Number(pathname.split("/").filter(Boolean)[1])} request={apiRequest} onError={onError} detached={detachedConsole} />
@@ -220,7 +251,7 @@ export function App() {
                                 : <section className="panel route-message"><p className="eyebrow">Not found</p><h1>That page doesn’t exist.</h1><a className="primary-action" href="/" onClick={(event) => handleNavigation(event, "/")}>Return to dashboard</a></section>
                 ) : (
                     <section className="auth-layout">
-                        <div className="auth-intro"><p className="eyebrow">Resource ownership, made clear</p><h1>{mode === "bootstrap" ? "Set up the administrator." : mode === "activate" ? "Activate your account." : "Sign in to Organesson."}</h1></div>
+                        <div className="auth-intro"><p className="eyebrow">Resource ownership, made clear</p><h1>{mode === "bootstrap" ? "Set up the administrator." : passwordResetFlow ? "Reset your password." : mode === "activate" ? "Activate your account." : "Sign in to Organesson."}</h1></div>
                         <form className="panel auth-card" onSubmit={submitAuth}>
                             {mode === "login" ? <>
                                 <label>Realm<select value={realm} onChange={(event) => setRealm(event.target.value)} required disabled={(status.realms ?? []).length === 0}><option value="" disabled>{(status.realms ?? []).length === 0 ? "No realms available" : "Select realm"}</option>{(status.realms ?? []).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
@@ -229,10 +260,10 @@ export function App() {
                                 <button className="primary-action full-width" type="submit" disabled={busy || !realm}>{busy ? "Signing in…" : "Sign in"}</button>
                                 <button className="text-action" type="button" onClick={() => setMode("activate")}>Have a one-time activation token?</button>
                             </> : <>
-                                <p className="form-intro">{mode === "bootstrap" ? "Paste the one-time setup token printed by the backend, then choose a strong password." : "Paste the one-time token from the local fixture seeding output, then choose a password for this account."}</p>
+                                <p className="form-intro">{mode === "bootstrap" ? "Paste the one-time setup token printed by the backend, then choose a strong password." : passwordResetFlow ? "Choose a new password for this local account." : "Paste the one-time token, then choose a password for this account."}</p>
                                 <label>One-time token<input autoComplete="one-time-code" value={oneTimeToken} onChange={(event) => setOneTimeToken(event.target.value)} required /></label>
                                 <label>{mode === "bootstrap" ? "Administrator password" : "New password"}<input autoComplete="new-password" type="password" minLength={12} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /></label>
-                                <button className="primary-action full-width" type="submit" disabled={busy}>{busy ? "Saving…" : mode === "bootstrap" ? "Activate administrator" : "Activate account"}</button>
+                                <button className="primary-action full-width" type="submit" disabled={busy}>{busy ? "Saving…" : mode === "bootstrap" ? "Activate administrator" : passwordResetFlow ? "Reset password" : "Activate account"}</button>
                                 {mode === "activate" && <button className="text-action" type="button" onClick={() => setMode("login")}>Back to sign in</button>}
                             </>}
                         </form>
