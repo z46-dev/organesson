@@ -74,6 +74,7 @@ prepare_tls() {
     local hostname="${PUBLIC_HOSTNAME}"
 
     as_root install -d -o root -g "${SERVICE_USER}" -m 0750 "${TLS_DIR}"
+    setup_tls_selinux
     TLS_TRUSTED_CA="${TLS_DIR}/server.crt"
     if [[ "${USE_FREEIPA_CERT}" == "true" ]]; then
         prepare_freeipa_certificate
@@ -97,6 +98,12 @@ prepare_tls() {
     as_root chown "root:${SERVICE_USER}" "${TLS_DIR}/server.crt" "${TLS_DIR}/server.key"
     as_root chmod 0644 "${TLS_DIR}/server.crt"
     as_root chmod 0640 "${TLS_DIR}/server.key"
+}
+
+setup_tls_selinux() {
+    selinuxenabled || return 0
+    as_root semanage fcontext -a -t cert_t "${TLS_DIR}(/.*)?" 2>/dev/null || as_root semanage fcontext -m -t cert_t "${TLS_DIR}(/.*)?"
+    as_root restorecon -RF "${TLS_DIR}"
 }
 
 prepare_freeipa_certificate() {
@@ -277,7 +284,6 @@ setup_selinux() {
     fi
     as_root setsebool -P httpd_can_network_connect 1
     as_root semanage fcontext -a -t httpd_sys_content_t "${INSTALL_DIR}/frontend(/.*)?" 2>/dev/null || as_root semanage fcontext -m -t httpd_sys_content_t "${INSTALL_DIR}/frontend(/.*)?"
-    as_root semanage fcontext -a -t cert_t "${TLS_DIR}(/.*)?" 2>/dev/null || as_root semanage fcontext -m -t cert_t "${TLS_DIR}(/.*)?"
 }
 
 build_application() {
