@@ -124,6 +124,7 @@ export function Dashboard({ request, onError }: Props) {
     const [collapsedBranches, setCollapsedBranches] = useState<Record<string, boolean>>({});
     const [loadingDeployments, setLoadingDeployments] = useState(true);
     const [loadingDetails, setLoadingDetails] = useState(false);
+    const selectedResource = selectedDeployment?.resources.find((resource) => resource.id === selectedResourceID);
 
     async function loadDeployments() {
         setLoadingDeployments(true);
@@ -246,7 +247,7 @@ export function Dashboard({ request, onError }: Props) {
                 window.clearInterval(refreshTimer);
             }
         };
-    }, [request, onError, selectedDeployment, selectedResourceID]);
+    }, [request, onError, selectedDeploymentID, selectedResourceID, selectedResource?.kind]);
 
     async function refreshSelectedDeployment() {
         if (selectedDeploymentID === null) {
@@ -278,7 +279,6 @@ export function Dashboard({ request, onError }: Props) {
         }
     }
 
-    const selectedResource = selectedDeployment?.resources.find((resource) => resource.id === selectedResourceID);
     const selectedNetworkAddresses = networkAddressRows(selectedResourceDetails?.router_polling);
     const selectedAddressAllocation = selectedResourceDetails?.allocation;
     const selectedAddressSource = selectedAddressAllocation?.environment_network || selectedDeployment?.resources.find((resource) => resource.id === selectedAddressAllocation?.logical_network_id)?.name || `Resource ${selectedAddressAllocation?.logical_network_id ?? "—"}`;

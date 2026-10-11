@@ -50,6 +50,16 @@ type (
 		CanManageResource  bool `json:"can_manage_resource"`
 	}
 
+	permissionEvaluator struct {
+		actorID        int
+		active         bool
+		platformAdmin  bool
+		nodeByID       map[int]*db.OwnershipNode
+		grants         []*db.PermissionGrant
+		groups         map[int]*db.UserGroup
+		memberGroupIDs map[int]struct{}
+	}
+
 	DeploymentAccessSummary struct {
 		Accounts               []DeploymentAccessAccount `json:"accounts"`
 		Groups                 []DeploymentAccessGroup   `json:"groups"`
@@ -480,10 +490,16 @@ func (service *Service) Require(actorID int, permission string, targetNodeID int
 
 // Can evaluates account and group grants along the target's ownership ancestry.
 func (service *Service) Can(actorID int, permission string, targetNodeID int) (allowed bool, err error) {
-	if _, valid := validPermissions[permission]; !valid {
-		err = ErrInvalidPermission
+	var evaluator *permissionEvaluator
+	if evaluator, err = service.newPermissionEvaluator(actorID); err != nil {
 		return
 	}
+	return evaluator.can(permission, targetNodeID)
+}
+
+// newPermissionEvaluator loads the actor's permission inputs once for a request.
+func (service *Service) newPermissionEvaluator(actorID int) (evaluator *permissionEvaluator, err error) {
+	evaluator = &permissionEvaluator{actorID: actorID}
 	var actor *db.Account
 	if actor, err = service.store.Accounts.Select(actorID); err != nil {
 		return
@@ -491,26 +507,20 @@ func (service *Service) Can(actorID int, permission string, targetNodeID int) (a
 	if actor == nil || actor.Disabled {
 		return
 	}
-	if actor.PlatformAdministrator {
-		allowed = true
+	evaluator.active = true
+	evaluator.platformAdmin = actor.PlatformAdministrator
+	if evaluator.platformAdmin {
 		return
 	}
-
 	var nodes []*db.OwnershipNode
 	if nodes, err = service.store.OwnershipNodes.SelectAll(); err != nil {
 		return
 	}
-	var nodeByID map[int]*db.OwnershipNode = make(map[int]*db.OwnershipNode, len(nodes))
+	evaluator.nodeByID = make(map[int]*db.OwnershipNode, len(nodes))
 	for _, node := range nodes {
-		nodeByID[node.ID] = node
+		evaluator.nodeByID[node.ID] = node
 	}
-	var target *db.OwnershipNode = nodeByID[targetNodeID]
-	if target == nil {
-		err = ErrNotFound
-		return
-	}
-	var grants []*db.PermissionGrant
-	if grants, err = service.store.PermissionGrants.SelectAll(); err != nil {
+	if evaluator.grants, err = service.store.PermissionGrants.SelectAll(); err != nil {
 		return
 	}
 	var memberships []*db.GroupMembership
@@ -521,15 +531,36 @@ func (service *Service) Can(actorID int, permission string, targetNodeID int) (a
 	if groups, err = service.store.UserGroups.SelectAll(); err != nil {
 		return
 	}
-	var memberGroupIDs map[int]struct{} = make(map[int]struct{})
+	evaluator.groups = make(map[int]*db.UserGroup, len(groups))
+	for _, group := range groups {
+		evaluator.groups[group.ID] = group
+	}
+	evaluator.memberGroupIDs = make(map[int]struct{})
 	for _, membership := range memberships {
 		if membership.AccountID == actorID {
-			for _, group := range groups {
-				if group.ID == membership.GroupID && group.DeploymentID == target.DeploymentID {
-					memberGroupIDs[group.ID] = struct{}{}
-				}
-			}
+			evaluator.memberGroupIDs[membership.GroupID] = struct{}{}
 		}
+	}
+	return
+}
+
+// can evaluates a permission against the evaluator's preloaded ownership and grant data.
+func (evaluator *permissionEvaluator) can(permission string, targetNodeID int) (allowed bool, err error) {
+	if _, valid := validPermissions[permission]; !valid {
+		err = ErrInvalidPermission
+		return
+	}
+	if !evaluator.active {
+		return
+	}
+	if evaluator.platformAdmin {
+		allowed = true
+		return
+	}
+	var target *db.OwnershipNode = evaluator.nodeByID[targetNodeID]
+	if target == nil {
+		err = ErrNotFound
+		return
 	}
 
 	var visited map[int]struct{} = make(map[int]struct{})
@@ -543,28 +574,30 @@ func (service *Service) Can(actorID int, permission string, targetNodeID int) (a
 		if current.Kind == db.OwnershipNodeKindInternal {
 			return
 		}
-		for _, grant := range grants {
+		for _, grant := range evaluator.grants {
 			if grant.TargetNodeID != current.ID || grant.Permission != permission {
 				continue
 			}
 			if current.ID != target.ID && !grant.InheritDescendants {
 				continue
 			}
-			if grant.SubjectKind == db.GrantSubjectKindAccount && grant.SubjectID == actorID {
+			if grant.SubjectKind == db.GrantSubjectKindAccount && grant.SubjectID == evaluator.actorID {
 				allowed = true
 				return
 			}
 			if grant.SubjectKind == db.GrantSubjectKindGroup {
-				if _, exists := memberGroupIDs[grant.SubjectID]; exists {
-					allowed = true
-					return
+				if group, exists := evaluator.groups[grant.SubjectID]; exists && group.DeploymentID == target.DeploymentID {
+					if _, isMember := evaluator.memberGroupIDs[grant.SubjectID]; isMember {
+						allowed = true
+						return
+					}
 				}
 			}
 		}
 		if current.ParentID == nil {
 			current = nil
 		} else {
-			current = nodeByID[*current.ParentID]
+			current = evaluator.nodeByID[*current.ParentID]
 			if current == nil {
 				err = errors.New("ownership tree has a missing parent")
 				return
@@ -594,31 +627,37 @@ func (service *Service) hasInternalAncestor(node *db.OwnershipNode, nodesByID ma
 
 // ListDeployments returns deployments where the caller can view at least one target.
 func (service *Service) ListDeployments(actorID int) (deployments []*db.Deployment, err error) {
+	var evaluator *permissionEvaluator
+	if evaluator, err = service.newPermissionEvaluator(actorID); err != nil {
+		return
+	}
 	var all []*db.Deployment
 	if all, err = service.store.Deployments.SelectAll(); err != nil {
 		return
+	}
+	var resources []*db.ManagedResource
+	if !evaluator.platformAdmin {
+		if resources, err = service.store.ManagedResources.SelectAll(); err != nil {
+			return
+		}
 	}
 	for _, deployment := range all {
 		if deployment.RootNodeID == nil {
 			continue
 		}
 		var allowed bool
-		if allowed, err = service.Can(actorID, db.PermissionDeploymentView, *deployment.RootNodeID); err != nil {
+		if allowed, err = evaluator.can(db.PermissionDeploymentView, *deployment.RootNodeID); err != nil {
 			return
 		}
 		if allowed {
 			deployments = append(deployments, deployment)
 			continue
 		}
-		var resources []*db.ManagedResource
-		if resources, err = service.store.ManagedResources.SelectAll(); err != nil {
-			return
-		}
 		for _, resource := range resources {
 			if resource.DeploymentID != deployment.ID {
 				continue
 			}
-			if allowed, err = service.Can(actorID, db.PermissionResourceView, resource.OwnershipID); err != nil {
+			if allowed, err = evaluator.can(db.PermissionResourceView, resource.OwnershipID); err != nil {
 				return
 			}
 			if allowed {
@@ -640,13 +679,17 @@ func (service *Service) GetDeployment(actorID int, deploymentID int) (summary *D
 		err = ErrNotFound
 		return
 	}
+	var evaluator *permissionEvaluator
+	if evaluator, err = service.newPermissionEvaluator(actorID); err != nil {
+		return
+	}
 	var deploymentAllowed bool
-	if deploymentAllowed, err = service.Can(actorID, db.PermissionDeploymentView, *deployment.RootNodeID); err != nil {
+	if deploymentAllowed, err = evaluator.can(db.PermissionDeploymentView, *deployment.RootNodeID); err != nil {
 		return
 	}
 	if !deploymentAllowed {
 		var hasVisibleResource bool
-		if hasVisibleResource, err = service.deploymentHasVisibleResource(actorID, deploymentID); err != nil {
+		if hasVisibleResource, err = service.deploymentHasVisibleResource(actorID, deploymentID, evaluator); err != nil {
 			return
 		}
 		if !hasVisibleResource {
@@ -658,22 +701,25 @@ func (service *Service) GetDeployment(actorID int, deploymentID int) (summary *D
 	summary = &DeploymentSummary{
 		Deployment: deployment, Resources: []*ResourceSummary{}, OwnershipNodes: []*db.OwnershipNode{},
 	}
-	if summary.CanManageGroups, err = service.Can(actorID, db.PermissionDeploymentManageGroups, *deployment.RootNodeID); err != nil {
+	if summary.CanManageGroups, err = evaluator.can(db.PermissionDeploymentManageGroups, *deployment.RootNodeID); err != nil {
 		return
 	}
-	if summary.CanManageConfiguration, err = service.Can(actorID, db.PermissionDeploymentManage, *deployment.RootNodeID); err != nil {
+	if summary.CanManageConfiguration, err = evaluator.can(db.PermissionDeploymentManage, *deployment.RootNodeID); err != nil {
 		return
 	}
-	if summary.CanManagePermissions, err = service.Can(actorID, db.PermissionDeploymentManagePermissions, *deployment.RootNodeID); err != nil {
+	if summary.CanManagePermissions, err = evaluator.can(db.PermissionDeploymentManagePermissions, *deployment.RootNodeID); err != nil {
 		return
 	}
-	var ownershipNodes []*db.OwnershipNode
-	if ownershipNodes, err = service.store.OwnershipNodes.SelectAll(); err != nil {
-		return
-	}
-	var nodesByID map[int]*db.OwnershipNode = make(map[int]*db.OwnershipNode, len(ownershipNodes))
-	for _, node := range ownershipNodes {
-		nodesByID[node.ID] = node
+	var nodesByID map[int]*db.OwnershipNode = evaluator.nodeByID
+	if nodesByID == nil {
+		var ownershipNodes []*db.OwnershipNode
+		if ownershipNodes, err = service.store.OwnershipNodes.SelectAll(); err != nil {
+			return
+		}
+		nodesByID = make(map[int]*db.OwnershipNode, len(ownershipNodes))
+		for _, node := range ownershipNodes {
+			nodesByID[node.ID] = node
+		}
 	}
 	var resources []*db.ManagedResource
 	var visibleOwnershipIDs map[int]struct{} = make(map[int]struct{})
@@ -686,25 +732,25 @@ func (service *Service) GetDeployment(actorID int, deploymentID int) (summary *D
 		}
 		var visible bool = deploymentAllowed && !service.hasInternalAncestor(nodesByID[resource.OwnershipID], nodesByID)
 		if !visible {
-			if visible, err = service.Can(actorID, db.PermissionResourceView, resource.OwnershipID); err != nil {
+			if visible, err = evaluator.can(db.PermissionResourceView, resource.OwnershipID); err != nil {
 				return
 			}
 		}
 		if visible {
 			var canPowerControl bool
-			if canPowerControl, err = service.Can(actorID, db.PermissionResourcePower, resource.OwnershipID); err != nil {
+			if canPowerControl, err = evaluator.can(db.PermissionResourcePower, resource.OwnershipID); err != nil {
 				return
 			}
 			var canSnapshotControl bool
-			if canSnapshotControl, err = service.Can(actorID, db.PermissionVMSnapshot, resource.OwnershipID); err != nil {
+			if canSnapshotControl, err = evaluator.can(db.PermissionVMSnapshot, resource.OwnershipID); err != nil {
 				return
 			}
 			var canConsoleControl bool
-			if canConsoleControl, err = service.Can(actorID, db.PermissionVMConsole, resource.OwnershipID); err != nil {
+			if canConsoleControl, err = evaluator.can(db.PermissionVMConsole, resource.OwnershipID); err != nil {
 				return
 			}
 			var canManageResource bool
-			if canManageResource, err = service.Can(actorID, db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
+			if canManageResource, err = evaluator.can(db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
 				return
 			}
 			summary.Resources = append(summary.Resources, &ResourceSummary{
@@ -1182,7 +1228,7 @@ func (service *Service) validateGrantSubject(kind db.GrantSubjectKind, subjectID
 }
 
 // deploymentHasVisibleResource checks whether a caller can inspect any resource in a deployment.
-func (service *Service) deploymentHasVisibleResource(actorID int, deploymentID int) (visible bool, err error) {
+func (service *Service) deploymentHasVisibleResource(actorID int, deploymentID int, evaluator *permissionEvaluator) (visible bool, err error) {
 	var resources []*db.ManagedResource
 	if resources, err = service.store.ManagedResources.SelectAll(); err != nil {
 		return
@@ -1191,7 +1237,7 @@ func (service *Service) deploymentHasVisibleResource(actorID int, deploymentID i
 		if resource.DeploymentID != deploymentID {
 			continue
 		}
-		if visible, err = service.Can(actorID, db.PermissionResourceView, resource.OwnershipID); err != nil || visible {
+		if visible, err = evaluator.can(db.PermissionResourceView, resource.OwnershipID); err != nil || visible {
 			return
 		}
 	}

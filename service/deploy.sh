@@ -4,8 +4,12 @@ set -Eeuo pipefail
 readonly SERVICE_USER="organesson"
 readonly CONFIG_DIR="/etc/organesson"
 readonly CONFIG_FILE="${CONFIG_DIR}/config.toml"
-readonly TLS_DIR="${CONFIG_DIR}/tls"
+readonly TLS_PATH_FILE="${CONFIG_DIR}/tls-directory"
+readonly DEFAULT_TLS_DIR="${CONFIG_DIR}/tls"
 readonly REPOSITORY_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+TLS_DIR="${DEFAULT_TLS_DIR}"
+TLS_TRUSTED_CA=""
+USE_FREEIPA_CERT="false"
 
 as_root() {
     if [[ "${EUID}" -eq 0 ]]; then
@@ -27,6 +31,20 @@ prompt_install_directory() {
     INSTALL_DIR="${answer:-/opt/organesson}"
     [[ "${INSTALL_DIR}" == /* && "${INSTALL_DIR}" != "/" && "${INSTALL_DIR}" != "/opt" && "${INSTALL_DIR}" != "/home" ]] || fail "Choose a dedicated absolute install directory."
     [[ "${INSTALL_DIR}" =~ ^/[A-Za-z0-9._/-]+$ && "/${INSTALL_DIR#/}/" != *"/../"* ]] || fail "Install directory may contain only path-safe characters and cannot contain parent-directory components."
+}
+
+prompt_tls_directory() {
+    local answer
+    local default_directory="${DEFAULT_TLS_DIR}"
+
+    if as_root test -f "${CONFIG_FILE}"; then
+        default_directory="$(as_root python3 -c 'import pathlib,sys,tomllib; print(tomllib.loads(pathlib.Path(sys.argv[1]).read_text()).get("web_server", {}).get("tls_dir", ""))' "${CONFIG_FILE}" 2>/dev/null || true)"
+        default_directory="${default_directory:-${DEFAULT_TLS_DIR}}"
+    fi
+
+    read -r -e -p "TLS certificate directory [${default_directory}]: " answer
+    TLS_DIR="${answer:-${default_directory}}"
+    [[ "${TLS_DIR}" =~ ^/[A-Za-z0-9._/-]+$ && "${TLS_DIR}" != "/" && "/${TLS_DIR#/}/" != *"/../"* ]] || fail "Choose a dedicated absolute TLS directory without parent-directory components."
 }
 
 install_dependencies() {
@@ -55,18 +73,118 @@ choose_editor() {
 prepare_tls() {
     local hostname="${PUBLIC_HOSTNAME}"
 
+    as_root install -d -o root -g "${SERVICE_USER}" -m 0750 "${TLS_DIR}"
+    TLS_TRUSTED_CA="${TLS_DIR}/server.crt"
+    if [[ "${USE_FREEIPA_CERT}" == "true" ]]; then
+        prepare_freeipa_certificate
+        return
+    fi
+
     if as_root test -s "${TLS_DIR}/server.crt" && as_root test -s "${TLS_DIR}/server.key"; then
         as_root openssl x509 -in "${TLS_DIR}/server.crt" -checkhost "${hostname}" -noout >/dev/null || fail "The existing TLS certificate does not cover ${hostname}. Replace the certificate and key in ${TLS_DIR} before continuing."
+        if as_root test -s /etc/ipa/ca.crt && as_root openssl verify -CAfile /etc/ipa/ca.crt "${TLS_DIR}/server.crt" >/dev/null 2>&1; then
+            TLS_TRUSTED_CA="/etc/ipa/ca.crt"
+        fi
         return
     fi
 
     [[ "${hostname}" =~ ^[A-Za-z0-9._-]+$ ]] || fail "Enter a hostname without a scheme or path."
-    as_root install -d -o root -g "${SERVICE_USER}" -m 0750 "${TLS_DIR}"
     printf '[organesson] Creating a self-signed certificate. Replace it with a trusted certificate before public use.\n'
     as_root openssl req -x509 -newkey rsa:3072 -sha256 -days 365 -nodes \
         -keyout "${TLS_DIR}/server.key" -out "${TLS_DIR}/server.crt" \
         -subj "/CN=${hostname}" \
         -addext "subjectAltName=DNS:${hostname},DNS:localhost,IP:127.0.0.1,IP:::1"
+    as_root chown "root:${SERVICE_USER}" "${TLS_DIR}/server.crt" "${TLS_DIR}/server.key"
+    as_root chmod 0644 "${TLS_DIR}/server.crt"
+    as_root chmod 0640 "${TLS_DIR}/server.key"
+}
+
+prepare_freeipa_certificate() {
+    local machine_hostname
+    local ipa_realm
+    local ipa_domain
+    local ccache_directory
+    local ccache_name
+    local service_principal
+    local request_output
+    local request_id
+    local request_status
+    local request_state
+    local attempt
+
+    machine_hostname="$(hostname -f 2>/dev/null || true)"
+    [[ -n "${machine_hostname}" && "${PUBLIC_HOSTNAME,,}" == "${machine_hostname,,}" ]] || fail "The FreeIPA certificate hostname must match this enrolled host's FQDN (${machine_hostname:-unknown})."
+    as_root dnf install -y freeipa-client certmonger
+    command -v ipa >/dev/null 2>&1 || fail "FreeIPA client tools are unavailable."
+    command -v ipa-getcert >/dev/null 2>&1 || fail "ipa-getcert is unavailable after installing the FreeIPA client tools."
+    command -v getcert >/dev/null 2>&1 || fail "certmonger tools are unavailable."
+    as_root test -s /etc/ipa/default.conf || fail "This host is not enrolled in FreeIPA (/etc/ipa/default.conf is missing)."
+    as_root test -s /etc/krb5.keytab || fail "This host has no Kerberos keytab for FreeIPA authentication."
+
+    ipa_realm="$(as_root awk -F= '$1 ~ /^[[:space:]]*realm[[:space:]]*$/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' /etc/ipa/default.conf)"
+    ipa_domain="$(as_root awk -F= '$1 ~ /^[[:space:]]*domain[[:space:]]*$/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' /etc/ipa/default.conf)"
+    [[ -n "${ipa_realm}" && -n "${ipa_domain}" ]] || fail "Could not determine the enrolled FreeIPA realm and domain."
+    [[ "${machine_hostname,,}" == *".${ipa_domain,,}" ]] || fail "The host FQDN ${machine_hostname} is outside its enrolled FreeIPA domain ${ipa_domain}."
+
+    as_root systemctl enable --now certmonger
+    printf '%s\n' "${TLS_DIR}" | as_root tee "${TLS_PATH_FILE}" >/dev/null
+    as_root chown root:root "${TLS_PATH_FILE}"
+    as_root chmod 0644 "${TLS_PATH_FILE}"
+    as_root install -o root -g root -m 0755 "${REPOSITORY_ROOT}/service/reload-tls.sh" /usr/local/sbin/organesson-reload-tls
+    ccache_directory="$(mktemp -d)"
+    ccache_name="FILE:${ccache_directory}/ccache"
+    service_principal="HTTP/${PUBLIC_HOSTNAME}"
+    if ! as_root env KRB5CCNAME="${ccache_name}" kinit -k -t /etc/krb5.keytab "host/${machine_hostname}@${ipa_realm}"; then
+        rm -rf -- "${ccache_directory}"
+        fail "Could not authenticate to FreeIPA using the enrolled host keytab."
+    fi
+    if ! as_root env KRB5CCNAME="${ccache_name}" ipa service-show "${service_principal}" >/dev/null 2>&1; then
+        if ! as_root env KRB5CCNAME="${ccache_name}" ipa service-add "${service_principal}" >/dev/null; then
+            as_root env KRB5CCNAME="${ccache_name}" kdestroy >/dev/null 2>&1 || true
+            rm -rf -- "${ccache_directory}"
+            fail "The enrolled host could not create the FreeIPA service principal ${service_principal}."
+        fi
+    fi
+    as_root env KRB5CCNAME="${ccache_name}" kdestroy >/dev/null 2>&1 || true
+    rm -rf -- "${ccache_directory}"
+
+    as_root test -s /etc/ipa/ca.crt || fail "The FreeIPA CA certificate /etc/ipa/ca.crt is missing."
+    TLS_TRUSTED_CA="/etc/ipa/ca.crt"
+    request_output="$(as_root ipa-getcert list -f "${TLS_DIR}/server.crt" 2>/dev/null || true)"
+    request_id="$(sed -n "s/^[[:space:]]*Request ID '\([^']*\)':/\1/p" <<< "${request_output}" | head -n 1)"
+    if [[ -z "${request_id}" ]]; then
+        request_output="$(as_root ipa-getcert request \
+            -f "${TLS_DIR}/server.crt" -k "${TLS_DIR}/server.key" \
+            -K "${service_principal}" -D "${PUBLIC_HOSTNAME}" \
+            -o root -O root -m 0600 -M 0644 \
+            -C /usr/local/sbin/organesson-reload-tls 2>&1)" || fail "FreeIPA certificate request failed: ${request_output}"
+        request_output="$(as_root ipa-getcert list -f "${TLS_DIR}/server.crt" 2>/dev/null || true)"
+        request_id="$(sed -n "s/^[[:space:]]*Request ID '\([^']*\)':/\1/p" <<< "${request_output}" | head -n 1)"
+    else
+        request_output="$(as_root ipa-getcert resubmit -i "${request_id}" \
+            -K "${service_principal}" -D "${PUBLIC_HOSTNAME}" \
+            -o root -O root -m 0600 -M 0644 \
+            -C /usr/local/sbin/organesson-reload-tls 2>&1)" || fail "Could not refresh the existing FreeIPA certificate request: ${request_output}"
+    fi
+    [[ -n "${request_id}" ]] || fail "FreeIPA did not create a certmonger request for ${TLS_DIR}/server.crt."
+
+    printf '[organesson] Waiting for FreeIPA to issue the HTTPS certificate.\n'
+    for attempt in {1..90}; do
+        request_status="$(as_root getcert list -i "${request_id}" 2>/dev/null || true)"
+        request_state="$(sed -n 's/^[[:space:]]*status:[[:space:]]*//p' <<< "${request_status}" | head -n 1)"
+        if [[ "${request_state}" == "MONITORING" ]] && as_root test -s "${TLS_DIR}/server.crt" && as_root test -s "${TLS_DIR}/server.key"; then
+            break
+        fi
+        case "${request_state}" in
+            CA_REJECTED|CA_UNREACHABLE|NEED_KEY_PAIR|NEED_KEYINFO)
+                fail "FreeIPA certificate request ${request_id} entered status ${request_state}: ${request_status}"
+                ;;
+        esac
+        sleep 2
+    done
+    [[ "${request_state}" == "MONITORING" ]] || fail "FreeIPA did not issue the HTTPS certificate within three minutes: ${request_status}"
+    as_root openssl x509 -in "${TLS_DIR}/server.crt" -checkhost "${PUBLIC_HOSTNAME}" -noout >/dev/null || fail "The issued FreeIPA certificate does not cover ${PUBLIC_HOSTNAME}."
+    as_root openssl verify -CAfile /etc/ipa/ca.crt "${TLS_DIR}/server.crt" >/dev/null || fail "The issued FreeIPA certificate could not be verified against the enrolled CA."
     as_root chown "root:${SERVICE_USER}" "${TLS_DIR}/server.crt" "${TLS_DIR}/server.key"
     as_root chmod 0644 "${TLS_DIR}/server.crt"
     as_root chmod 0640 "${TLS_DIR}/server.key"
@@ -82,7 +200,9 @@ prepare_config() {
     if ! as_root test -f "${CONFIG_FILE}"; then
         generated_key="$(openssl rand -base64 32 | tr -d '\n')"
         staged_config="$(mktemp)"
-        sed "s|GENERATED_BY_INSTALLER|${generated_key}|" "${REPOSITORY_ROOT}/service/config.toml.example" > "${staged_config}"
+        sed -e "s|GENERATED_BY_INSTALLER|${generated_key}|" \
+            -e "s|/etc/organesson/tls|${TLS_DIR}|" \
+            "${REPOSITORY_ROOT}/service/config.toml.example" > "${staged_config}"
         as_root install -o root -g "${SERVICE_USER}" -m 0640 "${staged_config}" "${CONFIG_FILE}"
         rm -f -- "${staged_config}"
     else
@@ -95,7 +215,7 @@ prepare_config() {
         as_root "${SELECTED_EDITOR}" "${CONFIG_FILE}"
     fi
 
-    if ! config_values="$(as_root python3 - "${CONFIG_FILE}" <<'PY'
+    if ! config_values="$(as_root python3 - "${CONFIG_FILE}" "${TLS_DIR}" <<'PY'
 import base64
 import pathlib
 import sys
@@ -104,6 +224,7 @@ import urllib.parse
 
 with pathlib.Path(sys.argv[1]).open("rb") as config_file:
     config = tomllib.load(config_file)
+expected_tls_dir = sys.argv[2]
 
 web_server = config.get("web_server", {})
 database = config.get("database", {})
@@ -114,8 +235,8 @@ if address.hostname != "127.0.0.1" or not address.port:
     raise SystemExit("web_server.address must use loopback and an explicit port, e.g. 127.0.0.1:8443.")
 if address.port in (80, 443):
     raise SystemExit("web_server.address cannot use 80 or 443 because Nginx uses those public ports.")
-if web_server.get("tls_dir") != "/etc/organesson/tls":
-    raise SystemExit("Keep web_server.tls_dir at /etc/organesson/tls.")
+if web_server.get("tls_dir") != expected_tls_dir:
+    raise SystemExit(f"Set web_server.tls_dir to the selected TLS directory: {expected_tls_dir}.")
 database_file = pathlib.Path(database.get("file", "")).resolve()
 if not database_file.is_relative_to(pathlib.Path("/var/lib/organesson").resolve()):
     raise SystemExit("database.file must be under /var/lib/organesson/.")
@@ -244,7 +365,7 @@ server {
         proxy_send_timeout 1h;
         proxy_ssl_server_name on;
         proxy_ssl_name ${PUBLIC_HOSTNAME};
-        proxy_ssl_trusted_certificate ${TLS_DIR}/server.crt;
+        proxy_ssl_trusted_certificate ${TLS_TRUSTED_CA};
         proxy_ssl_verify on;
     }
 
@@ -282,6 +403,7 @@ verify_service() {
 main() {
     local answer
     local hostname_answer
+    local tls_answer
     local fedora_version
 
     [[ -d "${REPOSITORY_ROOT}/backend" && -d "${REPOSITORY_ROOT}/frontend" ]] || fail "Run this script from a complete Organesson git checkout."
@@ -307,6 +429,11 @@ main() {
     read -r -p "Hostname for the web UI [${PUBLIC_HOSTNAME}]: " hostname_answer
     PUBLIC_HOSTNAME="${hostname_answer:-${PUBLIC_HOSTNAME}}"
     [[ "${PUBLIC_HOSTNAME}" =~ ^[A-Za-z0-9._-]+$ ]] || fail "Enter a DNS hostname without a scheme or path."
+    prompt_tls_directory
+    read -r -p "Request an auto-renewing HTTPS certificate from this host's FreeIPA domain? [y/N] " tls_answer
+    if [[ "${tls_answer}" =~ ^[Yy]$ ]]; then
+        USE_FREEIPA_CERT="true"
+    fi
     prepare_tls
     prepare_config
 

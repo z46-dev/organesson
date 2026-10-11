@@ -2164,7 +2164,16 @@ h2 {
 
 .router-polling-as-of {
     color: var(--theme-muted);
-    font-size: 10px;
+    font-size: 9px;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.workspace-sync-status {
+    margin: 8px 4px 0;
+    color: var(--theme-muted);
+    font-size: 9px;
+    line-height: 1.2;
 }
 
 .router-polling-note,
