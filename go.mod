@@ -1,10 +1,10 @@
 module github.com/z46-dev/organesson
 
-go 1.26.8
+go 1.26.9
 
 require (
-	github.com/alexflint/go-arg v1.6.1
 	github.com/BurntSushi/toml v1.6.0
+	github.com/alexflint/go-arg v1.6.1
 	github.com/fasthttp/websocket v1.5.12
 	github.com/go-ldap/ldap/v3 v3.4.15
 	github.com/gofiber/fiber/v3 v3.5.0
@@ -75,7 +75,7 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/zclconf/go-cty v1.17.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect

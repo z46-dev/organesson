@@ -140,7 +140,11 @@ func TestGuestArtifactDriverTransfersFilesAndAlwaysCleansWorkspace(t *testing.T)
 			if request.URL.Query().Get("pid") == strconv.Itoa(runnerPID) {
 				exitCode = runExitCode
 			}
-			writePVEData(response, map[string]any{"exited": 1, "exitcode": exitCode, "err-truncated": 0, "out-truncated": 0, "out-data": "", "err-data": ""})
+			var errorData string
+			if exitCode != 0 {
+				errorData = "setup failed at stage=install-service"
+			}
+			writePVEData(response, map[string]any{"exited": 1, "exitcode": exitCode, "err-truncated": 0, "out-truncated": 0, "out-data": "", "err-data": errorData})
 		default:
 			t.Errorf("unexpected fake PVE request: %s %s", request.Method, request.URL.String())
 			writePVEData(response, nil)
@@ -207,7 +211,7 @@ func TestGuestArtifactDriverTransfersFilesAndAlwaysCleansWorkspace(t *testing.T)
 		t.Fatal("non-zero guest exit status was accepted")
 	} else {
 		var executionError *GuestArtifactExitError
-		if !errors.As(err, &executionError) || executionError.ExitCode != 9 || result.Status != "failed" || result.ExitCode != 9 {
+		if !errors.As(err, &executionError) || executionError.ExitCode != 9 || !strings.Contains(err.Error(), "install-service") || result.Status != "failed" || result.ExitCode != 9 {
 			t.Fatalf("guest failure did not preserve the entrypoint exit code: result=%#v err=%v", result, err)
 		}
 	}

@@ -1,0 +1,21 @@
+[web_server]
+    address = "127.0.0.1:8443"
+    tls_dir = "/etc/organesson/tls"
+    cors_allowed_origins = []
+
+[database]
+    file = "/var/lib/organesson/organesson.db"
+
+[proxmox]
+    api_url = "https://proxmox.example:8006/api2/json"
+    console_node_host_template = "{node}.example"
+    api_token_id = ""
+    api_token_secret = ""
+    root_ca_bundle_path = ""
+    insecure_skip_verify = false
+
+[authentication]
+    encryption_key = "GENERATED_BY_INSTALLER"
+
+[development]
+    enable_test_fixtures = false

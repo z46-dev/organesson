@@ -255,10 +255,10 @@ func executeWorkflowGuestStep(ctx context.Context, client *apiClient, vmID strin
 	const maximumAttempts int = 3
 	var attempt int
 	for attempt = 1; attempt <= maximumAttempts; attempt++ {
-		err = client.requestBytes(ctx, "POST", "/api/v1/virtual-machines/"+vmID+"/guest-setup", "application/vnd.organesson.artifact+gzip", map[string]string{
+		err = client.requestBytesWithTimeout(ctx, "POST", "/api/v1/virtual-machines/"+vmID+"/guest-setup", "application/vnd.organesson.artifact+gzip", map[string]string{
 			"X-Organesson-Artifact-SHA256":     step.artifact.SHA256,
 			"X-Organesson-Artifact-Entrypoint": step.Entrypoint,
-		}, step.artifact.Archive, result)
+		}, step.artifact.Archive, result, 35*time.Minute)
 		if err == nil || attempt == maximumAttempts || !retryableWorkflowGuestSetupError(err) {
 			return
 		}

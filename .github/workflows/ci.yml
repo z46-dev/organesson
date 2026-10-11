@@ -30,6 +30,9 @@ jobs:
             exit 1
           fi
 
+      - name: Check Fedora deployment installer syntax
+        run: bash -n service/deploy.sh
+
       - name: Vet
         run: go vet ./...
 

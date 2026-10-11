@@ -2,6 +2,8 @@
 
 A provisioning and management system for Proxmox VE
 
+For a Fedora Server 44 installation, see [service deployment](service/README.md).
+
 ## What is it?
 
 Oftentimes I find myself needing to provision and manage a lot of virtual machines, containers, and networks using Proxmox VE.

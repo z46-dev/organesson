@@ -66,6 +66,17 @@ func (client *apiClient) request(ctx context.Context, method string, path string
 
 // requestBytes sends an authenticated binary package without encoding its contents into JSON.
 func (client *apiClient) requestBytes(ctx context.Context, method string, path string, contentType string, headers map[string]string, body []byte, result any) (err error) {
+	err = client.requestBytesWithTimeout(ctx, method, path, contentType, headers, body, result, client.client.Timeout)
+	return
+}
+
+// requestBytesWithTimeout sends an authenticated binary package with an operation-specific duration limit.
+func (client *apiClient) requestBytesWithTimeout(ctx context.Context, method string, path string, contentType string, headers map[string]string, body []byte, result any, timeout time.Duration) (err error) {
+	var requestClient apiClient = *client
+	var httpClient http.Client = *client.client
+	httpClient.Timeout = timeout
+	requestClient.client = &httpClient
+	client = &requestClient
 	var request *http.Request
 	if request, err = http.NewRequestWithContext(ctx, method, client.endpoint+path, bytes.NewReader(body)); err != nil {
 		return

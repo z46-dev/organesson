@@ -190,11 +190,18 @@ func waitForGuestExecExitWithProgress(ctx context.Context, settings config.Proxm
 // GuestArtifactExitError reports the guest entrypoint's non-zero exit status.
 type GuestArtifactExitError struct {
 	ExitCode int
+	ErrData  string
 }
 
 // Error describes a guest entrypoint that completed unsuccessfully.
 func (executionError *GuestArtifactExitError) Error() (message string) {
 	message = fmt.Sprintf("guest artifact entrypoint exited with status %d", executionError.ExitCode)
+	if detail := strings.TrimSpace(executionError.ErrData); detail != "" {
+		if len(detail) > 2048 {
+			detail = detail[len(detail)-2048:]
+		}
+		message += ": " + detail
+	}
 	return
 }
 
@@ -474,7 +481,7 @@ func (driver *apiGuestArtifactDriver) executeUnix(ctx context.Context, vm *pve.V
 	}
 	if status.ExitCode != 0 {
 		result = GuestArtifactResult{SHA256: request.SHA256, Status: "failed", ExitCode: status.ExitCode}
-		err = &GuestArtifactExitError{ExitCode: status.ExitCode}
+		err = &GuestArtifactExitError{ExitCode: status.ExitCode, ErrData: status.ErrData}
 		return
 	}
 	result = GuestArtifactResult{SHA256: request.SHA256, Status: "succeeded", ExitCode: status.ExitCode}
@@ -553,7 +560,19 @@ func (driver *apiGuestArtifactDriver) RestartAndWait(ctx context.Context, reques
 	if err = verifyManagedVM(vm, request.VMOperationKey); err != nil {
 		return
 	}
-	if _, err = vm.Reboot(ctx); err != nil {
+	var command []string
+	switch request.GuestOSFamily {
+	case "windows":
+		command = []string{`C:\Windows\System32\shutdown.exe`, "/r", "/t", "5", "/f"}
+	case "linux":
+		command = []string{"/bin/sh", "-c", "(sleep 2; /sbin/shutdown -r now) >/dev/null 2>&1 </dev/null &"}
+	case "bsd":
+		command = []string{"/bin/sh", "-c", "(sleep 2; /sbin/shutdown -r now) >/dev/null 2>&1 </dev/null &"}
+	default:
+		err = fmt.Errorf("unsupported guest family %q for a managed reboot", request.GuestOSFamily)
+		return
+	}
+	if _, err = vm.AgentExec(ctx, command, ""); err != nil {
 		return
 	}
 	err = driver.waitForReboot(ctx, request, timeout)
@@ -565,6 +584,19 @@ func (driver *apiGuestArtifactDriver) WaitWindowsFirstBoot(ctx context.Context, 
 	var vm *pve.VirtualMachine
 	if vm, err = (&Service{settings: driver.settings}).consoleVM(ctx, request.Node, request.VMID, request.VMOperationKey); err != nil {
 		return
+	}
+	if vm.IsStopped() {
+		var client *pve.Client
+		if client, err = newAPIClient(driver.settings); err != nil {
+			return
+		}
+		var task *pve.Task
+		if task, err = vm.Start(ctx); err != nil {
+			return
+		}
+		if err = waitTask(ctx, client, task); err != nil {
+			return
+		}
 	}
 	var vmid int
 	if vmid, err = parseVMID(request.VMID); err != nil {
@@ -644,9 +676,25 @@ func (driver *apiGuestArtifactDriver) executeWindows(ctx context.Context, vm *pv
 	var cleanup func() error = func() (cleanupErr error) {
 		var cleanupContext context.Context
 		var cancel context.CancelFunc
-		cleanupContext, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+		cleanupContext, cancel = context.WithTimeout(context.Background(), 35*time.Second)
 		defer cancel()
-		_, cleanupErr = runWindowsArtifactCommand(cleanupContext, driver.settings, vm, request.Node, request.VMID, "Remove-Item -LiteralPath "+powershellSingleQuoted(workDirectory)+" -Recurse -Force -ErrorAction SilentlyContinue", 10)
+		var attempt int
+		var command string = "if (Test-Path -LiteralPath " + powershellSingleQuoted(workDirectory) + ") { Remove-Item -LiteralPath " + powershellSingleQuoted(workDirectory) + " -Recurse -Force -ErrorAction Stop }; if (Test-Path -LiteralPath " + powershellSingleQuoted(workDirectory) + ") { throw 'temporary artifact directory still exists after cleanup' }"
+		for attempt = 0; attempt < 3; attempt++ {
+			if _, cleanupErr = runWindowsArtifactCommand(cleanupContext, driver.settings, vm, request.Node, request.VMID, command, 10); cleanupErr == nil {
+				return
+			}
+			if attempt < 2 {
+				var timer *time.Timer = time.NewTimer(time.Second)
+				select {
+				case <-cleanupContext.Done():
+					timer.Stop()
+					cleanupErr = cleanupContext.Err()
+					return
+				case <-timer.C:
+				}
+			}
+		}
 		return
 	}
 	defer func() {
