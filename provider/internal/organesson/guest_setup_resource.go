@@ -3,6 +3,9 @@ package organesson
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -20,19 +23,26 @@ func guestSetupResource() (resource *schema.Resource) {
 	resource = &schema.Resource{
 		CreateContext: guestSetupCreate,
 		ReadContext:   guestSetupRead,
+		UpdateContext: guestSetupUpdate,
 		DeleteContext: guestSetupDelete,
 		Importer:      &schema.ResourceImporter{StateContext: schema.ImportStatePassthroughContext},
 		Schema: map[string]*schema.Schema{
-			"artifact_id":        {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The local artifact manifest resource identifier."},
-			"entrypoint":         {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The Bash or PowerShell entrypoint path within the artifact package."},
-			"execution_status":   {Type: schema.TypeString, Computed: true, Description: "Guest execution result."},
-			"exit_code":          {Type: schema.TypeInt, Computed: true, Description: "Guest entrypoint exit code."},
-			"inline_files":       {Type: schema.TypeMap, Optional: true, ForceNew: true, Sensitive: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Generated non-secret regular files packaged with the artifact."},
-			"sha256":             {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Expected SHA-256 digest from the artifact resource."},
-			"source_directory":   {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Local package source directory; artifact bytes are sent only during apply."},
-			"virtual_machine_id": {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Target Proxmox-backed VM resource identifier."},
+			"artifact_id":             {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The local artifact manifest resource identifier."},
+			"dependency_resource_ids": resourceDependencySchema(),
+			"entrypoint":              {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The Bash or PowerShell entrypoint path within the artifact package."},
+			"execution_status":        {Type: schema.TypeString, Computed: true, Description: "Guest execution result."},
+			"exit_code":               {Type: schema.TypeInt, Computed: true, Description: "Guest entrypoint exit code."},
+			"inline_files":            {Type: schema.TypeMap, Optional: true, ForceNew: true, Sensitive: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Generated non-secret regular files packaged with the artifact."},
+			"sha256":                  {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Expected SHA-256 digest from the artifact resource."},
+			"source_directory":        {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Local package source directory; artifact bytes are sent only during apply."},
+			"virtual_machine_id":      {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Target Proxmox-backed VM resource identifier."},
 		},
 	}
+	return
+}
+
+// guestSetupUpdate records ordering-only changes without rerunning guest setup scripts.
+func guestSetupUpdate(_ context.Context, _ *schema.ResourceData, _ interface{}) (diagnostics diag.Diagnostics) {
 	return
 }
 
@@ -57,10 +67,8 @@ func guestSetupCreate(ctx context.Context, data *schema.ResourceData, meta inter
 	var result struct {
 		Execution guestSetupResult `json:"execution"`
 	}
-	if err = client.requestBytes(ctx, "POST", "/api/v1/virtual-machines/"+vmID+"/guest-setup", "application/vnd.organesson.artifact+gzip", map[string]string{
-		"X-Organesson-Artifact-SHA256":     artifact.SHA256,
-		"X-Organesson-Artifact-Entrypoint": data.Get("entrypoint").(string),
-	}, artifact.Archive, &result); err != nil {
+	var retryNetworkReadiness bool = filepath.Clean(data.Get("source_directory").(string)) == filepath.Join("artifacts", "linux-bootstrap")
+	if err = executeGuestSetupWithRetry(ctx, client, vmID, data.Get("entrypoint").(string), retryNetworkReadiness, artifact, &result); err != nil {
 		diagnostics = diag.FromErr(err)
 		return
 	}
@@ -77,6 +85,40 @@ func guestSetupCreate(ctx context.Context, data *schema.ResourceData, meta inter
 		return
 	}
 	data.SetId(localResourceID("guest-setup", fmt.Sprintf("%s:%s:%s", vmID, data.Get("artifact_id").(string), artifact.SHA256)))
+	return
+}
+
+// executeGuestSetupWithRetry reruns only explicitly transient lab gateway and DNS readiness failures.
+func executeGuestSetupWithRetry(ctx context.Context, client *apiClient, vmID string, entrypoint string, retryNetworkReadiness bool, artifact artifactPackage, result interface{}) (err error) {
+	const maximumAttempts int = 3
+	var attempt int
+	for attempt = 1; attempt <= maximumAttempts; attempt++ {
+		err = client.requestBytes(ctx, "POST", "/api/v1/virtual-machines/"+vmID+"/guest-setup", "application/vnd.organesson.artifact+gzip", map[string]string{
+			"X-Organesson-Artifact-SHA256":     artifact.SHA256,
+			"X-Organesson-Artifact-Entrypoint": entrypoint,
+		}, artifact.Archive, result)
+		if err == nil || attempt == maximumAttempts || !retryableGuestSetupError(err, retryNetworkReadiness) {
+			return
+		}
+		var timer *time.Timer = time.NewTimer(time.Duration(attempt*10) * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			err = ctx.Err()
+			return
+		case <-timer.C:
+		}
+	}
+	return
+}
+
+// retryableGuestSetupError recognizes transient QEMU transport failures and Linux bootstrap readiness failures.
+func retryableGuestSetupError(err error, retryNetworkReadiness bool) (retry bool) {
+	if err == nil {
+		return
+	}
+	var message string = strings.ToLower(err.Error())
+	retry = strings.Contains(message, `"exit_code":-1`) || retryNetworkReadiness && (strings.Contains(message, `"exit_code":11`) || strings.Contains(message, `"exit_code":12`))
 	return
 }
 

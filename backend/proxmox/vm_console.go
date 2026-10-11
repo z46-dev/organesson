@@ -115,7 +115,7 @@ func (service *Service) consoleVM(ctx context.Context, node string, id string, o
 	if client, err = newAPIClient(service.settings); err != nil {
 		return
 	}
-	if _, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
+	if _, vm, _, err = locateManagedVMWithInventory(ctx, client, vmid, service.vmInventory); err != nil {
 		return
 	}
 	err = verifyManagedVM(vm, operationKey)

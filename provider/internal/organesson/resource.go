@@ -14,6 +14,15 @@ import (
 
 type resourceDescriptionFunc func(*schema.ResourceData) (string, error)
 
+// resourceDependencySchema adds a provider-side ordering edge without sending dependency IDs to the API.
+func resourceDependencySchema() (dependency *schema.Schema) {
+	dependency = &schema.Schema{
+		Type: schema.TypeSet, Optional: true, Elem: &schema.Schema{Type: schema.TypeString},
+		Description: "Resource identifiers used only to order independent setup work; not sent to Organesson.",
+	}
+	return
+}
+
 type (
 	remoteResourceOperation func(context.Context, *schema.ResourceData, *apiClient) error
 

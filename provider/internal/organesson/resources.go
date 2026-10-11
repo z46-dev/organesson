@@ -282,18 +282,19 @@ func resourceNetworkAttachment() (resource *schema.Resource) {
 // resourceGuestNetworkConfiguration defines guest-side configuration for one attached NIC.
 func resourceGuestNetworkConfiguration() (resource *schema.Resource) {
 	resource = apiResource(map[string]*schema.Schema{
-		"ipv4_address":          {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The static IPv4 address and prefix."},
-		"ipv4_dns":              {Type: schema.TypeList, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "DNS servers to configure on this interface."},
-		"ipv4_gateway":          {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The optional IPv4 gateway."},
-		"ipv4_method":           {Type: schema.TypeString, Optional: true, Default: "disabled", ForceNew: true, ValidateFunc: validation.StringInSlice([]string{"disabled", "dhcp", "static"}, false), Description: "The IPv4 configuration method: disabled, dhcp, or static."},
-		"ipv4_never_default":    {Type: schema.TypeBool, Optional: true, ForceNew: true, Description: "Ignore this NIC as a default route, while still allowing local subnet traffic."},
-		"ipv6_address":          {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The static IPv6 address and prefix."},
-		"ipv6_dns":              {Type: schema.TypeList, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "IPv6 DNS servers to configure on this interface."},
-		"ipv6_gateway":          {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The optional IPv6 gateway."},
-		"ipv6_method":           {Type: schema.TypeString, Optional: true, Default: "disabled", ForceNew: true, ValidateFunc: validation.StringInSlice([]string{"disabled", "dhcp", "slaac", "static"}, false), Description: "The IPv6 configuration method: disabled, dhcp, slaac, or static. Filtered SLAAC requires the pool to reserve the NIC's stable EUI-64 address from its /64."},
-		"ipv6_never_default":    {Type: schema.TypeBool, Optional: true, ForceNew: true, Description: "Ignore this NIC as an IPv6 default route, while still allowing local subnet traffic."},
-		"network_attachment_id": {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The target network attachment identifier."},
-		"summary":               summarySchema(),
+		"ipv4_address":            {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The static IPv4 address and prefix."},
+		"ipv4_dns":                {Type: schema.TypeList, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "DNS servers to configure on this interface."},
+		"ipv4_gateway":            {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The optional IPv4 gateway."},
+		"ipv4_method":             {Type: schema.TypeString, Optional: true, Default: "disabled", ForceNew: true, ValidateFunc: validation.StringInSlice([]string{"disabled", "dhcp", "static"}, false), Description: "The IPv4 configuration method: disabled, dhcp, or static."},
+		"ipv4_never_default":      {Type: schema.TypeBool, Optional: true, ForceNew: true, Description: "Ignore this NIC as a default route, while still allowing local subnet traffic."},
+		"ipv6_address":            {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The static IPv6 address and prefix."},
+		"ipv6_dns":                {Type: schema.TypeList, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "IPv6 DNS servers to configure on this interface."},
+		"ipv6_gateway":            {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "The optional IPv6 gateway."},
+		"ipv6_method":             {Type: schema.TypeString, Optional: true, Default: "disabled", ForceNew: true, ValidateFunc: validation.StringInSlice([]string{"disabled", "dhcp", "slaac", "static"}, false), Description: "The IPv6 configuration method: disabled, dhcp, slaac, or static. Filtered SLAAC requires the pool to reserve the NIC's stable EUI-64 address from its /64."},
+		"ipv6_never_default":      {Type: schema.TypeBool, Optional: true, ForceNew: true, Description: "Ignore this NIC as an IPv6 default route, while still allowing local subnet traffic."},
+		"network_attachment_id":   {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The target network attachment identifier."},
+		"dependency_resource_ids": resourceDependencySchema(),
+		"summary":                 summarySchema(),
 	}, guestNetworkConfigurationOperations())
 
 	return

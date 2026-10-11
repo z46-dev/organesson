@@ -502,7 +502,7 @@ func prepareTemplateGuest(ctx context.Context, settings config.ProxmoxConfigurat
 			return
 		}
 		filesMayExist = true
-		if err = vm.AgentFileWrite(ctx, scriptPath, []byte(scripts["windows"])); err != nil {
+		if err = guestAgentFileWriteWithRetry(ctx, vm, scriptPath, []byte(scripts["windows"])); err != nil {
 			return
 		}
 		_, err = runGuestCommandWithProgress(ctx, settings, vm, vmid, []string{windowsPowerShellPath, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `& 'C:\Windows\Temp\OrganessonPrep\og-prep-windows.ps1' -ExpectedRelease Auto -PrepareOnly`}, 3600, progress)
@@ -604,7 +604,7 @@ func finalizeWindowsTemplate(ctx context.Context, client *pve.Client, settings c
 	if _, err = runWindowsPowerShell(ctx, settings, vm, vmid, `New-Item -ItemType Directory -Force -Path 'C:\Windows\Panther' | Out-Null`, 30); err != nil {
 		return
 	}
-	if err = vm.AgentFileWrite(ctx, answerFilePath, answerFile); err != nil {
+	if err = guestAgentFileWriteWithRetry(ctx, vm, answerFilePath, answerFile); err != nil {
 		return
 	}
 	const secureAnswerFileCommand string = `$path = 'C:\Windows\Panther\unattend.xml'
@@ -1181,7 +1181,7 @@ func writeGuestFile(ctx context.Context, vm *pve.VirtualMachine, path string, co
 		if end > len(content) {
 			end = len(content)
 		}
-		if err = vm.AgentFileWrite(ctx, path, content[offset:end]); err != nil {
+		if err = guestAgentFileWriteWithRetry(ctx, vm, path, content[offset:end]); err != nil {
 			return
 		}
 	}
@@ -1202,7 +1202,7 @@ func writeFreeBSDGuestFile(ctx context.Context, settings config.ProxmoxConfigura
 		}
 		command = append(command, path)
 		var pid int
-		if pid, err = vm.AgentExec(ctx, command, string(content[offset:end])); err != nil {
+		if pid, err = guestAgentExecWithRetry(ctx, vm, command, string(content[offset:end])); err != nil {
 			err = fmt.Errorf("start QGA script transfer with %q: %w", command[0], err)
 			return
 		}
@@ -1225,7 +1225,7 @@ func runGuestCommand(ctx context.Context, settings config.ProxmoxConfiguration, 
 
 func runGuestCommandWithProgress(ctx context.Context, settings config.ProxmoxConfiguration, vm *pve.VirtualMachine, vmid int, command []string, timeoutSeconds int, progress func(string)) (status guestAgentExecStatus, err error) {
 	var pid int
-	if pid, err = vm.AgentExec(ctx, command, ""); err != nil {
+	if pid, err = guestAgentExecWithRetry(ctx, vm, command, ""); err != nil {
 		err = fmt.Errorf("start guest command %q: %w", command[0], err)
 		return
 	}

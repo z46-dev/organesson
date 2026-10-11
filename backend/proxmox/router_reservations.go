@@ -29,7 +29,7 @@ func (service *Service) SetRouterDHCPReservations(ctx context.Context, vmid int,
 		return
 	}
 	var vm *pve.VirtualMachine
-	if _, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
+	if _, vm, _, err = locateManagedVMWithInventory(ctx, client, vmid, service.vmInventory); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, operationKey); err != nil {
@@ -39,7 +39,7 @@ func (service *Service) SetRouterDHCPReservations(ctx context.Context, vmid int,
 		return
 	}
 	var pid int
-	if pid, err = vm.AgentExec(ctx, guestAgentCommand("/usr/bin/install", "-d", "-o", "root", "-g", "root", "-m", "0755", "/etc/organesson"), ""); err != nil {
+	if pid, err = guestAgentExecWithRetry(ctx, vm, guestAgentCommand("/usr/bin/install", "-d", "-o", "root", "-g", "root", "-m", "0755", "/etc/organesson"), ""); err != nil {
 		return
 	}
 	var status guestAgentExecStatus
@@ -50,10 +50,10 @@ func (service *Service) SetRouterDHCPReservations(ctx context.Context, vmid int,
 		err = fmt.Errorf("managed router could not prepare the Organesson reservation directory: %s", strings.TrimSpace(status.ErrData+" "+status.OutData))
 		return
 	}
-	if err = vm.AgentFileWrite(ctx, routerDHCPReservationsFile, content); err != nil {
+	if err = guestAgentFileWriteWithRetry(ctx, vm, routerDHCPReservationsFile, content); err != nil {
 		return
 	}
-	if pid, err = vm.AgentExec(ctx, guestAgentCommand("/bin/sh", "-c", routerDHCPLeaseCleanupCommand(routerDHCPLeaseFile, routerDHCPReservationsFile)), ""); err != nil {
+	if pid, err = guestAgentExecWithRetry(ctx, vm, guestAgentCommand("/bin/sh", "-c", routerDHCPLeaseCleanupCommand(routerDHCPLeaseFile, routerDHCPReservationsFile)), ""); err != nil {
 		return
 	}
 	if status, err = waitForGuestExecExit(ctx, service.settings, vm.Node, vmid, pid, 30); err != nil {
@@ -63,7 +63,7 @@ func (service *Service) SetRouterDHCPReservations(ctx context.Context, vmid int,
 		err = fmt.Errorf("managed router could not clear conflicting DHCP leases: %s", strings.TrimSpace(status.ErrData+" "+status.OutData))
 		return
 	}
-	if pid, err = vm.AgentExec(ctx, guestAgentCommand("/usr/bin/systemctl", "restart", "dnsmasq.service"), ""); err != nil {
+	if pid, err = guestAgentExecWithRetry(ctx, vm, guestAgentCommand("/usr/bin/systemctl", "restart", "dnsmasq.service"), ""); err != nil {
 		return
 	}
 	if status, err = waitForGuestExecExit(ctx, service.settings, vm.Node, vmid, pid, 30); err != nil {

@@ -377,8 +377,10 @@ func deleteNetworkAttachmentHandler(services common.Services) (handler fiber.Han
 			log.Printf("network attachment %d Proxmox detach failed: %v", resourceID, err)
 			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm NIC removal; the record and address claim were retained."})
 		}
-		if err = syncManagedNetworkRouterDHCPReservations(ctx, services, configuration.LogicalNetworkID, resourceID); err != nil {
-			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "The managed router did not confirm DHCP reservation cleanup; the attachment record was retained."})
+		if len(configuration.Addresses) > 0 || len(configuration.IPv6Addresses) > 0 {
+			if err = syncManagedNetworkRouterDHCPReservations(ctx, services, configuration.LogicalNetworkID, resourceID); err != nil {
+				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "The managed router did not confirm DHCP reservation cleanup; the attachment record was retained."})
+			}
 		}
 		if err = services.Domain.DeleteNetworkAttachmentRecord(actorID, resourceID); err != nil {
 			return common.DomainError(ctx, err)

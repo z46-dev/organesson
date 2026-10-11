@@ -41,7 +41,8 @@ type (
 	}
 
 	apiGuestNetworkDriver struct {
-		settings config.ProxmoxConfiguration
+		settings  config.ProxmoxConfiguration
+		inventory *vmInventoryCache
 	}
 )
 
@@ -125,7 +126,7 @@ func (driver *apiGuestNetworkDriver) execute(ctx context.Context, request GuestN
 	}
 	var node *pve.Node
 	var vm *pve.VirtualMachine
-	if node, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
+	if node, vm, _, err = locateManagedVMWithInventory(ctx, client, vmid, driver.inventory); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, request.VMOperationKey); err != nil {
@@ -139,13 +140,13 @@ func (driver *apiGuestNetworkDriver) execute(ctx context.Context, request GuestN
 	}
 	var digest [sha256.Size]byte = sha256.Sum256([]byte(request.AttachmentKey))
 	var path string = "/run/organesson-network-" + hex.EncodeToString(digest[:8]) + ".sh"
-	if err = vm.AgentFileWrite(ctx, path, []byte(script)); err != nil {
+	if err = guestAgentFileWriteWithRetry(ctx, vm, path, []byte(script)); err != nil {
 		return
 	}
 	defer func() {
 		var cleanupPID int
 		var cleanupErr error
-		if cleanupPID, cleanupErr = vm.AgentExec(ctx, guestAgentCommand("/usr/bin/rm", "-f", path), ""); cleanupErr == nil {
+		if cleanupPID, cleanupErr = guestAgentExecWithRetry(ctx, vm, guestAgentCommand("/usr/bin/rm", "-f", path), ""); cleanupErr == nil {
 			_, cleanupErr = waitForGuestExecExit(ctx, driver.settings, vm.Node, vmid, cleanupPID, 10)
 		}
 		if err == nil && cleanupErr != nil {
@@ -153,7 +154,7 @@ func (driver *apiGuestNetworkDriver) execute(ctx context.Context, request GuestN
 		}
 	}()
 	var pid int
-	if pid, err = vm.AgentExec(ctx, guestAgentCommand("/usr/bin/bash", path), ""); err != nil {
+	if pid, err = guestAgentExecWithRetry(ctx, vm, guestAgentCommand("/usr/bin/bash", path), ""); err != nil {
 		return
 	}
 	var status guestAgentExecStatus

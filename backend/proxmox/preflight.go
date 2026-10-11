@@ -127,6 +127,7 @@ type (
 		guestArtifactDriver       GuestArtifactDriver
 		templatePreparationDriver TemplatePreparationDriver
 		templateDetectionDriver   TemplateDetectionDriver
+		vmInventory               *vmInventoryCache
 		lifecycleLock             sync.Mutex
 		guestOperationLocksMu     sync.Mutex
 		guestOperationLocks       map[string]*guestOperationLock
@@ -166,14 +167,15 @@ func (service *Service) lockGuestOperation(node string, vmid string) (unlock fun
 
 // New creates a Proxmox preflight service using the supported Go API client.
 func New(settings config.ProxmoxConfiguration) (service *Service) {
-	service = &Service{settings: settings}
+	var inventory *vmInventoryCache = &vmInventoryCache{}
+	service = &Service{settings: settings, vmInventory: inventory}
 	service.inspector = &apiInspector{settings: settings}
-	service.vmDriver = &apiVMDriver{settings: settings}
-	service.snapshotDriver = &apiVMSnapshotDriver{settings: settings}
+	service.vmDriver = &apiVMDriver{settings: settings, inventory: inventory}
+	service.snapshotDriver = &apiVMSnapshotDriver{settings: settings, inventory: inventory}
 	service.inventoryReader = &apiResourceInventory{settings: settings}
-	service.sdnNetworkDriver = &apiSDNNetworkDriver{settings: settings}
-	service.networkAttachmentDriver = &apiNetworkAttachmentDriver{settings: settings}
-	service.guestNetworkDriver = &apiGuestNetworkDriver{settings: settings}
+	service.sdnNetworkDriver = &apiSDNNetworkDriver{settings: settings, inventory: inventory}
+	service.networkAttachmentDriver = &apiNetworkAttachmentDriver{settings: settings, inventory: inventory}
+	service.guestNetworkDriver = &apiGuestNetworkDriver{settings: settings, inventory: inventory}
 	service.guestArtifactDriver = &apiGuestArtifactDriver{settings: settings}
 	service.templatePreparationDriver = &apiTemplatePreparationDriver{settings: settings}
 	service.templateDetectionDriver = &apiTemplateDetectionDriver{settings: settings}
@@ -451,7 +453,7 @@ func (inspector *apiInspector) Inspect(ctx context.Context, sourceID string, exp
 func verifyLinuxGuestAgentRoot(ctx context.Context, settings config.ProxmoxConfiguration, vm *pve.VirtualMachine, vmid int) (verified bool, err error) {
 	var pid int
 	var command string = `check='test "$(/usr/bin/id -u)" = "0" || exit 1; context=$(/usr/bin/id -Z 2>/dev/null || true); case "$context" in *:virt_qemu_ga_t:*) exit 1 ;; esac'; if [ -x /usr/libexec/qemu-ga/fsfreeze-hook.d/organesson-qga-exec ]; then exec /usr/libexec/qemu-ga/fsfreeze-hook.d/organesson-qga-exec /bin/sh -c "$check"; fi; exec /bin/sh -c "$check"`
-	if pid, err = vm.AgentExec(ctx, []string{"/bin/sh", "-c", command}, ""); err != nil {
+	if pid, err = guestAgentExecWithRetry(ctx, vm, []string{"/bin/sh", "-c", command}, ""); err != nil {
 		return
 	}
 	var status guestAgentExecStatus

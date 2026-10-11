@@ -177,6 +177,20 @@ export function Dashboard({ request, onError }: Props) {
     }, [request, onError, selectedDeploymentID]);
 
     useEffect(() => {
+        if (selectedDeploymentID === null) return;
+        let active = true;
+        const refreshTimer = window.setInterval(() => {
+            request<DeploymentDetail>(`/deployments/${selectedDeploymentID}`)
+                .then((result) => active && setSelectedDeployment(result))
+                .catch(() => undefined);
+        }, 30000);
+        return () => {
+            active = false;
+            window.clearInterval(refreshTimer);
+        };
+    }, [request, selectedDeploymentID]);
+
+    useEffect(() => {
         if (selectedDeploymentID === null || selectedDeployment?.deployment.id !== selectedDeploymentID || (!selectedDeployment.can_manage_groups && !selectedDeployment.can_manage_permissions)) {
             setDeploymentAccess(null);
             return;
@@ -362,6 +376,9 @@ export function Dashboard({ request, onError }: Props) {
                         <div><p className="eyebrow">Workspace</p><h2>Deployments</h2></div>
                         <button className="icon-button" type="button" onClick={loadDeployments} aria-label="Refresh deployments" disabled={loadingDeployments}><RefreshCw size={15} /></button>
                     </div>
+                    {selectedDeployment?.deployment.id === selectedDeploymentID && (selectedDeployment.live_status_refreshing || selectedDeployment.live_status_checked_at) && <p className="workspace-sync-status" aria-live="polite">
+                        {selectedDeployment.live_status_refreshing ? "Refreshing live status" : `As of ${new Date(selectedDeployment.live_status_checked_at ?? "").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`}
+                    </p>}
                     {loadingDeployments && deployments.length === 0 ? <p className="sidebar-hint">Loading deployments…</p> : deployments.length === 0 ? (
                         <div className="sidebar-empty"><Boxes size={18} /><p>No deployments are visible to this account.</p></div>
                     ) : (

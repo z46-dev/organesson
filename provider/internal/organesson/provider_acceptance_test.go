@@ -135,7 +135,7 @@ func TestManagedNetworkOwnsRouterLifecycle(t *testing.T) {
 		case "POST /api/v1/deployments/1/networks":
 			var payload map[string]any
 			_ = json.Unmarshal(body, &payload)
-			if payload["router_vmid"] != float64(9001) || payload["mode"] != "managed" {
+			if payload["router_vmid"] != float64(9001) || payload["mode"] != "managed" || payload["ipv6_subnet"] != "fd47:78f6:ab06::/64" || payload["ipv6_gateway"] != "fd47:78f6:ab06::1" || payload["ipv6_dhcp_enabled"] != true {
 				t.Errorf("managed network did not reference its router: %#v", payload)
 			}
 			_, _ = response.Write([]byte(`{"resource":{"id":13,"ownership_id":10,"external_id":"vnet-demo","external_node":"ogvxlan","name":"demo","power_state":"ready"},"configuration":{"request":{"name":"demo","mode":"managed","subnet":"192.168.44.0/24","gateway":"192.168.44.1","dhcp_enabled":true,"egress_policy":"isolated","router_vmid":9001}}}`))
@@ -146,10 +146,10 @@ func TestManagedNetworkOwnsRouterLifecycle(t *testing.T) {
 				_, _ = response.Write([]byte(`{"resource":{"id":14,"name":"lan"},"configuration":{"placement":{"device":"net0","mac":"02:00:00:00:00:14"}}}`))
 				return
 			}
-			if payload["name"] != "egress" || payload["address_pool_request_id"] != float64(20) || payload["requested_address_count"] != float64(1) {
-				t.Errorf("static WAN attachment did not use its reservation: %#v", payload)
+			if payload["name"] != "egress" || payload["address_pool_request_id"] != float64(20) || payload["requested_address_count"] != float64(1) || payload["ipv6_address_pool_request_id"] != float64(21) || payload["requested_ipv6_address_count"] != float64(1) {
+				t.Errorf("dual-stack WAN attachment did not use its reservations: %#v", payload)
 			}
-			_, _ = response.Write([]byte(`{"resource":{"id":15,"name":"egress"},"configuration":{"addresses":["10.192.0.7"],"address_prefix":"10.0.0.0/8","address_gateway":"10.0.0.1","address_dns":["10.0.0.2"],"placement":{"device":"net1","mac":"02:00:00:00:00:15"}}}`))
+			_, _ = response.Write([]byte(`{"resource":{"id":15,"name":"egress"},"configuration":{"addresses":["10.192.0.7"],"address_prefix":"10.0.0.0/8","address_gateway":"10.0.0.1","address_dns":["10.0.0.2"],"ipv6_addresses":["fd0e:f5b4:57c7::192"],"ipv6_address_prefix":"fd0e:f5b4:57c7::/64","ipv6_address_gateway":"fd0e:f5b4:57c7::1","ipv6_address_dns":["fd0e:f5b4:57c7::2"],"placement":{"device":"net1","mac":"02:00:00:00:00:15"}}}`))
 		case "GET /api/v1/network-attachments/14", "GET /api/v1/network-attachments/15":
 			var attachmentID string = strings.TrimPrefix(request.URL.Path, "/api/v1/network-attachments/")
 			var mac string = "02:00:00:00:00:14"
@@ -167,8 +167,8 @@ func TestManagedNetworkOwnsRouterLifecycle(t *testing.T) {
 		case "POST /api/v1/network-attachments/15/guest-network-configuration":
 			var payload map[string]any
 			_ = json.Unmarshal(body, &payload)
-			if payload["ipv4_method"] != "static" || payload["ipv4_address"] != "10.192.0.7/8" || payload["ipv4_gateway"] != "10.0.0.1" {
-				t.Errorf("WAN guest config did not preserve source network addressing: %#v", payload)
+			if payload["ipv4_method"] != "static" || payload["ipv4_address"] != "10.192.0.7/8" || payload["ipv4_gateway"] != "10.0.0.1" || payload["ipv6_method"] != "static" || payload["ipv6_address"] != "fd0e:f5b4:57c7::192/64" || payload["ipv6_gateway"] != "fd0e:f5b4:57c7::1" {
+				t.Errorf("WAN guest config did not preserve dual-stack source network addressing: %#v", payload)
 			}
 			response.WriteHeader(http.StatusNoContent)
 		case "POST /api/v1/virtual-machines/12/guest-setup":
@@ -195,8 +195,10 @@ func TestManagedNetworkOwnsRouterLifecycle(t *testing.T) {
 	var data *schema.ResourceData = schema.TestResourceDataRaw(t, resource.Schema, map[string]interface{}{
 		"deployment_id": "1", "name": "demo", "ipv4_subnet": "192.168.44.0/24", "ipv4_gateway": "192.168.44.1",
 		"dhcp_start": "192.168.44.30", "dhcp_end": "192.168.44.40", "dns_servers": []interface{}{"192.168.44.1"},
+		"ipv6_subnet": "fd47:78f6:ab06:0000::/64", "ipv6_gateway": "fd47:78f6:ab06:0000::1",
+		"ipv6_dhcp_enabled": true, "ipv6_dhcp_start": "fd47:78f6:ab06:0000::30", "ipv6_dhcp_end": "fd47:78f6:ab06:0000::40", "ipv6_dns_servers": []interface{}{"fd47:78f6:ab06:0000::1"},
 		"egress_enabled":             true,
-		"egress_environment_network": "cyber.lab", "egress_address_pool_request_id": "20", "egress_ipv4_method": "static",
+		"egress_environment_network": "cyber.lab", "egress_address_pool_request_id": "20", "egress_ipv6_address_pool_request_id": "21", "egress_ipv4_method": "static",
 	})
 	if diagnostics := resource.CreateContext(context.Background(), data, client); diagnostics.HasError() {
 		t.Fatalf("managed network create failed: %v", diagnostics)

@@ -9,7 +9,8 @@ import (
 )
 
 type apiVMSnapshotDriver struct {
-	settings config.ProxmoxConfiguration
+	settings  config.ProxmoxConfiguration
+	inventory *vmInventoryCache
 }
 
 // Create adds a snapshot to a verified Organesson VM and labels it for safe later management.
@@ -75,7 +76,7 @@ func (driver *apiVMSnapshotDriver) managedVM(ctx context.Context, nodeName strin
 	if client, err = newAPIClient(driver.settings); err != nil {
 		return
 	}
-	if _, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
+	if _, vm, _, err = locateManagedVMWithInventory(ctx, client, vmid, driver.inventory); err != nil {
 		return
 	}
 	err = verifyManagedVM(vm, operationKey)

@@ -39,17 +39,24 @@ func guestWorkflowResource() (resource *schema.Resource) {
 	resource = &schema.Resource{
 		CreateContext: guestWorkflowCreate,
 		ReadContext:   guestWorkflowRead,
+		UpdateContext: guestWorkflowUpdate,
 		DeleteContext: guestWorkflowDelete,
 		Timeouts:      &schema.ResourceTimeout{Create: schema.DefaultTimeout(60 * time.Minute)},
 		CustomizeDiff: guestWorkflowCustomizeDiff,
 		Schema: map[string]*schema.Schema{
-			"definition_file":   {Type: schema.TypeString, Required: true, ForceNew: true, Description: "TOML workflow definition containing named guest steps and dependencies."},
-			"execution_summary": {Type: schema.TypeString, Computed: true, Description: "Summary of the steps completed by the workflow."},
-			"sha256":            {Type: schema.TypeString, Computed: true, Description: "Fingerprint of the workflow definition and referenced artifact packages."},
-			"source_root":       {Type: schema.TypeString, Optional: true, Default: ".", ForceNew: true, Description: "Base directory for artifact paths in the workflow definition."},
-			"virtual_machines":  {Type: schema.TypeMap, Required: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Map of workflow target names to managed VM resource IDs."},
+			"definition_file":         {Type: schema.TypeString, Required: true, ForceNew: true, Description: "TOML workflow definition containing named guest steps and dependencies."},
+			"dependency_resource_ids": resourceDependencySchema(),
+			"execution_summary":       {Type: schema.TypeString, Computed: true, Description: "Summary of the steps completed by the workflow."},
+			"sha256":                  {Type: schema.TypeString, Computed: true, Description: "Fingerprint of the workflow definition and referenced artifact packages."},
+			"source_root":             {Type: schema.TypeString, Optional: true, Default: ".", ForceNew: true, Description: "Base directory for artifact paths in the workflow definition."},
+			"virtual_machines":        {Type: schema.TypeMap, Required: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "Map of workflow target names to managed VM resource IDs."},
 		},
 	}
+	return
+}
+
+// guestWorkflowUpdate records ordering-only changes without replaying completed workflow steps.
+func guestWorkflowUpdate(_ context.Context, _ *schema.ResourceData, _ interface{}) (diagnostics diag.Diagnostics) {
 	return
 }
 
@@ -219,10 +226,7 @@ func guestWorkflowCreate(ctx context.Context, data *schema.ResourceData, meta in
 		var result struct {
 			Execution guestSetupResult `json:"execution"`
 		}
-		if err = client.requestBytes(ctx, "POST", "/api/v1/virtual-machines/"+vmID+"/guest-setup", "application/vnd.organesson.artifact+gzip", map[string]string{
-			"X-Organesson-Artifact-SHA256":     step.artifact.SHA256,
-			"X-Organesson-Artifact-Entrypoint": step.Entrypoint,
-		}, step.artifact.Archive, &result); err != nil {
+		if err = executeWorkflowGuestStep(ctx, client, vmID, step, &result); err != nil {
 			diagnostics = diag.Errorf("workflow step %q on %s failed: %v", step.Name, step.Target, err)
 			return
 		}
@@ -243,6 +247,40 @@ func guestWorkflowCreate(ctx context.Context, data *schema.ResourceData, meta in
 		return
 	}
 	data.SetId(localResourceID("guest-workflow", digest))
+	return
+}
+
+// executeWorkflowGuestStep retries transport failures only; guest-reported script failures remain visible immediately.
+func executeWorkflowGuestStep(ctx context.Context, client *apiClient, vmID string, step guestWorkflowStep, result interface{}) (err error) {
+	const maximumAttempts int = 3
+	var attempt int
+	for attempt = 1; attempt <= maximumAttempts; attempt++ {
+		err = client.requestBytes(ctx, "POST", "/api/v1/virtual-machines/"+vmID+"/guest-setup", "application/vnd.organesson.artifact+gzip", map[string]string{
+			"X-Organesson-Artifact-SHA256":     step.artifact.SHA256,
+			"X-Organesson-Artifact-Entrypoint": step.Entrypoint,
+		}, step.artifact.Archive, result)
+		if err == nil || attempt == maximumAttempts || !retryableWorkflowGuestSetupError(err) {
+			return
+		}
+		var timer *time.Timer = time.NewTimer(time.Duration(attempt*5) * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			err = ctx.Err()
+			return
+		case <-timer.C:
+		}
+	}
+	return
+}
+
+// retryableWorkflowGuestSetupError recognizes lost QGA transport, not an entrypoint's non-zero exit status.
+func retryableWorkflowGuestSetupError(err error) (retry bool) {
+	if err == nil {
+		return
+	}
+	var message string = strings.ToLower(err.Error())
+	retry = strings.Contains(message, "guest-setup returned 502 bad gateway") && strings.Contains(message, `"exit_code":-1`)
 	return
 }
 

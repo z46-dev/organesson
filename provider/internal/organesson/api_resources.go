@@ -472,6 +472,9 @@ func guestNetworkConfigurationOperations() (operations remoteResourceOperations)
 		setGuestNetworkConfiguration(data, result.GuestNetwork)
 		return
 	}
+	operations.Update = func(_ context.Context, _ *schema.ResourceData, _ *apiClient) (err error) {
+		return
+	}
 	operations.Read = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
 		var attachmentID string
 		if attachmentID, err = remoteID(data.Id()); err != nil {

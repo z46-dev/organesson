@@ -743,7 +743,8 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 	}
 	response = performBearerRequest(t, application, http.MethodGet, "/api/v1/deployments/"+strconv.Itoa(deploymentResult.Deployment.ID), "", charlieCredential.Secret)
 	var detail struct {
-		Resources []struct {
+		LiveStatusRefreshing bool `json:"live_status_refreshing"`
+		Resources            []struct {
 			PowerState      string `json:"power_state"`
 			CanPowerControl bool   `json:"can_power_control"`
 		} `json:"resources"`
@@ -753,8 +754,8 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 		t.Fatalf("read authorized live deployment: status %d", response.StatusCode)
 	}
 	response.Body.Close()
-	if len(detail.Resources) != 1 || detail.Resources[0].PowerState != "stopped" || !detail.Resources[0].CanPowerControl {
-		t.Fatalf("deployment summary did not return live state and power capability: %#v", detail)
+	if len(detail.Resources) != 1 || detail.Resources[0].PowerState != "stopped" || !detail.Resources[0].CanPowerControl || !detail.LiveStatusRefreshing {
+		t.Fatalf("deployment summary did not return cached state and queue a live refresh: %#v", detail)
 	}
 	var powerPath string = "/api/v1/virtual-machines/" + strconv.Itoa(vmResult.Resource.ID) + "/power"
 	response = performBearerRequest(t, application, http.MethodPost, powerPath, `{"action":"start"}`, charlieCredential.Secret)

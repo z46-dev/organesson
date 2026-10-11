@@ -20,7 +20,8 @@ const routerFirewallConfigFile = "/etc/nftables.conf"
 
 type (
 	apiSDNRouterPoller struct {
-		settings config.ProxmoxConfiguration
+		settings  config.ProxmoxConfiguration
+		inventory *vmInventoryCache
 	}
 
 	cachedRouterPollingResult struct {
@@ -32,7 +33,7 @@ type (
 
 // PollRouter reads dnsmasq leases and the router's neighbor table through QEMU Guest Agent.
 func (driver *apiSDNNetworkDriver) PollRouter(ctx context.Context, request SDNNetworkRequest, placement SDNNetworkPlacement) (result SDNRouterPollingResult, err error) {
-	return (&apiSDNRouterPoller{settings: driver.settings}).PollRouter(ctx, request, placement)
+	return (&apiSDNRouterPoller{settings: driver.settings, inventory: driver.inventory}).PollRouter(ctx, request, placement)
 }
 
 // PollRouter validates the configured router identity and returns LAN address observations.
@@ -94,7 +95,7 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 		return
 	}
 	var vm *pve.VirtualMachine
-	if _, vm, _, err = locateManagedVM(ctx, client, request.RouterVMID); err != nil {
+	if _, vm, _, err = locateManagedVMWithInventory(ctx, client, request.RouterVMID, driver.inventory); err != nil {
 		return
 	}
 	if vm.VirtualMachineConfig == nil {
@@ -154,14 +155,14 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 				IPv6Addresses: routerInterfaceIPv6Addresses(iface),
 			}
 			var gatewayPID int
-			if gatewayPID, err = vm.AgentExec(ctx, []string{"ip", "-4", "route", "show", "default", "dev", iface.Name}, ""); err == nil {
+			if gatewayPID, err = guestAgentExecWithRetry(ctx, vm, []string{"ip", "-4", "route", "show", "default", "dev", iface.Name}, ""); err == nil {
 				var gatewayResult guestAgentExecStatus
 				if gatewayResult, err = waitForGuestExecExit(ctx, driver.settings, vm.Node, request.RouterVMID, gatewayPID, 15); err == nil && gatewayResult.ExitCode == 0 {
 					result.Egress.Gateway = parseRouterDefaultGateway(gatewayResult.OutData)
 				}
 			}
 			var gatewayIPv6PID int
-			if gatewayIPv6PID, err = vm.AgentExec(ctx, []string{"ip", "-6", "route", "show", "default", "dev", iface.Name}, ""); err == nil {
+			if gatewayIPv6PID, err = guestAgentExecWithRetry(ctx, vm, []string{"ip", "-6", "route", "show", "default", "dev", iface.Name}, ""); err == nil {
 				var gatewayIPv6Result guestAgentExecStatus
 				if gatewayIPv6Result, err = waitForGuestExecExit(ctx, driver.settings, vm.Node, request.RouterVMID, gatewayIPv6PID, 15); err == nil && gatewayIPv6Result.ExitCode == 0 {
 					result.Egress.IPv6Gateway = parseRouterDefaultGateway(gatewayIPv6Result.OutData)
@@ -190,7 +191,7 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 		err = nil
 	}
 	var pid int
-	if pid, err = vm.AgentExec(ctx, []string{"ip", "neigh", "show", "dev", lanInterface}, ""); err != nil {
+	if pid, err = guestAgentExecWithRetry(ctx, vm, []string{"ip", "neigh", "show", "dev", lanInterface}, ""); err != nil {
 		return
 	}
 	var commandResult guestAgentExecStatus
@@ -204,7 +205,7 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 	mergeRouterNeighbors(observed, commandResult.OutData, request.Subnet)
 	if request.IPv6Subnet != "" {
 		var ipv6PID int
-		if ipv6PID, err = vm.AgentExec(ctx, []string{"ip", "-6", "neigh", "show", "dev", lanInterface}, ""); err != nil {
+		if ipv6PID, err = guestAgentExecWithRetry(ctx, vm, []string{"ip", "-6", "neigh", "show", "dev", lanInterface}, ""); err != nil {
 			return
 		}
 		var ipv6Result guestAgentExecStatus

@@ -98,9 +98,10 @@ type (
 // initDeployments registers authenticated deployment and initial VM operations.
 func initDeployments(parent fiber.Router, services common.Services) {
 	var router fiber.Router = parent.Group("/deployments", common.RequireActor(services.Authentication))
+	var refreshManager *deploymentRefreshManager = newDeploymentRefreshManager()
 	router.Get("/", listDeployments(services))
 	router.Post("/", createDeployment(services))
-	router.Get("/:deployment_id", getDeployment(services))
+	router.Get("/:deployment_id", getDeployment(services, refreshManager))
 	router.Get("/:deployment_id/access", getDeploymentAccess(services))
 	router.Put("/:deployment_id", updateDeployment(services))
 	router.Delete("/:deployment_id", deleteDeployment(services))
@@ -119,7 +120,7 @@ func initDeployments(parent fiber.Router, services common.Services) {
 	parent.Delete("/ownership-nodes/:node_id", common.RequireActor(services.Authentication), deleteLogicalGroup(services))
 	parent.Get("/permission-grants/:grant_id", common.RequireActor(services.Authentication), getPermissionGrant(services))
 	parent.Delete("/permission-grants/:grant_id", common.RequireActor(services.Authentication), deletePermissionGrant(services))
-	parent.Post("/virtual-machines/:resource_id/power", common.RequireActor(services.Authentication), setVirtualMachinePower(services))
+	parent.Post("/virtual-machines/:resource_id/power", common.RequireActor(services.Authentication), setVirtualMachinePower(services, refreshManager))
 	parent.Get("/virtual-machines/:resource_id/snapshots", common.RequireActor(services.Authentication), listVMSnapshots(services))
 	parent.Post("/virtual-machines/:resource_id/snapshots", common.RequireActor(services.Authentication), createVMSnapshot(services))
 	parent.Get("/virtual-machines/:resource_id/console", common.RequireActor(services.Authentication), vmConsole(services))
@@ -751,7 +752,7 @@ func createDeployment(services common.Services) (handler fiber.Handler) {
 }
 
 // getDeployment returns a filtered view of a deployment.
-func getDeployment(services common.Services) (handler fiber.Handler) {
+func getDeployment(services common.Services, refreshManager *deploymentRefreshManager) (handler fiber.Handler) {
 	handler = func(ctx fiber.Ctx) (err error) {
 		var accountID int
 		if accountID, _ = common.AccountID(ctx); accountID == 0 {
@@ -765,23 +766,7 @@ func getDeployment(services common.Services) (handler fiber.Handler) {
 		if summary, err = services.Domain.GetDeployment(accountID, deploymentID); err != nil {
 			return common.DomainError(ctx, err)
 		}
-		for _, resource := range summary.Resources {
-			if resource.Kind != "virtual_machine" || resource.ExternalID == "" {
-				continue
-			}
-			if services.Proxmox == nil {
-				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; live VM state cannot be refreshed."})
-			}
-			var placement proxmox.VMPlacement
-			if placement, err = services.Proxmox.ReadVM(ctx, resource.ExternalNode, resource.ExternalID, resource.OperationKey); err != nil {
-				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not refresh deployment VM state from Proxmox."})
-			}
-			resource.PowerState = placement.PowerState
-			resource.ExternalNode = placement.Node
-			if _, err = services.Domain.RecordLiveVMPlacement(accountID, resource.ID, placement); err != nil {
-				return common.DomainError(ctx, err)
-			}
-		}
+		summary.LiveStatusCheckedAt, summary.LiveStatusRefreshing = refreshManager.enqueue(services, accountID, deploymentID, summary.Resources)
 		err = ctx.JSON(summary)
 		return
 	}
@@ -912,7 +897,7 @@ func createVirtualMachine(services common.Services) (handler fiber.Handler) {
 }
 
 // setVirtualMachinePower applies an authorized power-state change to a managed VM record.
-func setVirtualMachinePower(services common.Services) (handler fiber.Handler) {
+func setVirtualMachinePower(services common.Services, refreshManager *deploymentRefreshManager) (handler fiber.Handler) {
 	handler = func(ctx fiber.Ctx) (err error) {
 		var request setPowerRequest
 		if err = ctx.Bind().Body(&request); err != nil || request.Action == "" {
@@ -945,6 +930,7 @@ func setVirtualMachinePower(services common.Services) (handler fiber.Handler) {
 			if placement, err = services.Proxmox.PowerVM(ctx, managed.ExternalNode, managed.ExternalID, managed.OperationKey, request.Action); err != nil {
 				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm the requested power action."})
 			}
+			refreshManager.markResourceChanged(managed.DeploymentID, resourceID)
 			if resource, err = services.Domain.RecordLiveVMPlacement(accountID, resourceID, placement); err != nil {
 				return common.DomainError(ctx, err)
 			}

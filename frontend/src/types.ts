@@ -33,6 +33,8 @@ export type DeploymentDetail = {
     can_manage_configuration: boolean;
     can_manage_groups: boolean;
     can_manage_permissions: boolean;
+    live_status_checked_at?: string;
+    live_status_refreshing?: boolean;
 };
 
 export type DeploymentAccessAccount = {

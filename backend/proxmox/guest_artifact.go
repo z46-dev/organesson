@@ -98,6 +98,7 @@ func waitForGuestExecExitWithProgress(ctx context.Context, settings config.Proxm
 	var ticker *time.Ticker = time.NewTicker(2 * time.Second)
 	var started time.Time = time.Now()
 	var nextProgress time.Time = started.Add(15 * time.Second)
+	var consecutiveTransportFailures int
 	defer ticker.Stop()
 	for {
 		if progress != nil && time.Now().After(nextProgress) {
@@ -111,8 +112,22 @@ func waitForGuestExecExitWithProgress(ctx context.Context, settings config.Proxm
 		request.Header.Set("Authorization", "PVEAPIToken="+settings.APITokenID+"="+settings.APITokenSecret)
 		var response *http.Response
 		if response, err = client.Do(request); err != nil {
-			return
+			consecutiveTransportFailures++
+			if consecutiveTransportFailures >= 15 {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				err = ctx.Err()
+				return
+			case <-timeout:
+				err = fmt.Errorf("guest command did not exit within %d seconds: %w", timeoutSeconds, err)
+				return
+			case <-ticker.C:
+			}
+			continue
 		}
+		consecutiveTransportFailures = 0
 		var payload struct {
 			Data *struct {
 				Exited   int    `json:"exited"`
@@ -123,9 +138,27 @@ func waitForGuestExecExitWithProgress(ctx context.Context, settings config.Proxm
 			Message string `json:"message"`
 		}
 		if response.StatusCode != http.StatusOK {
+			var responseBody []byte
+			responseBody, _ = io.ReadAll(io.LimitReader(response.Body, 4096))
 			response.Body.Close()
-			err = fmt.Errorf("Proxmox guest-agent exec status returned HTTP %d", response.StatusCode)
-			return
+			err = fmt.Errorf("Proxmox guest-agent exec status returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
+			if response.StatusCode < http.StatusInternalServerError || response.StatusCode >= 600 || strings.Contains(strings.ToLower(string(responseBody)), "pid does not exist") {
+				return
+			}
+			consecutiveTransportFailures++
+			if consecutiveTransportFailures >= 15 {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				err = ctx.Err()
+				return
+			case <-timeout:
+				err = fmt.Errorf("guest command did not exit within %d seconds: %w", timeoutSeconds, err)
+				return
+			case <-ticker.C:
+			}
+			continue
 		}
 		if err = json.NewDecoder(response.Body).Decode(&payload); err != nil {
 			response.Body.Close()
@@ -394,7 +427,7 @@ func (driver *apiGuestArtifactDriver) executeUnix(ctx context.Context, vm *pve.V
 		}
 	}()
 	var mkdirPID int
-	if mkdirPID, err = vm.AgentExec(ctx, guestAgentCommand(append(mkdirArguments, workDirectory)...), ""); err != nil {
+	if mkdirPID, err = guestAgentExecWithRetry(ctx, vm, guestAgentCommand(append(mkdirArguments, workDirectory)...), ""); err != nil {
 		return
 	}
 	var mkdirStatus guestAgentExecStatus
@@ -432,7 +465,7 @@ func (driver *apiGuestArtifactDriver) executeUnix(ctx context.Context, vm *pve.V
 		return
 	}
 	var pid int
-	if pid, err = vm.AgentExec(ctx, guestAgentCommand(shellCommand, scriptPath, workDirectory, request.Entrypoint), ""); err != nil {
+	if pid, err = guestAgentExecWithRetry(ctx, vm, guestAgentCommand(shellCommand, scriptPath, workDirectory, request.Entrypoint), ""); err != nil {
 		return
 	}
 	var status guestAgentExecStatus
@@ -454,7 +487,48 @@ func writeGuestArtifactFile(ctx context.Context, settings config.ProxmoxConfigur
 		err = writeFreeBSDGuestFile(ctx, settings, vm, vmid, path, content)
 		return
 	}
-	err = vm.AgentFileWrite(ctx, path, content)
+	err = guestAgentFileWriteWithRetry(ctx, vm, path, content)
+	return
+}
+
+// guestAgentExecWithRetry waits for a QGA recovery only when Proxmox confirms no command was started.
+func guestAgentExecWithRetry(ctx context.Context, vm *pve.VirtualMachine, command []string, stdin string) (pid int, err error) {
+	const maximumAttempts int = 3
+	var attempt int
+	for attempt = 1; attempt <= maximumAttempts; attempt++ {
+		if pid, err = vm.AgentExec(ctx, command, stdin); err == nil || attempt == maximumAttempts || !guestAgentUnavailableError(err) {
+			return
+		}
+		if err = waitForGuestAgent(ctx, vm); err != nil {
+			return
+		}
+	}
+	return
+}
+
+// guestAgentFileWriteWithRetry repeats an idempotent full-file write after an agent disconnect.
+func guestAgentFileWriteWithRetry(ctx context.Context, vm *pve.VirtualMachine, path string, content []byte) (err error) {
+	const maximumAttempts int = 3
+	var attempt int
+	for attempt = 1; attempt <= maximumAttempts; attempt++ {
+		err = vm.AgentFileWrite(ctx, path, content)
+		if err == nil || attempt == maximumAttempts || !guestAgentUnavailableError(err) {
+			return
+		}
+		if err = waitForGuestAgent(ctx, vm); err != nil {
+			return
+		}
+	}
+	return
+}
+
+// guestAgentUnavailableError classifies the QGA startup/reboot race that is safe to retry.
+func guestAgentUnavailableError(err error) (unavailable bool) {
+	if err == nil {
+		return
+	}
+	var message string = strings.ToLower(err.Error())
+	unavailable = strings.Contains(message, "guest agent is not running") || strings.Contains(message, "guest-agent is not running")
 	return
 }
 
@@ -607,7 +681,7 @@ func (driver *apiGuestArtifactDriver) executeWindows(ctx context.Context, vm *pv
 	}
 	for _, file := range files {
 		var target string = workDirectory + `\` + strings.ReplaceAll(file.Path, "/", `\`)
-		if err = vm.AgentFileWrite(ctx, target, file.Contents); err != nil {
+		if err = guestAgentFileWriteWithRetry(ctx, vm, target, file.Contents); err != nil {
 			return
 		}
 	}
@@ -633,7 +707,7 @@ func runWindowsArtifactCommand(ctx context.Context, settings config.ProxmoxConfi
 		return
 	}
 	var pid int
-	if pid, err = vm.AgentExec(ctx, []string{windowsPowerShellPath, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command}, ""); err != nil {
+	if pid, err = guestAgentExecWithRetry(ctx, vm, []string{windowsPowerShellPath, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command}, ""); err != nil {
 		return
 	}
 	if status, err = waitForGuestExecExit(ctx, settings, node, vmid, pid, timeoutSeconds); err != nil {

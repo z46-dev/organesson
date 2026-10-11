@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/z46-dev/organesson/backend/config"
@@ -166,7 +167,7 @@ func TestVMDriverRequiresOwnershipMarkerBeforePowerOrDelete(t *testing.T) {
 	defer fakePVE.Close()
 	var driver *apiVMDriver = &apiVMDriver{settings: config.ProxmoxConfiguration{
 		APIURL: fakePVE.URL + "/api2/json", APITokenID: "test!organesson", APITokenSecret: "secret", InsecureSkipVerify: true,
-	}}
+	}, inventory: &vmInventoryCache{}}
 	var ctx context.Context = context.Background()
 	if _, err := driver.Power(ctx, "pve1", "901", "og-stale", "start"); err == nil {
 		t.Fatal("power action must reject a mismatched ownership marker")
@@ -237,7 +238,7 @@ func TestVMReadUsesCurrentClusterNodeAfterMigration(t *testing.T) {
 	defer fakePVE.Close()
 	var driver *apiVMDriver = &apiVMDriver{settings: config.ProxmoxConfiguration{
 		APIURL: fakePVE.URL + "/api2/json", APITokenID: "test!organesson", APITokenSecret: "secret", InsecureSkipVerify: true,
-	}}
+	}, inventory: &vmInventoryCache{}}
 	var placement VMPlacement
 	var err error
 	if placement, err = driver.Read(context.Background(), "osmium", "902", "og-migrated"); err != nil {
@@ -245,6 +246,76 @@ func TestVMReadUsesCurrentClusterNodeAfterMigration(t *testing.T) {
 	}
 	if placement.Node != "tungsten" || placement.PowerState != "running" {
 		t.Fatalf("cluster placement was not refreshed after migration: %#v", placement)
+	}
+}
+
+// TestReadManyUsesOneClusterInventoryAndVerifiesEveryVM proves batch refresh avoids repeated cluster scans.
+func TestReadManyUsesOneClusterInventoryAndVerifiesEveryVM(t *testing.T) {
+	var inventoryReads atomic.Int32
+	var fakePVE *httptest.Server = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/status":
+			writePVEData(response, []any{})
+		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/resources":
+			inventoryReads.Add(1)
+			writePVEData(response, []map[string]any{
+				{"type": "qemu", "vmid": 901, "node": "osmium", "name": "first", "status": "running"},
+				{"type": "qemu", "vmid": 902, "node": "tungsten", "name": "second", "status": "stopped"},
+			})
+		case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/api2/json/nodes/") && strings.HasSuffix(request.URL.Path, "/status"):
+			writePVEData(response, map[string]any{"status": "online"})
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/status/current"):
+			if strings.Contains(request.URL.Path, "/901/") {
+				writePVEData(response, map[string]any{"vmid": 901, "name": "first", "status": "running"})
+			} else {
+				writePVEData(response, map[string]any{"vmid": 902, "name": "second", "status": "stopped"})
+			}
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/config"):
+			if strings.Contains(request.URL.Path, "/901/") {
+				writePVEData(response, map[string]any{"description": "Organesson managed resource og-first"})
+			} else {
+				writePVEData(response, map[string]any{"description": "Organesson managed resource og-second"})
+			}
+		default:
+			t.Errorf("unexpected fake PVE request: %s %s", request.Method, request.URL.String())
+			writePVEData(response, nil)
+		}
+	}))
+	defer fakePVE.Close()
+
+	var driver *apiVMDriver = &apiVMDriver{settings: config.ProxmoxConfiguration{
+		APIURL: fakePVE.URL + "/api2/json", APITokenID: "test!organesson", APITokenSecret: "secret", InsecureSkipVerify: true,
+	}, inventory: &vmInventoryCache{}}
+	var requests []VMReadRequest = []VMReadRequest{
+		{VMID: "901", OperationKey: "og-first"},
+		{VMID: "902", OperationKey: "og-second"},
+	}
+	var results []VMReadResult
+	var err error
+	if results, err = driver.ReadMany(context.Background(), requests); err != nil {
+		t.Fatalf("read VM batch: %v", err)
+	}
+	if len(results) != len(requests) || results[0].Err != nil || results[1].Err != nil {
+		t.Fatalf("VM batch did not return both placements: %#v", results)
+	}
+	if results[0].Placement.Node != "osmium" || results[0].Placement.PowerState != "running" || results[1].Placement.Node != "tungsten" || results[1].Placement.PowerState != "stopped" {
+		t.Fatalf("VM batch placements were incorrect: %#v", results)
+	}
+	if inventoryReads.Load() != 1 {
+		t.Fatalf("batch refreshed cluster inventory %d times, want one", inventoryReads.Load())
+	}
+	if _, err = driver.Read(context.Background(), "old-node-hint", "901", "og-first"); err != nil {
+		t.Fatalf("read VM using shared inventory cache: %v", err)
+	}
+	if inventoryReads.Load() != 1 {
+		t.Fatalf("single VM read ignored the shared inventory cache: %d inventory reads", inventoryReads.Load())
+	}
+	driver.invalidateVMInventory()
+	if _, err = driver.Read(context.Background(), "old-node-hint", "901", "og-first"); err != nil {
+		t.Fatalf("read VM after invalidating inventory cache: %v", err)
+	}
+	if inventoryReads.Load() != 2 {
+		t.Fatalf("invalidated cache was not refreshed, got %d inventory reads", inventoryReads.Load())
 	}
 }
 

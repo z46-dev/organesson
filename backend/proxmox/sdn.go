@@ -51,7 +51,8 @@ type (
 	}
 
 	apiSDNNetworkDriver struct {
-		settings config.ProxmoxConfiguration
+		settings  config.ProxmoxConfiguration
+		inventory *vmInventoryCache
 	}
 
 	// SDNIPAMEntry is a single address assignment reported by a Proxmox IPAM backend.

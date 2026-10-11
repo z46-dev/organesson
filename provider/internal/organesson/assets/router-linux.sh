@@ -77,7 +77,7 @@ fi
 
 install -d -m 0755 /etc/sysctl.d
 if [[ -n "$wan_interface" ]]; then
-    printf 'net.ipv4.ip_forward=1\n' >/etc/sysctl.d/90-organesson-router.conf
+    printf 'net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\nnet.ipv6.conf.default.forwarding=1\n' >/etc/sysctl.d/90-organesson-router.conf
     cat >/etc/nftables.conf <<EOF
 #!/usr/sbin/nft -f
 flush ruleset
@@ -96,6 +96,7 @@ table inet organesson {
         type filter hook forward priority filter; policy drop;
         ct state established,related accept
         iifname "$lan_interface" oifname "$wan_interface" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } drop
+        iifname "$lan_interface" oifname "$wan_interface" meta nfproto ipv6 ip6 daddr { fc00::/7, fe80::/10 } drop
         iifname "$lan_interface" oifname "$wan_interface" accept
     }
 }
@@ -110,8 +111,18 @@ table ip organesson_nat {
 }
 EOF
     fi
+    if [[ -n "${LAN_IPV6_SUBNET:-}" ]]; then
+        cat >>/etc/nftables.conf <<EOF
+table ip6 organesson_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        oifname "$wan_interface" ip6 saddr $LAN_IPV6_SUBNET masquerade
+    }
+}
+EOF
+    fi
 else
-    printf 'net.ipv4.ip_forward=0\n' >/etc/sysctl.d/90-organesson-router.conf
+    printf 'net.ipv4.ip_forward=0\nnet.ipv6.conf.all.forwarding=0\nnet.ipv6.conf.default.forwarding=0\n' >/etc/sysctl.d/90-organesson-router.conf
     cat >/etc/nftables.conf <<EOF
 #!/usr/sbin/nft -f
 flush ruleset

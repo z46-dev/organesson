@@ -73,6 +73,31 @@ func TestWindowsArtifactPowerShellQuoting(t *testing.T) {
 	}
 }
 
+func TestWaitForGuestExecExitRetriesTemporaryProxmoxErrors(t *testing.T) {
+	var attempts int
+	var fakePVE *httptest.Server = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		attempts++
+		if attempts == 1 {
+			response.WriteHeader(http.StatusInternalServerError)
+			_, _ = response.Write([]byte(`{"message":"QEMU guest agent is not running"}`))
+			return
+		}
+		writePVEData(response, map[string]any{"exited": 1, "exitcode": 0, "out-data": "ok", "err-data": ""})
+	}))
+	defer fakePVE.Close()
+
+	var status guestAgentExecStatus
+	var err error
+	if status, err = waitForGuestExecExit(context.Background(), config.ProxmoxConfiguration{
+		APIURL: fakePVE.URL + "/api2/json", APITokenID: "test!organesson", APITokenSecret: "secret", InsecureSkipVerify: true,
+	}, "pve1", 901, 123, 10); err != nil {
+		t.Fatalf("wait for guest command after transient QGA error: %v", err)
+	}
+	if attempts != 2 || status.ExitCode != 0 || status.OutData != "ok" {
+		t.Fatalf("unexpected status after transient QGA error: attempts=%d status=%#v", attempts, status)
+	}
+}
+
 func TestGuestArtifactDriverTransfersFilesAndAlwaysCleansWorkspace(t *testing.T) {
 	var runExitCode int = 0
 	var runnerPID int

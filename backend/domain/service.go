@@ -37,6 +37,8 @@ type (
 		CanManageConfiguration bool                `json:"can_manage_configuration"`
 		CanManageGroups        bool                `json:"can_manage_groups"`
 		CanManagePermissions   bool                `json:"can_manage_permissions"`
+		LiveStatusCheckedAt    *time.Time          `json:"live_status_checked_at,omitempty"`
+		LiveStatusRefreshing   bool                `json:"live_status_refreshing,omitempty"`
 	}
 
 	// ResourceSummary adds actor-specific capabilities to one visible resource.

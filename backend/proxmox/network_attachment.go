@@ -41,7 +41,8 @@ type (
 	}
 
 	apiNetworkAttachmentDriver struct {
-		settings config.ProxmoxConfiguration
+		settings  config.ProxmoxConfiguration
+		inventory *vmInventoryCache
 	}
 )
 
@@ -99,7 +100,7 @@ func (driver *apiNetworkAttachmentDriver) Attach(ctx context.Context, request Ne
 	}
 	var node *pve.Node
 	var vm *pve.VirtualMachine
-	if node, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
+	if node, vm, _, err = locateManagedVMWithInventory(ctx, client, vmid, driver.inventory); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, request.VMOperationKey); err != nil {
@@ -242,7 +243,7 @@ func (driver *apiNetworkAttachmentDriver) Read(ctx context.Context, request Netw
 	}
 	var node *pve.Node
 	var vm *pve.VirtualMachine
-	if node, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
+	if node, vm, _, err = locateManagedVMWithInventory(ctx, client, vmid, driver.inventory); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, request.VMOperationKey); err != nil {
@@ -311,7 +312,7 @@ func (driver *apiNetworkAttachmentDriver) Detach(ctx context.Context, request Ne
 		return
 	}
 	var vm *pve.VirtualMachine
-	if _, vm, _, err = locateManagedVM(ctx, client, vmid); err != nil {
+	if _, vm, _, err = locateManagedVMWithInventory(ctx, client, vmid, driver.inventory); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, request.VMOperationKey); err != nil {

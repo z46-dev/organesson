@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	pve "github.com/luthermonson/go-proxmox"
@@ -48,9 +49,36 @@ type (
 		CPUModel   string `json:"cpu_model"`
 	}
 
-	apiVMDriver struct {
-		settings config.ProxmoxConfiguration
+	// VMReadRequest identifies an Organesson-managed VM to read from Proxmox.
+	VMReadRequest struct {
+		Node         string
+		VMID         string
+		OperationKey string
 	}
+
+	// VMReadResult contains the live placement or an error for one requested VM.
+	VMReadResult struct {
+		Placement VMPlacement
+		Err       error
+	}
+
+	vmInventoryCache struct {
+		mutex      sync.Mutex
+		resources  pve.ClusterResources
+		expiresAt  time.Time
+		refresh    chan struct{}
+		generation uint64
+	}
+
+	apiVMDriver struct {
+		settings  config.ProxmoxConfiguration
+		inventory *vmInventoryCache
+	}
+)
+
+const (
+	vmInventoryCacheDuration = 10 * time.Second
+	vmReadConcurrency        = 16
 )
 
 // CloneVM provisions a guest from an already-checked QEMU source and waits for every PVE task.
@@ -72,6 +100,27 @@ func (service *Service) ReadVM(ctx context.Context, node string, vmid string, op
 		return
 	}
 	placement, err = service.vmDriver.Read(ctx, node, vmid, operationKey)
+	return
+}
+
+// ReadVMs refreshes multiple VM placements using one cluster inventory lookup.
+func (service *Service) ReadVMs(ctx context.Context, requests []VMReadRequest) (results []VMReadResult, err error) {
+	if service == nil || service.vmDriver == nil || !service.Configured() {
+		err = ErrNotConfigured
+		return
+	}
+	if batchDriver, ok := service.vmDriver.(interface {
+		ReadMany(context.Context, []VMReadRequest) ([]VMReadResult, error)
+	}); ok {
+		results, err = batchDriver.ReadMany(ctx, requests)
+		return
+	}
+	results = make([]VMReadResult, len(requests))
+	for index, request := range requests {
+		if results[index].Placement, results[index].Err = service.vmDriver.Read(ctx, request.Node, request.VMID, request.OperationKey); results[index].Err != nil {
+			continue
+		}
+	}
 	return
 }
 
@@ -148,6 +197,7 @@ func (driver *apiVMDriver) Clone(ctx context.Context, request VMCloneRequest) (p
 	if client, err = newAPIClient(driver.settings); err != nil {
 		return
 	}
+	defer driver.invalidateVMInventory()
 	var cluster *pve.Cluster
 	if cluster, err = client.Cluster(ctx); err != nil {
 		return
@@ -320,7 +370,7 @@ func (driver *apiVMDriver) Read(ctx context.Context, nodeName string, id string,
 	}
 	var actualNode string
 	var vm *pve.VirtualMachine
-	if _, vm, actualNode, err = locateManagedVM(ctx, client, vmid); err != nil {
+	if _, vm, actualNode, err = driver.locateManagedVM(ctx, client, vmid); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, operationKey); err != nil {
@@ -328,6 +378,166 @@ func (driver *apiVMDriver) Read(ctx context.Context, nodeName string, id string,
 	}
 	placement = placementFor(vm, vmid, actualNode)
 	return
+}
+
+// ReadMany batches VM location discovery and bounds Proxmox detail requests.
+func (driver *apiVMDriver) ReadMany(ctx context.Context, requests []VMReadRequest) (results []VMReadResult, err error) {
+	results = make([]VMReadResult, len(requests))
+	if len(requests) == 0 {
+		return
+	}
+	var client *pve.Client
+	if client, err = newAPIClient(driver.settings); err != nil {
+		return
+	}
+	var resources pve.ClusterResources
+	if resources, err = clusterVMResources(ctx, client, driver.inventory); err != nil {
+		return
+	}
+	var nodeByVMID map[uint64]string = make(map[uint64]string, len(resources))
+	for _, resource := range resources {
+		if resource != nil && resource.Type == "qemu" && resource.VMID > 0 && resource.Node != "" {
+			nodeByVMID[resource.VMID] = resource.Node
+		}
+	}
+	var nodeNames map[string]struct{} = make(map[string]struct{})
+	var requestedNodes []string = make([]string, len(requests))
+	var vmIDs []int = make([]int, len(requests))
+	for index, request := range requests {
+		if vmIDs[index], results[index].Err = parseVMID(request.VMID); results[index].Err != nil {
+			continue
+		}
+		requestedNodes[index] = nodeByVMID[uint64(vmIDs[index])]
+		if requestedNodes[index] == "" {
+			results[index].Err = errClusterVMNotFound
+			continue
+		}
+		nodeNames[requestedNodes[index]] = struct{}{}
+	}
+	var nodes map[string]*pve.Node = make(map[string]*pve.Node, len(nodeNames))
+	var nodeErrors map[string]error = make(map[string]error)
+	for nodeName := range nodeNames {
+		if nodes[nodeName], err = client.Node(ctx, nodeName); err != nil {
+			nodeErrors[nodeName] = err
+			err = nil
+		}
+	}
+	var waitGroup sync.WaitGroup
+	var semaphore chan struct{} = make(chan struct{}, vmReadConcurrency)
+	for index, request := range requests {
+		waitGroup.Add(1)
+		go func(index int, request VMReadRequest) {
+			defer waitGroup.Done()
+			if results[index].Err != nil {
+				return
+			}
+			select {
+			case semaphore <- struct{}{}:
+			case <-ctx.Done():
+				results[index].Err = ctx.Err()
+				return
+			}
+			defer func() { <-semaphore }()
+			var nodeName string = requestedNodes[index]
+			if nodeErrors[nodeName] != nil {
+				results[index].Err = nodeErrors[nodeName]
+				return
+			}
+			var vm *pve.VirtualMachine
+			if vm, results[index].Err = nodes[nodeName].VirtualMachine(ctx, vmIDs[index]); results[index].Err != nil {
+				return
+			}
+			if results[index].Err = verifyManagedVM(vm, request.OperationKey); results[index].Err != nil {
+				return
+			}
+			results[index].Placement = placementFor(vm, vmIDs[index], nodeName)
+		}(index, request)
+	}
+	waitGroup.Wait()
+	return
+}
+
+// locateManagedVM uses a short-lived shared cluster inventory before reading one VM's full configuration.
+func (driver *apiVMDriver) locateManagedVM(ctx context.Context, client *pve.Client, vmid int) (node *pve.Node, vm *pve.VirtualMachine, nodeName string, err error) {
+	return locateManagedVMWithInventory(ctx, client, vmid, driver.inventory)
+}
+
+// read loads one short-lived cluster inventory and shares it among parallel resource reads.
+func (cache *vmInventoryCache) read(ctx context.Context, client *pve.Client) (resources pve.ClusterResources, err error) {
+	for {
+		cache.mutex.Lock()
+		if cache.resources != nil && time.Now().Before(cache.expiresAt) {
+			resources = cache.resources
+			cache.mutex.Unlock()
+			return
+		}
+		if cache.refresh != nil {
+			var refresh chan struct{} = cache.refresh
+			cache.mutex.Unlock()
+			select {
+			case <-refresh:
+				continue
+			case <-ctx.Done():
+				err = ctx.Err()
+				return
+			}
+		}
+		var refresh chan struct{} = make(chan struct{})
+		cache.refresh = refresh
+		var generation uint64 = cache.generation
+		cache.mutex.Unlock()
+
+		var cluster *pve.Cluster
+		if cluster, err = client.Cluster(ctx); err == nil {
+			resources, err = cluster.Resources(ctx, "vm")
+		}
+
+		cache.mutex.Lock()
+		if generation != cache.generation {
+			cache.refresh = nil
+			close(refresh)
+			cache.mutex.Unlock()
+			continue
+		}
+		if err == nil {
+			cache.resources = resources
+			cache.expiresAt = time.Now().Add(vmInventoryCacheDuration)
+		}
+		cache.refresh = nil
+		close(refresh)
+		cache.mutex.Unlock()
+		return
+	}
+}
+
+// invalidate clears the cached inventory after a lifecycle change.
+func (cache *vmInventoryCache) invalidate() {
+	if cache == nil {
+		return
+	}
+	cache.mutex.Lock()
+	cache.generation++
+	cache.resources = nil
+	cache.expiresAt = time.Time{}
+	cache.mutex.Unlock()
+}
+
+// clusterVMResources uses the supplied cache when available and otherwise performs a single direct lookup.
+func clusterVMResources(ctx context.Context, client *pve.Client, cache *vmInventoryCache) (resources pve.ClusterResources, err error) {
+	if cache != nil {
+		resources, err = cache.read(ctx, client)
+		return
+	}
+	var cluster *pve.Cluster
+	if cluster, err = client.Cluster(ctx); err == nil {
+		resources, err = cluster.Resources(ctx, "vm")
+	}
+	return
+}
+
+// invalidateVMInventory clears cached placement after a VM lifecycle mutation.
+func (driver *apiVMDriver) invalidateVMInventory() {
+	driver.inventory.invalidate()
 }
 
 // Power performs only explicit start, stop, or restart operations on the selected managed VM.
@@ -341,8 +551,9 @@ func (driver *apiVMDriver) Power(ctx context.Context, nodeName string, id string
 	if client, err = newAPIClient(driver.settings); err != nil {
 		return
 	}
+	defer driver.invalidateVMInventory()
 	var actualNode string
-	if _, vm, actualNode, err = locateManagedVM(ctx, client, vmid); err != nil {
+	if _, vm, actualNode, err = driver.locateManagedVM(ctx, client, vmid); err != nil {
 		return
 	}
 	if err = verifyManagedVM(vm, operationKey); err != nil {
@@ -390,9 +601,10 @@ func (driver *apiVMDriver) Delete(ctx context.Context, nodeName string, id strin
 	if client, err = newAPIClient(driver.settings); err != nil {
 		return
 	}
+	defer driver.invalidateVMInventory()
 	var node *pve.Node
 	var vm *pve.VirtualMachine
-	if node, vm, _, err = locateManagedVM(ctx, client, vmid); errors.Is(err, errClusterVMNotFound) {
+	if node, vm, _, err = driver.locateManagedVM(ctx, client, vmid); errors.Is(err, errClusterVMNotFound) {
 		err = nil
 		return
 	} else if err != nil {
@@ -427,12 +639,13 @@ func (driver *apiVMDriver) Delete(ctx context.Context, nodeName string, id strin
 
 // locateManagedVM follows Proxmox cluster placement so a migrated VM remains addressable.
 func locateManagedVM(ctx context.Context, client *pve.Client, vmid int) (node *pve.Node, vm *pve.VirtualMachine, nodeName string, err error) {
-	var cluster *pve.Cluster
-	if cluster, err = client.Cluster(ctx); err != nil {
-		return
-	}
+	return locateManagedVMWithInventory(ctx, client, vmid, nil)
+}
+
+// locateManagedVMWithInventory resolves current placement and retrieves the ownership marker.
+func locateManagedVMWithInventory(ctx context.Context, client *pve.Client, vmid int, cache *vmInventoryCache) (node *pve.Node, vm *pve.VirtualMachine, nodeName string, err error) {
 	var resources pve.ClusterResources
-	if resources, err = cluster.Resources(ctx, "vm"); err != nil {
+	if resources, err = clusterVMResources(ctx, client, cache); err != nil {
 		return
 	}
 	for _, resource := range resources {

@@ -25,38 +25,39 @@ func resourceManagedNetwork() (resource *schema.Resource) {
 		DeleteContext: managedNetworkDelete,
 		Importer:      &schema.ResourceImporter{StateContext: schema.ImportStatePassthroughContext},
 		Schema: map[string]*schema.Schema{
-			"deployment_id":                  {Type: schema.TypeString, Optional: true, ForceNew: true, ExactlyOneOf: []string{"deployment_id", "logical_group_id"}, Description: "The owning deployment identifier."},
-			"logical_group_id":               {Type: schema.TypeString, Optional: true, ForceNew: true, ExactlyOneOf: []string{"deployment_id", "logical_group_id"}, Description: "The owning logical group identifier."},
-			"name":                           {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Managed network name."},
-			"ipv4_subnet":                    {Type: schema.TypeString, Optional: true, ForceNew: true, ValidateFunc: validation.IsCIDR, Description: "Optional managed IPv4 subnet in CIDR notation."},
-			"ipv4_gateway":                   {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Router address inside the managed IPv4 subnet."},
-			"ipv4_dhcp_enabled":              {Type: schema.TypeBool, Optional: true, Default: true, ForceNew: true, Description: "Whether the router provides IPv4 DHCP on this network."},
-			"dhcp_start":                     {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "First IPv4 address offered by the router DHCP service."},
-			"dhcp_end":                       {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Last IPv4 address offered by the router DHCP service."},
-			"dns_servers":                    {Type: schema.TypeSet, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "IPv4 DNS servers advertised to DHCP clients."},
-			"ipv6_subnet":                    {Type: schema.TypeString, Optional: true, ForceNew: true, ValidateFunc: validation.IsCIDR, Description: "Optional managed IPv6 subnet in CIDR notation."},
-			"ipv6_gateway":                   {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Router address inside the managed IPv6 subnet."},
-			"ipv6_dhcp_enabled":              {Type: schema.TypeBool, Optional: true, Default: false, ForceNew: true, Description: "Whether the router provides stateful DHCPv6 on this network. Router advertisements remain enabled for SLAAC when IPv6 is configured."},
-			"ipv6_dhcp_start":                {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "First IPv6 address offered by the router DHCPv6 service."},
-			"ipv6_dhcp_end":                  {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Last IPv6 address offered by the router DHCPv6 service."},
-			"ipv6_dns_servers":               {Type: schema.TypeSet, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "IPv6 DNS servers advertised to IPv6 clients."},
-			"router_cpu_cores":               {Type: schema.TypeInt, Optional: true, Default: 1, ForceNew: true, ValidateFunc: validation.IntAtLeast(1), Description: "Virtual CPU cores for the hidden router VM."},
-			"router_memory_mib":              {Type: schema.TypeInt, Optional: true, Default: 2048, ForceNew: true, ValidateFunc: validation.IntAtLeast(512), Description: "Memory in MiB for the hidden router VM."},
-			"router_boot_disk_gib":           {Type: schema.TypeInt, Optional: true, Default: 16, ForceNew: true, ValidateFunc: validation.IntAtLeast(8), Description: "Boot disk size in GiB for the hidden router VM."},
-			"egress_enabled":                 {Type: schema.TypeBool, Optional: true, Default: false, ForceNew: true, Description: "Attach the router to an authorized environment network and enable filtered NAT egress."},
-			"egress_environment_network":     {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Authorized environment network used as the router's WAN."},
-			"egress_address_pool_request_id": {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Optional reserved address request for static router egress."},
-			"egress_ipv4_method":             {Type: schema.TypeString, Optional: true, Default: "dhcp", ForceNew: true, ValidateFunc: validation.StringInSlice([]string{"dhcp", "static"}, false), Description: "IPv4 configuration method for the router WAN."},
-			"external_vlan":                  externalVLANExposureSchema(),
-			"power_state":                    {Type: schema.TypeString, Computed: true, Description: "Proxmox SDN provisioning state."},
-			"proxmox_vnet":                   {Type: schema.TypeString, Computed: true, Description: "Organesson-owned Proxmox SDN VNet identifier."},
-			"proxmox_zone":                   {Type: schema.TypeString, Computed: true, Description: "Proxmox SDN zone containing this VNet."},
-			"router_vmid":                    {Type: schema.TypeInt, Computed: true, Description: "Platform-only router VMID, retained for Router Polling."},
-			"router_resource_id":             {Type: schema.TypeString, Computed: true, Description: "Platform-owned Organesson VM record for the router."},
-			"internal_group_id":              {Type: schema.TypeString, Computed: true, Description: "Platform-owned hidden ownership branch for the router."},
-			"lan_attachment_id":              {Type: schema.TypeString, Computed: true, Description: "Platform-owned router LAN attachment."},
-			"egress_attachment_id":           {Type: schema.TypeString, Computed: true, Description: "Platform-owned router WAN attachment, if enabled."},
-			"summary":                        summarySchema(),
+			"deployment_id":                       {Type: schema.TypeString, Optional: true, ForceNew: true, ExactlyOneOf: []string{"deployment_id", "logical_group_id"}, Description: "The owning deployment identifier."},
+			"logical_group_id":                    {Type: schema.TypeString, Optional: true, ForceNew: true, ExactlyOneOf: []string{"deployment_id", "logical_group_id"}, Description: "The owning logical group identifier."},
+			"name":                                {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Managed network name."},
+			"ipv4_subnet":                         {Type: schema.TypeString, Optional: true, ForceNew: true, ValidateFunc: validation.IsCIDR, Description: "Optional managed IPv4 subnet in CIDR notation."},
+			"ipv4_gateway":                        {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Router address inside the managed IPv4 subnet."},
+			"ipv4_dhcp_enabled":                   {Type: schema.TypeBool, Optional: true, Default: true, ForceNew: true, Description: "Whether the router provides IPv4 DHCP on this network."},
+			"dhcp_start":                          {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "First IPv4 address offered by the router DHCP service."},
+			"dhcp_end":                            {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Last IPv4 address offered by the router DHCP service."},
+			"dns_servers":                         {Type: schema.TypeSet, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "IPv4 DNS servers advertised to DHCP clients."},
+			"ipv6_subnet":                         {Type: schema.TypeString, Optional: true, ForceNew: true, ValidateFunc: validation.IsCIDR, Description: "Optional managed IPv6 subnet in CIDR notation."},
+			"ipv6_gateway":                        {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Router address inside the managed IPv6 subnet."},
+			"ipv6_dhcp_enabled":                   {Type: schema.TypeBool, Optional: true, Default: false, ForceNew: true, Description: "Whether the router provides stateful DHCPv6 on this network. Router advertisements remain enabled for SLAAC when IPv6 is configured."},
+			"ipv6_dhcp_start":                     {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "First IPv6 address offered by the router DHCPv6 service."},
+			"ipv6_dhcp_end":                       {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Last IPv6 address offered by the router DHCPv6 service."},
+			"ipv6_dns_servers":                    {Type: schema.TypeSet, Optional: true, ForceNew: true, Elem: &schema.Schema{Type: schema.TypeString}, Description: "IPv6 DNS servers advertised to IPv6 clients."},
+			"router_cpu_cores":                    {Type: schema.TypeInt, Optional: true, Default: 1, ForceNew: true, ValidateFunc: validation.IntAtLeast(1), Description: "Virtual CPU cores for the hidden router VM."},
+			"router_memory_mib":                   {Type: schema.TypeInt, Optional: true, Default: 2048, ForceNew: true, ValidateFunc: validation.IntAtLeast(512), Description: "Memory in MiB for the hidden router VM."},
+			"router_boot_disk_gib":                {Type: schema.TypeInt, Optional: true, Default: 16, ForceNew: true, ValidateFunc: validation.IntAtLeast(8), Description: "Boot disk size in GiB for the hidden router VM."},
+			"egress_enabled":                      {Type: schema.TypeBool, Optional: true, Default: false, ForceNew: true, Description: "Attach the router to an authorized environment network and enable filtered NAT egress."},
+			"egress_environment_network":          {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Authorized environment network used as the router's WAN."},
+			"egress_address_pool_request_id":      {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Optional reserved address request for static router egress."},
+			"egress_ipv4_method":                  {Type: schema.TypeString, Optional: true, Default: "dhcp", ForceNew: true, ValidateFunc: validation.StringInSlice([]string{"dhcp", "static"}, false), Description: "IPv4 configuration method for the router WAN."},
+			"egress_ipv6_address_pool_request_id": {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Reserved IPv6 address request for static router egress."},
+			"external_vlan":                       externalVLANExposureSchema(),
+			"power_state":                         {Type: schema.TypeString, Computed: true, Description: "Proxmox SDN provisioning state."},
+			"proxmox_vnet":                        {Type: schema.TypeString, Computed: true, Description: "Organesson-owned Proxmox SDN VNet identifier."},
+			"proxmox_zone":                        {Type: schema.TypeString, Computed: true, Description: "Proxmox SDN zone containing this VNet."},
+			"router_vmid":                         {Type: schema.TypeInt, Computed: true, Description: "Platform-only router VMID, retained for Router Polling."},
+			"router_resource_id":                  {Type: schema.TypeString, Computed: true, Description: "Platform-owned Organesson VM record for the router."},
+			"internal_group_id":                   {Type: schema.TypeString, Computed: true, Description: "Platform-owned hidden ownership branch for the router."},
+			"lan_attachment_id":                   {Type: schema.TypeString, Computed: true, Description: "Platform-owned router LAN attachment."},
+			"egress_attachment_id":                {Type: schema.TypeString, Computed: true, Description: "Platform-owned router WAN attachment, if enabled."},
+			"summary":                             summarySchema(),
 		},
 	}
 	return
@@ -154,8 +155,8 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 		diagnostics = diag.Errorf("egress_environment_network is required when egress_enabled is true")
 		return
 	}
-	if data.Get("egress_enabled").(bool) && data.Get("egress_address_pool_request_id").(string) == "" {
-		diagnostics = diag.Errorf("egress requires egress_address_pool_request_id so its interface can be source-filtered")
+	if data.Get("egress_enabled").(bool) && data.Get("egress_address_pool_request_id").(string) == "" && data.Get("egress_ipv6_address_pool_request_id").(string) == "" {
+		diagnostics = diag.Errorf("egress requires an IPv4 or IPv6 address pool request so its interface can be source-filtered")
 		return
 	}
 	var dnsServers []string
@@ -255,9 +256,18 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 				return
 			}
 		}
-		var requested int = 1
+		var ipv6PoolID int
+		if raw := data.Get("egress_ipv6_address_pool_request_id").(string); raw != "" {
+			if ipv6PoolID, err = strconv.Atoi(raw); err != nil {
+				managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID)
+				diagnostics = diag.FromErr(err)
+				return
+			}
+		}
 		if err = client.request(ctx, http.MethodPost, "/api/v1/virtual-machines/"+vmResourceID+"/network-attachments", map[string]any{
-			"name": "egress", "environment_network": data.Get("egress_environment_network").(string), "address_pool_request_id": poolID, "requested_address_count": requested, "logical_network_id": 0,
+			"name": "egress", "environment_network": data.Get("egress_environment_network").(string),
+			"address_pool_request_id": poolID, "requested_address_count": boolCount(poolID > 0),
+			"ipv6_address_pool_request_id": ipv6PoolID, "requested_ipv6_address_count": boolCount(ipv6PoolID > 0), "logical_network_id": 0,
 		}, &wan); err != nil {
 			managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID)
 			diagnostics = diag.FromErr(err)
@@ -268,14 +278,17 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 			"ipv4_method": data.Get("egress_ipv4_method").(string), "ipv4_address": "", "ipv4_gateway": "", "ipv4_dns": []string{}, "ipv4_never_default": false,
 			"ipv6_method": "disabled", "ipv6_address": "", "ipv6_gateway": "", "ipv6_dns": []string{}, "ipv6_never_default": true,
 		}
-		if data.Get("egress_ipv4_method").(string) == "static" {
+		if poolID == 0 {
+			guestConfig["ipv4_method"] = "disabled"
+			guestConfig["ipv4_never_default"] = true
+		} else if data.Get("egress_ipv4_method").(string) == "static" {
 			if len(wan.Configuration.Addresses) != 1 || wan.Configuration.AddressPrefix == "" {
 				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
 				diagnostics = diag.Errorf("static router egress did not receive one address and its network prefix")
 				return
 			}
 			prefix, prefixErr := netip.ParsePrefix(wan.Configuration.AddressPrefix)
-			if prefixErr != nil {
+			if prefixErr != nil || !prefix.Addr().Is4() {
 				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
 				diagnostics = diag.Errorf("router egress source returned an invalid IPv4 prefix")
 				return
@@ -287,6 +300,24 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 			managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
 			diagnostics = diag.Errorf("DHCP router egress requires exactly one reserved IPv4 address")
 			return
+		}
+		if ipv6PoolID > 0 {
+			if len(wan.Configuration.IPv6Addresses) != 1 || wan.Configuration.IPv6AddressPrefix == "" {
+				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
+				diagnostics = diag.Errorf("static IPv6 router egress did not receive one address and its network prefix")
+				return
+			}
+			prefix, prefixErr := netip.ParsePrefix(wan.Configuration.IPv6AddressPrefix)
+			if prefixErr != nil || !prefix.Addr().Is6() || prefix.Addr().Is4In6() {
+				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
+				diagnostics = diag.Errorf("router egress source returned an invalid IPv6 prefix")
+				return
+			}
+			guestConfig["ipv6_method"] = "static"
+			guestConfig["ipv6_address"] = wan.Configuration.IPv6Addresses[0] + "/" + strconv.Itoa(prefix.Bits())
+			guestConfig["ipv6_gateway"] = wan.Configuration.IPv6AddressGateway
+			guestConfig["ipv6_dns"] = wan.Configuration.IPv6AddressDNS
+			guestConfig["ipv6_never_default"] = false
 		}
 		if err = createGuestNetworkConfiguration(ctx, client, wanID, guestConfig); err != nil {
 			managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
@@ -312,6 +343,14 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 	_ = data.Set("proxmox_zone", network.Resource.ExternalNode)
 	_ = data.Set("external_vlan", externalVLANState(network.Configuration.Request.ExternalVLAN))
 	_ = data.Set("summary", fmt.Sprintf("managed VNet %q with platform-owned router, DHCP, DNS, and configured egress", data.Get("name")))
+	return
+}
+
+// boolCount converts a reservation's presence into its one-address count.
+func boolCount(enabled bool) (count int) {
+	if enabled {
+		count = 1
+	}
 	return
 }
 
