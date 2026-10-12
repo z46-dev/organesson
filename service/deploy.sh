@@ -381,6 +381,11 @@ server {
 }
 EOF
 
+    as_root install -d -o root -g root -m 0755 /etc/nginx/default.d
+    as_root tee /etc/nginx/default.d/organesson-redirect.conf >/dev/null <<EOF
+return 301 https://${PUBLIC_HOSTNAME}\$request_uri;
+EOF
+
     as_root restorecon -RF "${INSTALL_DIR}/frontend" "${TLS_DIR}" 2>/dev/null || true
     as_root nginx -t
     as_root systemctl daemon-reload
@@ -392,9 +397,20 @@ EOF
 
 verify_service() {
     local attempt
+    local redirect_target
 
     for attempt in {1..15}; do
         if curl --silent --show-error --fail --insecure --resolve "${PUBLIC_HOSTNAME}:443:127.0.0.1" "https://${PUBLIC_HOSTNAME}/api/v1/auth/status" >/dev/null 2>&1; then
+            redirect_target="$(curl --silent --show-error --output /dev/null --write-out '%{redirect_url}' --resolve "${PUBLIC_HOSTNAME}:80:127.0.0.1" "http://${PUBLIC_HOSTNAME}/" 2>/dev/null || true)"
+            [[ "${redirect_target}" == "https://${PUBLIC_HOSTNAME}/" ]] || {
+                sleep 2
+                continue
+            }
+            redirect_target="$(curl --silent --show-error --output /dev/null --write-out '%{redirect_url}' http://127.0.0.1/ 2>/dev/null || true)"
+            [[ "${redirect_target}" == "https://${PUBLIC_HOSTNAME}/" ]] || {
+                sleep 2
+                continue
+            }
             printf '\n[organesson] Ready at https://%s/\n' "${PUBLIC_HOSTNAME}"
             return
         fi
@@ -403,7 +419,7 @@ verify_service() {
 
     as_root systemctl --no-pager --full status organesson.service || true
     as_root journalctl -u organesson.service -n 60 --no-pager || true
-    fail "Service health check failed."
+    fail "Service health check or HTTP-to-HTTPS redirect failed."
 }
 
 main() {
