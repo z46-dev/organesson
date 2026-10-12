@@ -2478,8 +2478,31 @@ h2 {
 }
 
 .console-toolbar {
+    display: flex;
     flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     min-height: 28px;
+}
+
+.console-toolbar-start,
+.console-special-keys {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+}
+
+.console-special-keys {
+    flex: 0 0 auto;
+    padding-left: 10px;
+    border-left: 1px solid var(--theme-border-soft);
+}
+
+.console-keyboard-message {
+    color: var(--theme-muted);
+    font-size: 11px;
 }
 
 .console-title {
@@ -2528,6 +2551,16 @@ h2 {
     width: 30px;
     height: 30px;
     padding: 0;
+}
+
+.console-special-key {
+    width: auto;
+    min-width: 62px;
+    height: 34px;
+    padding: 0 9px;
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
 }
 
 .console-screen-wrap,
@@ -2602,6 +2635,19 @@ h2 {
 }
 
 @media (max-width: 640px) {
+    .console-toolbar-start {
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .console-special-keys {
+        padding-left: 7px;
+    }
+
+    .console-keyboard-message {
+        display: none;
+    }
+
     .console-control {
         padding: 6px;
     }
@@ -2615,6 +2661,17 @@ h2 {
     border-radius: 7px;
     background: white;
     color: #4c5a52;
+}
+
+button.console-special-key {
+    width: auto;
+    height: 34px;
+}
+
+button.console-special-key.is-pressed {
+    border-color: var(--theme-accent);
+    background: var(--theme-accent-soft);
+    color: var(--theme-accent-text);
 }
 
 .icon-button:hover,
