@@ -24,4 +24,4 @@ tofu apply
 tofu plan
 ```
 
-The CLI configuration uses a development override, so OpenTofu loads the local provider binary rather than downloading one from a registry. Do not commit `tofu.rc` or place bearer tokens in `.tf` files or state.
+The CLI configuration uses a development override, so OpenTofu loads the local provider binary rather than downloading one from a registry. Do not commit `tofu.rc` or place bearer tokens in `.tf` files or state. Prefer installing the issuing CA or fixing the certificate SAN. As a last resort for isolated lab testing, `ORGANESSON_INSECURE_SKIP_VERIFY=true` disables TLS certificate and hostname verification and can expose the bearer token to interception; do not use it on untrusted networks.

@@ -86,7 +86,7 @@ func TestGuestSetupProviderUploadsOnlyVerifiedArtifactDuringApply(t *testing.T) 
 	}))
 	defer server.Close()
 	var client *apiClient
-	if client, err = configuredClient(server.URL, "test-token"); err != nil {
+	if client, err = configuredClient(server.URL, "test-token", "", false); err != nil {
 		t.Fatal(err)
 	}
 	var resource *schema.Resource = guestSetupResource()
@@ -188,7 +188,7 @@ func TestManagedNetworkOwnsRouterLifecycle(t *testing.T) {
 	defer server.Close()
 	var client *apiClient
 	var err error
-	if client, err = configuredClient(server.URL, "test-token"); err != nil {
+	if client, err = configuredClient(server.URL, "test-token", "", false); err != nil {
 		t.Fatal(err)
 	}
 	var resource *schema.Resource = resourceManagedNetwork()
@@ -261,7 +261,7 @@ func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {
 	var server *httptest.Server = httptest.NewServer(adaptor.FiberApp(fiberApp))
 	defer server.Close()
 	var client *apiClient
-	if client, err = configuredClient(server.URL, apiToken.Secret); err != nil {
+	if client, err = configuredClient(server.URL, apiToken.Secret, "", false); err != nil {
 		t.Fatalf("configure provider client: %v", err)
 	}
 	var provider *schema.Provider = Provider()
@@ -501,7 +501,7 @@ func TestProviderProxmoxVMCreateRefreshDelete(t *testing.T) {
 	var server *httptest.Server = httptest.NewServer(adaptor.FiberApp(application))
 	defer server.Close()
 	var client *apiClient
-	if client, err = configuredClient(server.URL, credential.Secret); err != nil {
+	if client, err = configuredClient(server.URL, credential.Secret, "", false); err != nil {
 		t.Fatalf("configure provider client: %v", err)
 	}
 	var provider *schema.Provider = Provider()

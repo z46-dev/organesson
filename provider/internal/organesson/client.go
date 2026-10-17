@@ -119,11 +119,7 @@ func (client *apiClient) requestWithTimeout(ctx context.Context, method string, 
 }
 
 // configuredClient validates endpoint and creates the bounded HTTP client used by provider resources.
-func configuredClient(endpoint string, token string, caCertFiles ...string) (client *apiClient, err error) {
-	var caCertFile string
-	if len(caCertFiles) > 0 {
-		caCertFile = caCertFiles[0]
-	}
+func configuredClient(endpoint string, token string, caCertFile string, insecureSkipVerify bool) (client *apiClient, err error) {
 	var parsed *url.URL
 	if parsed, err = url.ParseRequestURI(strings.TrimSpace(endpoint)); err != nil {
 		return
@@ -137,7 +133,7 @@ func configuredClient(endpoint string, token string, caCertFiles ...string) (cli
 		return
 	}
 	var transport *http.Transport
-	if strings.TrimSpace(caCertFile) != "" {
+	if strings.TrimSpace(caCertFile) != "" && !insecureSkipVerify {
 		var certificatePEM []byte
 		if certificatePEM, err = os.ReadFile(caCertFile); err != nil {
 			err = fmt.Errorf("read Organesson CA certificate file: %w", err)
@@ -156,6 +152,8 @@ func configuredClient(endpoint string, token string, caCertFiles ...string) (cli
 			return
 		}
 		transport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}
+	} else if insecureSkipVerify {
+		transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}} // #nosec G402 -- Explicit opt-in lab setting; TLS verification remains enabled by default.
 	}
 	var httpClient *http.Client = &http.Client{Timeout: 12 * time.Minute}
 	if transport != nil {

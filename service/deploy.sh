@@ -83,7 +83,7 @@ prepare_tls() {
 
     if as_root test -s "${TLS_DIR}/server.crt" && as_root test -s "${TLS_DIR}/server.key"; then
         as_root openssl x509 -in "${TLS_DIR}/server.crt" -checkhost "${hostname}" -noout >/dev/null || fail "The existing TLS certificate does not cover ${hostname}. Replace the certificate and key in ${TLS_DIR} before continuing."
-        certificate_has_dns_san "${TLS_DIR}/server.crt" "${hostname}" || fail "The existing TLS certificate has no DNS SAN for ${hostname}. Reissue it with a Subject Alternative Name; Common Name-only certificates are rejected by OpenTofu's Go TLS client."
+        confirm_certificate_dns_san "${TLS_DIR}/server.crt" "${hostname}"
         if as_root test -s /etc/ipa/ca.crt && as_root openssl verify -CAfile /etc/ipa/ca.crt "${TLS_DIR}/server.crt" >/dev/null 2>&1; then
             TLS_TRUSTED_CA="/etc/ipa/ca.crt"
         fi
@@ -108,6 +108,25 @@ certificate_has_dns_san() {
         | tr ',' '\n' \
         | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
         | grep -Fxq "DNS:${hostname}"
+}
+
+confirm_certificate_dns_san() {
+    local certificate_path="$1"
+    local hostname="$2"
+    local answer
+    if certificate_has_dns_san "${certificate_path}" "${hostname}"; then
+        return 0
+    fi
+    printf '[organesson] Certificate verification warning: this certificate has no DNS SAN for %s. Go clients such as OpenTofu will reject it unless verification is explicitly disabled.\n' "${hostname}"
+    read -r -p "Continue with this certificate anyway? [y/N] " answer
+    case "${answer,,}" in
+        y|yes)
+            printf '[organesson] Continuing with the Common Name-only certificate by explicit approval.\n'
+            ;;
+        *)
+            fail "Certificate verification was not approved. Reissue the certificate with a DNS SAN for ${hostname}."
+            ;;
+    esac
 }
 
 setup_tls_selinux() {
@@ -208,8 +227,8 @@ prepare_freeipa_certificate() {
     [[ "${request_state}" == "MONITORING" ]] || fail "FreeIPA did not issue the HTTPS certificate within three minutes: ${request_status}"
     [[ -n "${current_certificate_serial:-}" && "${current_certificate_serial}" != "${previous_certificate_serial}" ]] || fail "FreeIPA did not replace the previous HTTPS certificate within three minutes: ${request_status}"
     as_root openssl x509 -in "${TLS_DIR}/server.crt" -checkhost "${PUBLIC_HOSTNAME}" -noout >/dev/null || fail "The issued FreeIPA certificate does not cover ${PUBLIC_HOSTNAME}."
-    certificate_has_dns_san "${TLS_DIR}/server.crt" "${PUBLIC_HOSTNAME}" || fail "The issued FreeIPA certificate has no DNS SAN for ${PUBLIC_HOSTNAME}; OpenTofu's Go TLS client rejects Common Name-only certificates. Check the FreeIPA request and reissue with -D ${PUBLIC_HOSTNAME}."
     as_root openssl verify -CAfile /etc/ipa/ca.crt "${TLS_DIR}/server.crt" >/dev/null || fail "The issued FreeIPA certificate could not be verified against the enrolled CA."
+    confirm_certificate_dns_san "${TLS_DIR}/server.crt" "${PUBLIC_HOSTNAME}"
     as_root chown "root:${SERVICE_USER}" "${TLS_DIR}/server.crt" "${TLS_DIR}/server.key"
     as_root chmod 0644 "${TLS_DIR}/server.crt"
     as_root chmod 0640 "${TLS_DIR}/server.key"

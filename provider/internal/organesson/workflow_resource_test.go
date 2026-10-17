@@ -70,7 +70,7 @@ func TestGuestWorkflowRunsStepsInDependencyOrderAndWaitsForReboot(t *testing.T) 
 	}))
 	defer server.Close()
 	var client *apiClient
-	if client, err = configuredClient(server.URL, "test-token"); err != nil {
+	if client, err = configuredClient(server.URL, "test-token", "", false); err != nil {
 		t.Fatal(err)
 	}
 	var data *schema.ResourceData = schema.TestResourceDataRaw(t, guestWorkflowResource().Schema, map[string]interface{}{
