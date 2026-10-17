@@ -128,6 +128,8 @@ prepare_freeipa_certificate() {
     local request_status
     local request_state
     local attempt
+    local previous_certificate_serial
+    local current_certificate_serial
 
     machine_hostname="$(hostname -f 2>/dev/null || true)"
     [[ -n "${machine_hostname}" && "${PUBLIC_HOSTNAME,,}" == "${machine_hostname,,}" ]] || fail "The FreeIPA certificate hostname must match this enrolled host's FQDN (${machine_hostname:-unknown})."
@@ -167,6 +169,7 @@ prepare_freeipa_certificate() {
 
     as_root test -s /etc/ipa/ca.crt || fail "The FreeIPA CA certificate /etc/ipa/ca.crt is missing."
     TLS_TRUSTED_CA="/etc/ipa/ca.crt"
+    previous_certificate_serial="$(as_root openssl x509 -in "${TLS_DIR}/server.crt" -noout -serial 2>/dev/null | sed 's/^[Ss]erial=//' || true)"
     request_output="$(as_root ipa-getcert list -f "${TLS_DIR}/server.crt" 2>/dev/null || true)"
     request_id="$(sed -n "s/^[[:space:]]*Request ID '\([^']*\)':/\1/p" <<< "${request_output}" | head -n 1)"
     if [[ -z "${request_id}" ]]; then
@@ -190,7 +193,10 @@ prepare_freeipa_certificate() {
         request_status="$(as_root getcert list -i "${request_id}" 2>/dev/null || true)"
         request_state="$(sed -n 's/^[[:space:]]*status:[[:space:]]*//p' <<< "${request_status}" | head -n 1)"
         if [[ "${request_state}" == "MONITORING" ]] && as_root test -s "${TLS_DIR}/server.crt" && as_root test -s "${TLS_DIR}/server.key"; then
-            break
+            current_certificate_serial="$(as_root openssl x509 -in "${TLS_DIR}/server.crt" -noout -serial 2>/dev/null | sed 's/^[Ss]erial=//' || true)"
+            if [[ -n "${current_certificate_serial}" && "${current_certificate_serial}" != "${previous_certificate_serial}" ]]; then
+                break
+            fi
         fi
         case "${request_state}" in
             CA_REJECTED|CA_UNREACHABLE|NEED_KEY_PAIR|NEED_KEYINFO)
@@ -200,6 +206,7 @@ prepare_freeipa_certificate() {
         sleep 2
     done
     [[ "${request_state}" == "MONITORING" ]] || fail "FreeIPA did not issue the HTTPS certificate within three minutes: ${request_status}"
+    [[ -n "${current_certificate_serial:-}" && "${current_certificate_serial}" != "${previous_certificate_serial}" ]] || fail "FreeIPA did not replace the previous HTTPS certificate within three minutes: ${request_status}"
     as_root openssl x509 -in "${TLS_DIR}/server.crt" -checkhost "${PUBLIC_HOSTNAME}" -noout >/dev/null || fail "The issued FreeIPA certificate does not cover ${PUBLIC_HOSTNAME}."
     certificate_has_dns_san "${TLS_DIR}/server.crt" "${PUBLIC_HOSTNAME}" || fail "The issued FreeIPA certificate has no DNS SAN for ${PUBLIC_HOSTNAME}; OpenTofu's Go TLS client rejects Common Name-only certificates. Check the FreeIPA request and reissue with -D ${PUBLIC_HOSTNAME}."
     as_root openssl verify -CAfile /etc/ipa/ca.crt "${TLS_DIR}/server.crt" >/dev/null || fail "The issued FreeIPA certificate could not be verified against the enrolled CA."
