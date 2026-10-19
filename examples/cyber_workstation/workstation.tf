@@ -5,7 +5,6 @@ resource "organesson_virtual_machine" "workstation" {
   logical_group_id  = organesson_logical_group.workstation.id
   name              = "fedora-workstation"
   pool              = "organesson"
-  provisioning_mode = "proxmox"
   storage           = "laas"
   template          = "og-template-fedora-workstation-latest"
 }

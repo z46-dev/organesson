@@ -13,6 +13,85 @@ import (
 	"github.com/z46-dev/organesson/backend/proxmox"
 )
 
+// TestDeploymentCreatorPermissionStaysInsideTheCreatedDeployment verifies delegated creation and ownership boundaries.
+func TestDeploymentCreatorPermissionStaysInsideTheCreatedDeployment(t *testing.T) {
+	var store *db.Store
+	var err error
+	if store, err = db.Open(filepath.Join(t.TempDir(), "organesson.db"), golog.New(), false); err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+	var service *Service = New(store)
+	var administrator *db.Account
+	if administrator, _, err = store.InitialAdministrator(); err != nil {
+		t.Fatalf("get administrator: %v", err)
+	}
+	var creator *db.Account = &db.Account{DisplayName: "Deployment creator", ActivatedAt: timePointer(time.Now()), CreatedAt: time.Now()}
+	if err = store.Accounts.Insert(creator); err != nil {
+		t.Fatalf("insert creator: %v", err)
+	}
+	var other *db.Account = &db.Account{DisplayName: "Other user", ActivatedAt: timePointer(time.Now()), CreatedAt: time.Now()}
+	if err = store.Accounts.Insert(other); err != nil {
+		t.Fatalf("insert other user: %v", err)
+	}
+	if err = service.SetDeploymentCreationPermission(administrator.ID, creator.ID, true); err != nil {
+		t.Fatalf("grant deployment creation: %v", err)
+	}
+	var allowed bool
+	if allowed, err = service.CanCreateDeployment(creator.ID); err != nil || !allowed {
+		t.Fatalf("creator should have deployment creation permission: allowed=%t err=%v", allowed, err)
+	}
+	if _, err = service.CreateDeployment(other.ID, "forbidden", ""); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("unprivileged account created a deployment: %v", err)
+	}
+	var deployment *db.Deployment
+	if deployment, err = service.CreateDeployment(creator.ID, "creator-lab", "owned by creator"); err != nil {
+		t.Fatalf("create delegated deployment: %v", err)
+	}
+	var child *db.OwnershipNode
+	if child, err = service.CreateLogicalGroup(creator.ID, deployment.ID, *deployment.RootNodeID, "lab", false); err != nil {
+		t.Fatalf("creator should manage deployment groups: %v", err)
+	}
+	var vm *db.ManagedResource
+	if vm, err = service.CreateVirtualMachine(creator.ID, deployment.ID, child.ID, "owned-vm"); err != nil {
+		t.Fatalf("creator should provision resources in their deployment: %v", err)
+	}
+	if err = service.Require(other.ID, db.PermissionResourceView, vm.OwnershipID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("unrelated user accessed creator's VM: %v", err)
+	}
+	var scorer *db.Account = &db.Account{DisplayName: "Orgscore service", ActivatedAt: timePointer(time.Now()), CreatedAt: time.Now()}
+	if err = store.Accounts.Insert(scorer); err != nil {
+		t.Fatalf("insert scorer account: %v", err)
+	}
+	if _, err = service.CreatePermissionGrant(administrator.ID, db.GrantSubjectKindAccount, scorer.ID, db.PermissionResourceView, vm.OwnershipID); err != nil {
+		t.Fatalf("grant scorer resource visibility: %v", err)
+	}
+	if _, err = service.CreatePermissionGrant(administrator.ID, db.GrantSubjectKindAccount, scorer.ID, db.PermissionGuestExecute, vm.OwnershipID); err != nil {
+		t.Fatalf("grant scorer guest execution: %v", err)
+	}
+	if err = service.Require(scorer.ID, db.PermissionGuestExecute, vm.OwnershipID); err != nil {
+		t.Fatalf("scorer should execute guest artifacts: %v", err)
+	}
+	if err = service.Require(scorer.ID, db.PermissionDeploymentManage, vm.OwnershipID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("scorer should not manage deployment configuration: %v", err)
+	}
+	if _, err = service.UpdateDeployment(creator.ID, deployment.ID, "renamed-lab", "updated"); err != nil {
+		t.Fatalf("creator should update their deployment metadata: %v", err)
+	}
+	if err = service.DeleteDeployment(other.ID, deployment.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("unrelated user deleted creator's deployment: %v", err)
+	}
+	if err = service.DeleteDeployment(creator.ID, deployment.ID); err != nil {
+		t.Fatalf("creator should destroy their own deployment: %v", err)
+	}
+	if err = service.SetDeploymentCreationPermission(administrator.ID, creator.ID, false); err != nil {
+		t.Fatalf("revoke deployment creation: %v", err)
+	}
+	if allowed, err = service.CanCreateDeployment(creator.ID); err != nil || allowed {
+		t.Fatalf("revoked creator should lose deployment creation permission: allowed=%t err=%v", allowed, err)
+	}
+}
+
 // TestInheritedGroupGrantsScopeViewsAndVMOperations exercises the core access path.
 func TestInheritedGroupGrantsScopeViewsAndVMOperations(t *testing.T) {
 	var store *db.Store

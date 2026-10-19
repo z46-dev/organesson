@@ -43,6 +43,7 @@ func Init(parent fiber.Router, services common.Services) {
 	admin.Post("/realms/ldap/:alias/test", testLDAPRealm(services))
 	admin.Get("/users", listUsers(services))
 	admin.Put("/users/:user_id/platform-administrator", updatePlatformAdministrator(services))
+	admin.Put("/users/:user_id/deployment-creation", updateDeploymentCreationPermission(services))
 	admin.Get("/api-tokens", listAPITokens(services))
 	admin.Post("/api-tokens", createAPIToken(services))
 	admin.Post("/api-tokens/prune-expired", pruneExpiredAPITokens(services))

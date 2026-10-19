@@ -3452,6 +3452,45 @@ button.console-special-key.is-pressed {
     gap: 12px;
 }
 
+.user-directory-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.local-account-dialog {
+    width: min(520px, calc(100vw - 32px));
+}
+
+.local-account-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.activation-link-field {
+    display: grid;
+    gap: 6px;
+    color: var(--theme-muted);
+    font-size: 12px;
+}
+
+.activation-link-field input {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 8px 9px;
+    border: 1px solid var(--theme-border);
+    border-radius: 5px;
+    background: var(--theme-surface);
+    color: var(--theme-text);
+    font: inherit;
+}
+
+@media (max-width: 600px) {
+    .local-account-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
 .user-password-actions {
     display: flex;
     align-items: center;

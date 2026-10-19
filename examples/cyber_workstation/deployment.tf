@@ -1,5 +1,4 @@
 resource "organesson_deployment" "workstation" {
-  environment = "cyber-lab-pve"
   name        = "cyber-workstation"
   owner       = "system:platform-administrators"
 }

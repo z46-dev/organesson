@@ -51,7 +51,7 @@ func (service *Service) ResolveGuestVM(actorID int, resourceID int) (request pro
 		err = ErrNotFound
 		return
 	}
-	if err = service.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
+	if err = service.Require(actorID, db.PermissionGuestExecute, resource.OwnershipID); err != nil {
 		return
 	}
 	var configuration proxmox.VMCloneRequest
@@ -117,7 +117,7 @@ func (service *Service) BeginGuestArtifactExecution(actorID int, resourceID int,
 		err = ErrNotFound
 		return
 	}
-	if err = service.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
+	if err = service.Require(actorID, db.PermissionGuestExecute, resource.OwnershipID); err != nil {
 		return
 	}
 	var configuration map[string]json.RawMessage
@@ -172,7 +172,7 @@ func (service *Service) CompleteGuestArtifactExecution(actorID int, resourceID i
 		err = ErrNotFound
 		return
 	}
-	if err = service.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
+	if err = service.Require(actorID, db.PermissionGuestExecute, resource.OwnershipID); err != nil {
 		return
 	}
 	var configuration map[string]json.RawMessage

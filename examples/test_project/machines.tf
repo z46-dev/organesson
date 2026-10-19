@@ -7,7 +7,6 @@ resource "organesson_virtual_machine" "student" {
   memory_mib        = 4096
   name              = each.value.role
   pool              = "organesson"
-  provisioning_mode = "proxmox"
   storage           = "laas"
   template          = "og-template-fedora-server-latest"
 }

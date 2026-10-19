@@ -5,7 +5,6 @@ resource "organesson_virtual_machine" "domain_controller" {
   memory_mib        = 8192
   name              = "domain-controller"
   pool              = "organesson"
-  provisioning_mode = "proxmox"
   storage           = "laas"
   template          = "og-template-windows-server-2025"
 }
@@ -17,7 +16,6 @@ resource "organesson_virtual_machine" "workstation" {
   memory_mib        = 8192
   name              = "windows-11-workstation"
   pool              = "organesson"
-  provisioning_mode = "proxmox"
   storage           = "laas"
   template          = "og-template-windows-11-pro-workstation"
 }

@@ -1,5 +1,4 @@
 resource "organesson_deployment" "class_lab" {
-  environment = "cyber-lab-pve"
   name        = "alice-class-lab"
   owner       = "system:platform-administrators"
 }

@@ -24,6 +24,7 @@ type (
 		ID                    int                    `json:"id"`
 		DisplayName           string                 `json:"display_name"`
 		PlatformAdministrator bool                   `json:"platform_administrator"`
+		CanCreateDeployments  bool                   `json:"can_create_deployments"`
 		Disabled              bool                   `json:"disabled"`
 		Active                bool                   `json:"active"`
 		Identities            []userIdentityResponse `json:"identities"`
@@ -127,15 +128,28 @@ func listUsers(services common.Services) (handler fiber.Handler) {
 		if providers, err = services.Store.AuthenticationProviders.SelectAll(); err != nil {
 			return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not load user sources."})
 		}
+		var deploymentCreationGrants []*db.PlatformPermissionGrant
+		if deploymentCreationGrants, err = services.Store.PlatformPermissionGrants.SelectAll(); err != nil {
+			return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not load user permissions."})
+		}
+		var deploymentCreators map[int]struct{} = make(map[int]struct{}, len(deploymentCreationGrants))
+		for _, grant := range deploymentCreationGrants {
+			if grant.Permission == db.PlatformPermissionDeploymentCreate {
+				deploymentCreators[grant.AccountID] = struct{}{}
+			}
+		}
 		var providerByID map[int]*db.AuthenticationProvider = make(map[int]*db.AuthenticationProvider, len(providers))
 		for _, provider := range providers {
 			providerByID[provider.ID] = provider
 		}
 		var users []userResponse = make([]userResponse, 0, len(accounts))
 		for _, account := range accounts {
+			_, hasDeploymentCreationGrant := deploymentCreators[account.ID]
+			var canCreateDeployments bool = !account.Disabled && (account.PlatformAdministrator || hasDeploymentCreationGrant)
 			var user userResponse = userResponse{
 				ID: account.ID, DisplayName: account.DisplayName, PlatformAdministrator: account.PlatformAdministrator,
-				Disabled: account.Disabled, Active: !account.Disabled && account.ActivatedAt != nil,
+				CanCreateDeployments: canCreateDeployments,
+				Disabled:             account.Disabled, Active: !account.Disabled && account.ActivatedAt != nil,
 				Identities: make([]userIdentityResponse, 0),
 			}
 			for _, identity := range identities {
@@ -160,6 +174,30 @@ func listUsers(services common.Services) (handler fiber.Handler) {
 			users = append(users, user)
 		}
 		err = ctx.JSON(fiber.Map{"users": users})
+		return
+	}
+	return
+}
+
+// updateDeploymentCreationPermission grants or revokes permission to create deployments.
+func updateDeploymentCreationPermission(services common.Services) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var actorID int
+		if actorID, _ = common.AccountID(ctx); actorID < 1 {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var userID int
+		if userID, err = common.ParseID(ctx, "user_id"); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user identifier."})
+		}
+		var request localRealmRequest
+		if err = ctx.Bind().Body(&request); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid deployment permission setting."})
+		}
+		if err = services.Domain.SetDeploymentCreationPermission(actorID, userID, request.Enabled); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		err = ctx.JSON(fiber.Map{"id": userID, "can_create_deployments": request.Enabled})
 		return
 	}
 	return

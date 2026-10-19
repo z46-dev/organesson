@@ -11,25 +11,26 @@ import (
 type (
 	// Store owns the SQLite driver and all registered application tables.
 	Store struct {
-		logger                  *golog.Logger
-		driver                  *gosqlite.Driver
-		AuthenticationProviders *gosqlite.RegisteredStruct[AuthenticationProvider]
-		Accounts                *gosqlite.RegisteredStruct[Account]
-		AccountIdentities       *gosqlite.RegisteredStruct[AccountIdentity]
-		LocalCredentials        *gosqlite.RegisteredStruct[LocalCredential]
-		PasswordResetTokens     *gosqlite.RegisteredStruct[PasswordResetToken]
-		APITokens               *gosqlite.RegisteredStruct[APIToken]
-		Deployments             *gosqlite.RegisteredStruct[Deployment]
-		OwnershipNodes          *gosqlite.RegisteredStruct[OwnershipNode]
-		UserGroups              *gosqlite.RegisteredStruct[UserGroup]
-		GroupMemberships        *gosqlite.RegisteredStruct[GroupMembership]
-		PermissionGrants        *gosqlite.RegisteredStruct[PermissionGrant]
-		ManagedResources        *gosqlite.RegisteredStruct[ManagedResource]
-		ManagedVMSnapshots      *gosqlite.RegisteredStruct[ManagedVMSnapshot]
-		VMTemplates             *gosqlite.RegisteredStruct[VMTemplate]
-		VMTemplateAliases       *gosqlite.RegisteredStruct[VMTemplateAlias]
-		ProxmoxResourcePolicies *gosqlite.RegisteredStruct[ProxmoxResourcePolicy]
-		AuditEvents             *gosqlite.RegisteredStruct[AuditEvent]
+		logger                   *golog.Logger
+		driver                   *gosqlite.Driver
+		AuthenticationProviders  *gosqlite.RegisteredStruct[AuthenticationProvider]
+		Accounts                 *gosqlite.RegisteredStruct[Account]
+		AccountIdentities        *gosqlite.RegisteredStruct[AccountIdentity]
+		LocalCredentials         *gosqlite.RegisteredStruct[LocalCredential]
+		PasswordResetTokens      *gosqlite.RegisteredStruct[PasswordResetToken]
+		APITokens                *gosqlite.RegisteredStruct[APIToken]
+		Deployments              *gosqlite.RegisteredStruct[Deployment]
+		OwnershipNodes           *gosqlite.RegisteredStruct[OwnershipNode]
+		UserGroups               *gosqlite.RegisteredStruct[UserGroup]
+		GroupMemberships         *gosqlite.RegisteredStruct[GroupMembership]
+		PermissionGrants         *gosqlite.RegisteredStruct[PermissionGrant]
+		PlatformPermissionGrants *gosqlite.RegisteredStruct[PlatformPermissionGrant]
+		ManagedResources         *gosqlite.RegisteredStruct[ManagedResource]
+		ManagedVMSnapshots       *gosqlite.RegisteredStruct[ManagedVMSnapshot]
+		VMTemplates              *gosqlite.RegisteredStruct[VMTemplate]
+		VMTemplateAliases        *gosqlite.RegisteredStruct[VMTemplateAlias]
+		ProxmoxResourcePolicies  *gosqlite.RegisteredStruct[ProxmoxResourcePolicy]
+		AuditEvents              *gosqlite.RegisteredStruct[AuditEvent]
 	}
 )
 
@@ -193,6 +194,9 @@ func (store *Store) registerTables() (err error) {
 	if store.PermissionGrants, err = gosqlite.Register(store.driver, PermissionGrant{}); err != nil {
 		return
 	}
+	if store.PlatformPermissionGrants, err = gosqlite.Register(store.driver, PlatformPermissionGrant{}); err != nil {
+		return
+	}
 	if store.ManagedResources, err = gosqlite.Register(store.driver, ManagedResource{}); err != nil {
 		return
 	}
@@ -249,6 +253,9 @@ func (store *Store) migrations() (migrations []func(gosqlite.MigrationOptions) e
 		},
 		func(options gosqlite.MigrationOptions) (err error) {
 			return migrateTable(store.PermissionGrants, options, store.logger)
+		},
+		func(options gosqlite.MigrationOptions) (err error) {
+			return migrateTable(store.PlatformPermissionGrants, options, store.logger)
 		},
 		func(options gosqlite.MigrationOptions) (err error) {
 			return migrateTable(store.ManagedResources, options, store.logger)

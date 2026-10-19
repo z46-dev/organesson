@@ -119,6 +119,15 @@ type (
 		CreatedAt          time.Time        `gosqlite:"created_at,notnull" json:"created_at"`
 	}
 
+	// PlatformPermissionGrant gives an account a narrowly defined platform capability.
+	PlatformPermissionGrant struct {
+		ID          int       `gosqlite:"id,primary,increment" json:"id"`
+		AccountID   int       `gosqlite:"account_id,notnull,fkey:Account.id,ondelete:cascade" json:"account_id"`
+		Permission  string    `gosqlite:"permission,notnull" json:"permission"`
+		GrantedByID int       `gosqlite:"granted_by_id,notnull,fkey:Account.id" json:"granted_by_id"`
+		CreatedAt   time.Time `gosqlite:"created_at,notnull" json:"created_at"`
+	}
+
 	// ManagedResource stores a resource whose owner is its unique ownership-tree node.
 	ManagedResource struct {
 		ID                int       `gosqlite:"id,primary,increment" json:"id"`
@@ -229,9 +238,13 @@ const (
 	PermissionDeploymentManageGroups      = "deployment.manage_groups"
 	PermissionDeploymentManagePermissions = "deployment.manage_permissions"
 	PermissionDeploymentManageUsers       = "deployment.manage_users"
+	PermissionDeploymentManageLifecycle   = "deployment.manage_lifecycle"
+	PermissionDeploymentOwner             = "deployment.owner"
+	PlatformPermissionDeploymentCreate    = "deployment.create"
 	PermissionResourceView                = "resource.view"
 	PermissionResourceCreate              = "resource.create"
 	PermissionResourcePower               = "vm.power_control"
+	PermissionGuestExecute                = "guest.execute"
 	PermissionVMConsole                   = "vm.console_control"
 	PermissionVMSnapshot                  = "vm.snapshot_control"
 	PermissionPermissionManage            = PermissionDeploymentManagePermissions
@@ -244,9 +257,11 @@ var PermissionCatalog = []string{
 	PermissionDeploymentManageGroups,
 	PermissionDeploymentManagePermissions,
 	PermissionDeploymentManageUsers,
+	PermissionDeploymentManageLifecycle,
 	PermissionResourceView,
 	PermissionResourceCreate,
 	PermissionResourcePower,
+	PermissionGuestExecute,
 	PermissionVMConsole,
 	PermissionVMSnapshot,
 }

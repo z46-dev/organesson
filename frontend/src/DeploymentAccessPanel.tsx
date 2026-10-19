@@ -13,10 +13,16 @@ type Props = {
 function permissionName(permission: string) {
     const names: Record<string, string> = {
         "deployment.view": "View deployment",
-        "deployment.manage": "Manage deployment",
+        "deployment.manage_configuration": "Manage deployment configuration",
+        "deployment.manage_groups": "Manage deployment groups",
+        "deployment.manage_permissions": "Manage deployment permissions",
+        "deployment.manage_users": "Manage deployment users",
+        "deployment.manage_lifecycle": "Delete deployment",
+        "deployment.owner": "Deployment owner",
         "resource.view": "View resources",
         "resource.manage": "Manage resources",
         "vm.power_control": "Control VM power",
+        "guest.execute": "Execute guest artifacts",
         "vm.snapshot_control": "Manage VM snapshots",
         "vm.console": "Open VM console"
     };

@@ -682,7 +682,7 @@ func userGroupOperations() (operations remoteResourceOperations) {
 	return
 }
 
-// virtualMachineOperations manages simulated or Proxmox-backed VM records through Organesson.
+// virtualMachineOperations manages Proxmox-backed VM records through Organesson.
 func virtualMachineOperations() (operations remoteResourceOperations) {
 	operations.Create = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
 		var parentID string
@@ -697,7 +697,7 @@ func virtualMachineOperations() (operations remoteResourceOperations) {
 		err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+strconv.Itoa(parentResult.Node.DeploymentID)+"/virtual-machines", map[string]any{
 			"parent_node_id":    parentResult.Node.ID,
 			"name":              data.Get("name").(string),
-			"provisioning_mode": data.Get("provisioning_mode").(string),
+			"provisioning_mode": "proxmox",
 			"template":          data.Get("template").(string),
 			"pool":              data.Get("pool").(string),
 			"storage":           data.Get("storage").(string),
@@ -712,6 +712,10 @@ func virtualMachineOperations() (operations remoteResourceOperations) {
 			_ = data.Set("proxmox_vmid", result.Resource.ExternalID)
 			_ = data.Set("proxmox_node", result.Resource.ExternalNode)
 		}
+		return
+	}
+	// Legacy provisioning_mode changes are intentionally ignored without replacing the VM.
+	operations.Update = func(_ context.Context, _ *schema.ResourceData, _ *apiClient) (err error) {
 		return
 	}
 	operations.Read = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {

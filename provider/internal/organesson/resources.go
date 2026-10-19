@@ -15,7 +15,7 @@ var supportedPermissions []string = db.PermissionCatalog
 func resourceDeployment() (resource *schema.Resource) {
 	resource = apiResource(map[string]*schema.Schema{
 		"description":  {Type: schema.TypeString, Optional: true, Description: "Deployment description."},
-		"environment":  {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Authorized Organesson environment label."},
+		"environment":  {Type: schema.TypeString, Optional: true, Deprecated: "This field is ignored. Organesson selects the environment from its configured policy."},
 		"name":         {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Deployment name."},
 		"owner":        {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Informational owner label; this first slice assigns the deployment to its creator."},
 		"root_node_id": {Type: schema.TypeInt, Computed: true, Description: "The deployment ownership-tree root identifier."},
@@ -195,7 +195,7 @@ func resourceVirtualMachine() (resource *schema.Resource) {
 		"memory_mib":        {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested memory in MiB."},
 		"name":              {Type: schema.TypeString, Required: true, ForceNew: true, Description: "VM name."},
 		"pool":              {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Authorized Proxmox resource pool; omitted when policy allows exactly one."},
-		"provisioning_mode": {Type: schema.TypeString, Optional: true, Default: "simulated", ForceNew: true, ValidateFunc: validation.StringInSlice([]string{"simulated", "proxmox"}, false), Description: "Use simulated lifecycle for smoke tests or clone a real QEMU VM through Organesson."},
+		"provisioning_mode": {Type: schema.TypeString, Optional: true, Deprecated: "This field is ignored. Virtual machines are provisioned through the configured Proxmox environment."},
 		"proxmox_node":      {Type: schema.TypeString, Computed: true, Description: "The Proxmox node hosting this VM."},
 		"proxmox_vmid":      {Type: schema.TypeString, Computed: true, Description: "The Proxmox VMID assigned to this resource."},
 		"ownership_node_id": {Type: schema.TypeInt, Computed: true, Description: "The VM's ownership-tree node identifier."},

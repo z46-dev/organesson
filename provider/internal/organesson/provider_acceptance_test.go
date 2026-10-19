@@ -272,6 +272,7 @@ func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {
 	var deployment *schema.ResourceData = schema.TestResourceDataRaw(t, provider.ResourcesMap["organesson_deployment"].Schema, map[string]interface{}{
 		"name":        "provider-acceptance",
 		"description": "first description",
+		"environment": "legacy-environment-value",
 	})
 	createRemoteResource(t, ctx, provider.ResourcesMap["organesson_deployment"], deployment, client)
 	readRemoteResource(t, ctx, provider.ResourcesMap["organesson_deployment"], deployment, client)
@@ -354,8 +355,8 @@ func TestProviderAPIApplyRefreshAndPermissionRevocation(t *testing.T) {
 
 	var charlieLab *schema.ResourceData = createAcceptanceLab(t, provider, ctx, client, deployment.Id(), "charlie-lab")
 	var daveLab *schema.ResourceData = createAcceptanceLab(t, provider, ctx, client, deployment.Id(), "dave-lab")
-	var charlieVM *schema.ResourceData = createAcceptanceVM(t, provider, ctx, client, charlieLab.Id(), "charlie-vm")
-	var daveVM *schema.ResourceData = createAcceptanceVM(t, provider, ctx, client, daveLab.Id(), "dave-vm")
+	var charlieVM *schema.ResourceData = createSimulatedAcceptanceVM(t, domain.New(store), provider, deployment.Id(), charlieLab.Id(), "charlie-vm", administrator.ID)
+	var daveVM *schema.ResourceData = createSimulatedAcceptanceVM(t, domain.New(store), provider, deployment.Id(), daveLab.Id(), "dave-vm", administrator.ID)
 	readRemoteResource(t, ctx, provider.ResourcesMap["organesson_virtual_machine"], charlieVM, client)
 	readRemoteResource(t, ctx, provider.ResourcesMap["organesson_virtual_machine"], daveVM, client)
 
@@ -519,7 +520,7 @@ func TestProviderProxmoxVMCreateRefreshDelete(t *testing.T) {
 	createRemoteResource(t, ctx, provider.ResourcesMap["organesson_logical_group"], group, client)
 	var vm *schema.ResourceData = schema.TestResourceDataRaw(t, provider.ResourcesMap["organesson_virtual_machine"].Schema, map[string]interface{}{
 		"boot_disk_gib": 64, "cpu_cores": 2, "logical_group_id": group.Id(), "memory_mib": 4096,
-		"name": "provider-fedora", "provisioning_mode": "proxmox", "template": "fedora-server-latest",
+		"name": "provider-fedora", "provisioning_mode": "simulated", "template": "fedora-server-latest",
 		"pool": "class-labs", "storage": "local-lvm",
 	})
 	createRemoteResource(t, ctx, provider.ResourcesMap["organesson_virtual_machine"], vm, client)
@@ -695,8 +696,13 @@ func createAcceptanceLab(t *testing.T, provider *schema.Provider, ctx context.Co
 	return
 }
 
-func createAcceptanceVM(t *testing.T, provider *schema.Provider, ctx context.Context, client *apiClient, parentID string, name string) (data *schema.ResourceData) {
+func createSimulatedAcceptanceVM(t *testing.T, service *domain.Service, provider *schema.Provider, deploymentID string, parentID string, name string, actorID int) (data *schema.ResourceData) {
 	t.Helper()
+	var resource *db.ManagedResource
+	var err error
+	if resource, err = service.CreateVirtualMachine(actorID, mustAtoi(t, deploymentID), mustAtoi(t, parentID), name); err != nil {
+		t.Fatalf("create simulated acceptance VM %q: %v", name, err)
+	}
 	data = schema.TestResourceDataRaw(t, provider.ResourcesMap["organesson_virtual_machine"].Schema, map[string]interface{}{
 		"boot_disk_gib":    64,
 		"cpu_cores":        2,
@@ -705,7 +711,7 @@ func createAcceptanceVM(t *testing.T, provider *schema.Provider, ctx context.Con
 		"name":             name,
 		"template":         "fedora-test-template",
 	})
-	createRemoteResource(t, ctx, provider.ResourcesMap["organesson_virtual_machine"], data, client)
+	data.SetId(strconv.Itoa(resource.ID))
 	return
 }
 

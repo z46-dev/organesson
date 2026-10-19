@@ -1,5 +1,4 @@
 resource "organesson_deployment" "forest" {
-  environment = "cyber-lab-pve"
   name        = "example-ad-forest"
   owner       = "system:platform-administrators"
 }

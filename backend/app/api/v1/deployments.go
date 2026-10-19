@@ -164,7 +164,7 @@ func getDeploymentAccess(services common.Services) (handler fiber.Handler) {
 	return
 }
 
-// updateDeployment changes deployment metadata for platform administrators.
+// updateDeployment changes deployment metadata for platform administrators or deployment managers.
 func updateDeployment(services common.Services) (handler fiber.Handler) {
 	handler = func(ctx fiber.Ctx) (err error) {
 		var actorID int
@@ -730,7 +730,7 @@ func listDeployments(services common.Services) (handler fiber.Handler) {
 	return
 }
 
-// createDeployment creates a deployment using the platform administrator permission.
+// createDeployment creates a deployment for platform administrators or delegated creators.
 func createDeployment(services common.Services) (handler fiber.Handler) {
 	handler = func(ctx fiber.Ctx) (err error) {
 		var request createDeploymentRequest

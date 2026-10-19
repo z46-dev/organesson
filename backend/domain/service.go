@@ -94,9 +94,11 @@ var validPermissions = map[string]struct{}{
 	db.PermissionDeploymentManageGroups:      {},
 	db.PermissionDeploymentManagePermissions: {},
 	db.PermissionDeploymentManageUsers:       {},
+	db.PermissionDeploymentManageLifecycle:   {},
 	db.PermissionResourceView:                {},
 	db.PermissionResourceCreate:              {},
 	db.PermissionResourcePower:               {},
+	db.PermissionGuestExecute:                {},
 	db.PermissionVMConsole:                   {},
 	db.PermissionVMSnapshot:                  {},
 }
@@ -113,8 +115,15 @@ func (service *Service) CreateDeployment(actorID int, name string, description s
 	if actor, err = service.store.Accounts.Select(actorID); err != nil {
 		return
 	}
-	if actor == nil || actor.Disabled || !actor.PlatformAdministrator {
+	if actor == nil || actor.Disabled {
 		err = ErrForbidden
+		return
+	}
+	var canCreate bool
+	if canCreate, err = service.CanCreateDeployment(actorID); err != nil || !canCreate {
+		if err == nil {
+			err = ErrForbidden
+		}
 		return
 	}
 	name = strings.TrimSpace(name)
@@ -146,19 +155,106 @@ func (service *Service) CreateDeployment(actorID int, name string, description s
 	if err = service.store.Deployments.Update(deployment); err != nil {
 		return
 	}
+	if !actor.PlatformAdministrator {
+		var grant *db.PermissionGrant = &db.PermissionGrant{
+			SubjectKind:        db.GrantSubjectKindAccount,
+			SubjectID:          actorID,
+			Permission:         db.PermissionDeploymentOwner,
+			InheritDescendants: true,
+			TargetNodeID:       root.ID,
+			CreatedByID:        actorID,
+			CreatedAt:          service.now(),
+		}
+		if err = service.store.PermissionGrants.Insert(grant); err != nil {
+			_ = service.store.Deployments.Delete(deployment.ID)
+			return
+		}
+	}
 	if err = service.writeAudit(actorID, "deployment.create", fmt.Sprintf("deployment:%d", deployment.ID), "succeeded", map[string]string{"name": name}); err != nil {
 		return
 	}
 	return
 }
 
-// DeleteDeployment removes a deployment tree after platform-administrator authorization.
-func (service *Service) DeleteDeployment(actorID int, deploymentID int) (err error) {
+// CanCreateDeployment reports whether an active account has the platform deployment-creation capability.
+func (service *Service) CanCreateDeployment(accountID int) (allowed bool, err error) {
+	var account *db.Account
+	if account, err = service.store.Accounts.Select(accountID); err != nil || account == nil || account.Disabled {
+		return
+	}
+	if account.PlatformAdministrator {
+		allowed = true
+		return
+	}
+	var grants []*db.PlatformPermissionGrant
+	if grants, err = service.store.PlatformPermissionGrants.SelectAll(); err != nil {
+		return
+	}
+	for _, grant := range grants {
+		if grant.AccountID == accountID && grant.Permission == db.PlatformPermissionDeploymentCreate {
+			allowed = true
+			return
+		}
+	}
+	return
+}
+
+// SetDeploymentCreationPermission changes a single account's platform-level deployment capability.
+func (service *Service) SetDeploymentCreationPermission(actorID int, accountID int, enabled bool) (err error) {
 	var actor *db.Account
 	if actor, err = service.store.Accounts.Select(actorID); err != nil {
 		return
 	}
 	if actor == nil || actor.Disabled || !actor.PlatformAdministrator {
+		err = ErrForbidden
+		return
+	}
+	var account *db.Account
+	if account, err = service.store.Accounts.Select(accountID); err != nil {
+		return
+	}
+	if account == nil {
+		err = ErrNotFound
+		return
+	}
+	var grants []*db.PlatformPermissionGrant
+	if grants, err = service.store.PlatformPermissionGrants.SelectAll(); err != nil {
+		return
+	}
+	for _, grant := range grants {
+		if grant.AccountID != accountID || grant.Permission != db.PlatformPermissionDeploymentCreate {
+			continue
+		}
+		if enabled {
+			return
+		}
+		if err = service.store.PlatformPermissionGrants.Delete(grant.ID); err != nil {
+			return
+		}
+	}
+	if enabled {
+		if err = service.store.PlatformPermissionGrants.Insert(&db.PlatformPermissionGrant{
+			AccountID: accountID, Permission: db.PlatformPermissionDeploymentCreate,
+			GrantedByID: actorID, CreatedAt: service.now(),
+		}); err != nil {
+			return
+		}
+	}
+	var action string = "platform_permission.revoke"
+	if enabled {
+		action = "platform_permission.grant"
+	}
+	err = service.writeAudit(actorID, action, fmt.Sprintf("account:%d", accountID), "succeeded", map[string]string{"permission": db.PlatformPermissionDeploymentCreate})
+	return
+}
+
+// DeleteDeployment removes a deployment tree after platform-admin or deployment-owner authorization.
+func (service *Service) DeleteDeployment(actorID int, deploymentID int) (err error) {
+	var actor *db.Account
+	if actor, err = service.store.Accounts.Select(actorID); err != nil {
+		return
+	}
+	if actor == nil || actor.Disabled {
 		err = ErrForbidden
 		return
 	}
@@ -170,6 +266,15 @@ func (service *Service) DeleteDeployment(actorID int, deploymentID int) (err err
 		err = ErrNotFound
 		return
 	}
+	if !actor.PlatformAdministrator {
+		if deployment.RootNodeID == nil {
+			err = ErrNotFound
+			return
+		}
+		if err = service.Require(actorID, db.PermissionDeploymentManageLifecycle, *deployment.RootNodeID); err != nil {
+			return
+		}
+	}
 	if err = service.store.Deployments.Delete(deploymentID); err != nil {
 		return
 	}
@@ -177,13 +282,13 @@ func (service *Service) DeleteDeployment(actorID int, deploymentID int) (err err
 	return
 }
 
-// UpdateDeployment modifies editable metadata of a platform-managed deployment.
+// UpdateDeployment modifies editable metadata of a deployment the actor can manage.
 func (service *Service) UpdateDeployment(actorID int, deploymentID int, name string, description string) (deployment *db.Deployment, err error) {
 	var actor *db.Account
 	if actor, err = service.store.Accounts.Select(actorID); err != nil {
 		return
 	}
-	if actor == nil || actor.Disabled || !actor.PlatformAdministrator {
+	if actor == nil || actor.Disabled {
 		err = ErrForbidden
 		return
 	}
@@ -193,6 +298,15 @@ func (service *Service) UpdateDeployment(actorID int, deploymentID int, name str
 	if deployment == nil {
 		err = ErrNotFound
 		return
+	}
+	if !actor.PlatformAdministrator {
+		if deployment.RootNodeID == nil {
+			err = ErrNotFound
+			return
+		}
+		if err = service.Require(actorID, db.PermissionDeploymentManage, *deployment.RootNodeID); err != nil {
+			return
+		}
 	}
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > 128 || len(description) > 2048 {
@@ -455,6 +569,10 @@ func (service *Service) DeletePermissionGrant(actorID int, grantID int) (err err
 		err = ErrNotFound
 		return
 	}
+	if grant.Permission == db.PermissionDeploymentOwner {
+		err = ErrForbidden
+		return
+	}
 	if err = service.Require(actorID, db.PermissionDeploymentManagePermissions, grant.TargetNodeID); err != nil {
 		return
 	}
@@ -472,7 +590,7 @@ func (service *Service) DeletePermissionGrant(actorID int, grantID int) (err err
 
 // isDeploymentAdministrationPermission protects the Deployment Admin capability from managers.
 func isDeploymentAdministrationPermission(permission string) (protected bool) {
-	protected = permission == db.PermissionDeploymentManage
+	protected = permission == db.PermissionDeploymentManage || permission == db.PermissionDeploymentManageLifecycle
 	return
 }
 
@@ -575,7 +693,7 @@ func (evaluator *permissionEvaluator) can(permission string, targetNodeID int) (
 			return
 		}
 		for _, grant := range evaluator.grants {
-			if grant.TargetNodeID != current.ID || grant.Permission != permission {
+			if grant.TargetNodeID != current.ID || (grant.Permission != permission && grant.Permission != db.PermissionDeploymentOwner) {
 				continue
 			}
 			if current.ID != target.ID && !grant.InheritDescendants {

@@ -13,6 +13,7 @@ type Theme = "light" | "dark";
 type Accent = "green" | "blue" | "violet" | "amber";
 
 const initialPasswordResetToken = new URLSearchParams(window.location.hash.slice(1)).get("password-reset") ?? "";
+const initialActivationToken = new URLSearchParams(window.location.hash.slice(1)).get("activation") ?? "";
 
 const accentOptions: { name: Accent; swatch: string }[] = [
     { name: "green", swatch: "#26734f" },
@@ -24,14 +25,14 @@ const accentOptions: { name: Accent; swatch: string }[] = [
 // Owns authentication, shared application chrome, and top-level navigation.
 export function App() {
     const [status, setStatus] = useState<AuthStatus | null>(null);
-    const [mode, setMode] = useState<ViewMode>(initialPasswordResetToken ? "activate" : "login");
+    const [mode, setMode] = useState<ViewMode>(initialPasswordResetToken || initialActivationToken ? "activate" : "login");
     const [pathname, setPathname] = useState(window.location.pathname);
     const [toasts, setToasts] = useState<ToastNotice[]>([]);
     const [busy, setBusy] = useState(false);
     const [loginName, setLoginName] = useState("");
     const [realm, setRealm] = useState("");
     const [password, setPassword] = useState("");
-    const [oneTimeToken, setOneTimeToken] = useState(initialPasswordResetToken);
+    const [oneTimeToken, setOneTimeToken] = useState(initialPasswordResetToken || initialActivationToken);
     const [passwordResetFlow, setPasswordResetFlow] = useState(Boolean(initialPasswordResetToken));
     const [newPassword, setNewPassword] = useState("");
     const [theme, setTheme] = useState<Theme>(() => localStorage.getItem("organesson-theme") === "dark" ? "dark" : "light");
@@ -72,7 +73,7 @@ export function App() {
     }, [onError]);
 
     useEffect(() => {
-        if (initialPasswordResetToken) {
+        if (initialPasswordResetToken || initialActivationToken) {
             window.history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
         }
     }, []);
