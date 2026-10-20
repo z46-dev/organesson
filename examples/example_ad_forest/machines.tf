@@ -1,23 +1,23 @@
 resource "organesson_virtual_machine" "domain_controller" {
-  boot_disk_gib     = 128
-  cpu_cores         = 4
-  logical_group_id  = organesson_logical_group.forest.id
-  memory_mib        = 8192
-  name              = "domain-controller"
-  pool              = "organesson"
-  storage           = "laas"
-  template          = "og-template-windows-server-2025"
+  boot_disk_gib    = 128
+  cpu_cores        = 4
+  logical_group_id = organesson_logical_group.forest.id
+  memory_mib       = 8192
+  name             = "domain-controller"
+  pool             = "organesson"
+  storage          = "laas"
+  template         = "og-template-windows-server-2025"
 }
 
 resource "organesson_virtual_machine" "workstation" {
-  boot_disk_gib     = 128
-  cpu_cores         = 4
-  logical_group_id  = organesson_logical_group.forest.id
-  memory_mib        = 8192
-  name              = "windows-11-workstation"
-  pool              = "organesson"
-  storage           = "laas"
-  template          = "og-template-windows-11-pro-workstation"
+  boot_disk_gib    = 128
+  cpu_cores        = 4
+  logical_group_id = organesson_logical_group.forest.id
+  memory_mib       = 8192
+  name             = "windows-11-workstation"
+  pool             = "organesson"
+  storage          = "laas"
+  template         = "og-template-windows-11-pro-workstation"
 }
 
 resource "organesson_network_attachment" "domain_controller" {

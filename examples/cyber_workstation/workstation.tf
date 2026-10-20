@@ -1,12 +1,12 @@
 resource "organesson_virtual_machine" "workstation" {
-  boot_disk_gib     = 32
-  cpu_cores         = 8
-  memory_mib        = 16384
-  logical_group_id  = organesson_logical_group.workstation.id
-  name              = "fedora-workstation"
-  pool              = "organesson"
-  storage           = "laas"
-  template          = "og-template-fedora-workstation-latest"
+  boot_disk_gib    = 32
+  cpu_cores        = 8
+  memory_mib       = 16384
+  logical_group_id = organesson_logical_group.workstation.id
+  name             = "fedora-workstation"
+  pool             = "organesson"
+  storage          = "laas"
+  template         = "og-template-fedora-workstation-latest"
 }
 
 resource "organesson_network_attachment" "cyber" {

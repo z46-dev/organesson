@@ -1,6 +1,6 @@
 resource "organesson_deployment" "workstation" {
-  name        = "cyber-workstation"
-  owner       = "system:platform-administrators"
+  name  = "cyber-workstation"
+  owner = "system:platform-administrators"
 }
 
 resource "organesson_logical_group" "workstation" {

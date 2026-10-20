@@ -1,6 +1,6 @@
 resource "organesson_deployment" "class_lab" {
-  name        = "alice-class-lab"
-  owner       = "system:platform-administrators"
+  name  = "alice-class-lab"
+  owner = "system:platform-administrators"
 }
 
 # Each student's group is the sole owner of the student's logical lab root.

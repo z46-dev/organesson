@@ -1,14 +1,14 @@
 resource "organesson_virtual_machine" "student" {
   for_each = local.student_machines
 
-  boot_disk_gib     = 32
-  cpu_cores         = 2
-  logical_group_id  = organesson_logical_group.student_lab[each.value.student].id
-  memory_mib        = 4096
-  name              = each.value.role
-  pool              = "organesson"
-  storage           = "laas"
-  template          = "og-template-fedora-server-latest"
+  boot_disk_gib    = 32
+  cpu_cores        = 2
+  logical_group_id = organesson_logical_group.student_lab[each.value.student].id
+  memory_mib       = 4096
+  name             = each.value.role
+  pool             = "organesson"
+  storage          = "laas"
+  template         = "og-template-fedora-server-latest"
 }
 
 resource "organesson_artifact" "first_time_setup" {

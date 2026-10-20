@@ -1,6 +1,6 @@
 resource "organesson_deployment" "forest" {
-  name        = "example-ad-forest"
-  owner       = "system:platform-administrators"
+  name  = "example-ad-forest"
+  owner = "system:platform-administrators"
 }
 
 resource "organesson_logical_group" "forest" {
