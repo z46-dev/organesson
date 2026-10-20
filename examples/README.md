@@ -1,5 +1,7 @@
 # OpenTofu examples
 
+For the workflow resource's TOML format, artifact layout, ordering, reboot, retry, and destroy behavior, see the [guest workflow guide](../provider/WORKFLOWS.md).
+
 - [`it666_project`](it666_project/README.md) is the blank future project scaffold.
 - [`test_project`](test_project/README.md) defines the full Alice/Bob/Charlie/Dave scenario.
 - [`l2_smoke`](l2_smoke/README.md) is the minimal live fixture for validating a managed VNet over the configured Proxmox VXLAN source.
