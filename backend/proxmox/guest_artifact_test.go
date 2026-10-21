@@ -15,9 +15,24 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/z46-dev/organesson/backend/config"
 )
+
+func TestBoundedGuestArtifactOutput(t *testing.T) {
+	var input string = strings.Repeat("a", maxGuestArtifactOutputBytes) + "界"
+	var output string
+	var truncated bool
+	output, truncated = boundedGuestArtifactOutput(input)
+	if !truncated || len(output) > maxGuestArtifactOutputBytes || !utf8.ValidString(output) {
+		t.Fatalf("guest output was not safely bounded: bytes=%d truncated=%t", len(output), truncated)
+	}
+	output, truncated = boundedGuestArtifactOutput("short")
+	if truncated || output != "short" {
+		t.Fatalf("short guest output changed: output=%q truncated=%t", output, truncated)
+	}
+}
 
 func TestValidateGuestArtifactArchiveRejectsUnsafeArchives(t *testing.T) {
 	var validArchive []byte = buildGuestArtifactArchive(t, []artifactTestEntry{{name: "entrypoint.sh", mode: 0755, body: []byte("exit 0\n"), kind: tar.TypeReg}})

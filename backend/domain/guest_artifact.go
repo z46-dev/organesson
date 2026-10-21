@@ -2,7 +2,6 @@ package domain
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,17 +11,12 @@ import (
 )
 
 const (
-	guestArtifactRunsConfigurationKey string        = "guest_artifact_runs"
-	guestArtifactStaleRunAfter        time.Duration = 15 * time.Minute
+	guestArtifactStaleRunAfter time.Duration = 15 * time.Minute
 )
 
 type guestArtifactRun struct {
-	Entrypoint string     `json:"entrypoint"`
-	SHA256     string     `json:"sha256"`
-	Status     string     `json:"status"`
-	ExitCode   int        `json:"exit_code"`
-	StartedAt  time.Time  `json:"started_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	Status    string    `json:"status"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 // GuestArtifactInput identifies the package entrypoint and expected archive digest.
@@ -105,8 +99,8 @@ func artifactGuestOSFamily(guestOS string) (family string) {
 	return
 }
 
-// BeginGuestArtifactExecution reserves a digest/entrypoint pair or returns its saved success result.
-func (service *Service) BeginGuestArtifactExecution(actorID int, resourceID int, digest string, entrypoint string) (result proxmox.GuestArtifactResult, alreadySucceeded bool, err error) {
+// BeginGuestArtifactExecution reserves a digest/entrypoint pair against concurrent retries.
+func (service *Service) BeginGuestArtifactExecution(actorID int, resourceID int, digest string, entrypoint string) (err error) {
 	service.provisioningLock.Lock()
 	defer service.provisioningLock.Unlock()
 	var resource *db.ManagedResource
@@ -125,32 +119,30 @@ func (service *Service) BeginGuestArtifactExecution(actorID int, resourceID int,
 		return
 	}
 	var runs map[string]guestArtifactRun = make(map[string]guestArtifactRun)
-	if stored, exists := configuration[guestArtifactRunsConfigurationKey]; exists {
+	if stored, exists := configuration["guest_artifact_runs"]; exists {
 		if err = json.Unmarshal(stored, &runs); err != nil {
 			return
 		}
 	}
 	var operationKey string = digest + ":" + entrypoint
 	var now time.Time = service.now()
-	if previous, exists := runs[operationKey]; exists {
-		switch previous.Status {
-		case "succeeded":
-			result = proxmox.GuestArtifactResult{SHA256: digest, Status: "succeeded", ExitCode: previous.ExitCode, Reused: true}
-			alreadySucceeded = true
-			return
-		case "running":
-			if now.Sub(previous.StartedAt) < guestArtifactStaleRunAfter {
-				err = ErrProvisioningInProgress
-				return
-			}
+	for key, previous := range runs {
+		if previous.Status != "running" {
+			delete(runs, key)
 		}
 	}
-	runs[operationKey] = guestArtifactRun{Entrypoint: entrypoint, SHA256: digest, Status: "running", StartedAt: now}
+	if previous, exists := runs[operationKey]; exists {
+		if now.Sub(previous.StartedAt) < guestArtifactStaleRunAfter {
+			err = ErrProvisioningInProgress
+			return
+		}
+	}
+	runs[operationKey] = guestArtifactRun{Status: "running", StartedAt: now}
 	var encodedRuns []byte
 	if encodedRuns, err = json.Marshal(runs); err != nil {
 		return
 	}
-	configuration[guestArtifactRunsConfigurationKey] = encodedRuns
+	configuration["guest_artifact_runs"] = encodedRuns
 	var encodedConfiguration []byte
 	if encodedConfiguration, err = json.Marshal(configuration); err != nil {
 		return
@@ -160,7 +152,7 @@ func (service *Service) BeginGuestArtifactExecution(actorID int, resourceID int,
 	return
 }
 
-// CompleteGuestArtifactExecution persists the exit result and audit event without saving artifact bytes.
+// CompleteGuestArtifactExecution releases the reservation and records an audit event.
 func (service *Service) CompleteGuestArtifactExecution(actorID int, resourceID int, digest string, entrypoint string, executionErr error) (err error) {
 	service.provisioningLock.Lock()
 	defer service.provisioningLock.Unlock()
@@ -182,7 +174,7 @@ func (service *Service) CompleteGuestArtifactExecution(actorID int, resourceID i
 	var runs map[string]guestArtifactRun = make(map[string]guestArtifactRun)
 	var encodedRuns []byte
 	var runsExist bool
-	if encodedRuns, runsExist = configuration[guestArtifactRunsConfigurationKey]; !runsExist {
+	if encodedRuns, runsExist = configuration["guest_artifact_runs"]; !runsExist {
 		err = fmt.Errorf("%w: guest artifact execution was not reserved", ErrInvalidInput)
 		return
 	}
@@ -197,23 +189,17 @@ func (service *Service) CompleteGuestArtifactExecution(actorID int, resourceID i
 		return
 	}
 	var result string = "succeeded"
-	run.Status = result
 	if executionErr != nil {
-		run.Status = "failed"
-		run.ExitCode = -1
-		var guestExitError *proxmox.GuestArtifactExitError
-		if errors.As(executionErr, &guestExitError) {
-			run.ExitCode = guestExitError.ExitCode
-		}
 		result = "failed"
 	}
-	var finishedAt time.Time = service.now()
-	run.FinishedAt = &finishedAt
-	runs[operationKey] = run
-	if encodedRuns, err = json.Marshal(runs); err != nil {
+	delete(runs, operationKey)
+	if len(runs) == 0 {
+		delete(configuration, "guest_artifact_runs")
+	} else if encodedRuns, err = json.Marshal(runs); err == nil {
+		configuration["guest_artifact_runs"] = encodedRuns
+	} else {
 		return
 	}
-	configuration[guestArtifactRunsConfigurationKey] = encodedRuns
 	var encodedConfiguration []byte
 	if encodedConfiguration, err = json.Marshal(configuration); err != nil {
 		return

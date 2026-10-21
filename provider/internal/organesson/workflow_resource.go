@@ -235,7 +235,7 @@ func guestWorkflowCreate(ctx context.Context, data *schema.ResourceData, meta in
 			return
 		}
 		completed = append(completed, step.Name)
-		if step.RebootAfter && !result.Execution.Reused {
+		if step.RebootAfter {
 			if err = client.requestWithTimeout(ctx, "POST", "/api/v1/virtual-machines/"+vmID+"/guest-reboot-wait", map[string]int{"timeout_seconds": step.RebootTimeoutSeconds}, nil, time.Duration(step.RebootTimeoutSeconds+30)*time.Second); err != nil {
 				diagnostics = diag.Errorf("workflow step %q completed, but its reboot did not: %v", step.Name, err)
 				return

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	pve "github.com/luthermonson/go-proxmox"
 	"github.com/z46-dev/organesson/backend/config"
@@ -26,6 +27,7 @@ import (
 
 const (
 	MaxGuestArtifactArchiveBytes int   = 17 * 1024 * 1024
+	maxGuestArtifactOutputBytes  int   = 32 * 1024
 	maxGuestArtifactFiles        int   = 128
 	maxGuestArtifactBytes        int64 = 16 * 1024 * 1024
 	guestArtifactChunkBytes      int   = 40 * 1024
@@ -51,12 +53,14 @@ type (
 		SHA256     string
 	}
 
-	// GuestArtifactResult reports successful execution without returning arbitrary guest output.
+	// GuestArtifactResult reports execution status and bounded guest output.
 	GuestArtifactResult struct {
-		SHA256   string `json:"sha256"`
-		Status   string `json:"status"`
-		ExitCode int    `json:"exit_code"`
-		Reused   bool   `json:"reused,omitempty"`
+		SHA256          string `json:"sha256"`
+		Status          string `json:"status"`
+		ExitCode        int    `json:"exit_code"`
+		Stdout          string `json:"stdout"`
+		Stderr          string `json:"stderr"`
+		OutputTruncated bool   `json:"output_truncated,omitempty"`
 	}
 
 	apiGuestArtifactDriver struct {
@@ -190,17 +194,36 @@ func waitForGuestExecExitWithProgress(ctx context.Context, settings config.Proxm
 // GuestArtifactExitError reports the guest entrypoint's non-zero exit status.
 type GuestArtifactExitError struct {
 	ExitCode int
-	ErrData  string
 }
 
 // Error describes a guest entrypoint that completed unsuccessfully.
 func (executionError *GuestArtifactExitError) Error() (message string) {
 	message = fmt.Sprintf("guest artifact entrypoint exited with status %d", executionError.ExitCode)
-	if detail := strings.TrimSpace(executionError.ErrData); detail != "" {
-		if len(detail) > 2048 {
-			detail = detail[len(detail)-2048:]
-		}
-		message += ": " + detail
+	return
+}
+
+// boundedGuestArtifactOutput keeps each returned output stream within the API response limit.
+func boundedGuestArtifactOutput(output string) (bounded string, truncated bool) {
+	if len(output) <= maxGuestArtifactOutputBytes {
+		bounded = output
+		return
+	}
+	truncated = true
+	bounded = output[:maxGuestArtifactOutputBytes]
+	for !utf8.ValidString(bounded) {
+		bounded = bounded[:len(bounded)-1]
+	}
+	return
+}
+
+func guestArtifactResult(request GuestArtifactRequest, status guestAgentExecStatus) (result GuestArtifactResult) {
+	var stdout, stderr string
+	var stdoutTruncated, stderrTruncated bool
+	stdout, stdoutTruncated = boundedGuestArtifactOutput(status.OutData)
+	stderr, stderrTruncated = boundedGuestArtifactOutput(status.ErrData)
+	result = GuestArtifactResult{
+		SHA256: request.SHA256, ExitCode: status.ExitCode, Stdout: stdout, Stderr: stderr,
+		OutputTruncated: stdoutTruncated || stderrTruncated,
 	}
 	return
 }
@@ -480,11 +503,13 @@ func (driver *apiGuestArtifactDriver) executeUnix(ctx context.Context, vm *pve.V
 		return
 	}
 	if status.ExitCode != 0 {
-		result = GuestArtifactResult{SHA256: request.SHA256, Status: "failed", ExitCode: status.ExitCode}
-		err = &GuestArtifactExitError{ExitCode: status.ExitCode, ErrData: status.ErrData}
+		result = guestArtifactResult(request, status)
+		result.Status = "failed"
+		err = &GuestArtifactExitError{ExitCode: status.ExitCode}
 		return
 	}
-	result = GuestArtifactResult{SHA256: request.SHA256, Status: "succeeded", ExitCode: status.ExitCode}
+	result = guestArtifactResult(request, status)
+	result.Status = "succeeded"
 	return
 }
 
@@ -740,11 +765,13 @@ func (driver *apiGuestArtifactDriver) executeWindows(ctx context.Context, vm *pv
 		return
 	}
 	if status.ExitCode != 0 {
-		result = GuestArtifactResult{SHA256: request.SHA256, Status: "failed", ExitCode: status.ExitCode}
-		err = fmt.Errorf("Windows guest artifact exited with status %d: %s", status.ExitCode, strings.TrimSpace(status.ErrData+" "+status.OutData))
+		result = guestArtifactResult(request, status)
+		result.Status = "failed"
+		err = &GuestArtifactExitError{ExitCode: status.ExitCode}
 		return
 	}
-	result = GuestArtifactResult{SHA256: request.SHA256, Status: "succeeded", ExitCode: status.ExitCode}
+	result = guestArtifactResult(request, status)
+	result.Status = "succeeded"
 	return
 }
 

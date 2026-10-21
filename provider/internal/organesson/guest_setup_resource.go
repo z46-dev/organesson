@@ -15,7 +15,6 @@ type guestSetupResult struct {
 	SHA256   string `json:"sha256"`
 	Status   string `json:"status"`
 	ExitCode int    `json:"exit_code"`
-	Reused   bool   `json:"reused"`
 }
 
 // guestSetupResource performs one audited guest operation while retaining only the result metadata in state.

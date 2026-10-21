@@ -82,3 +82,5 @@ tofu.rc
 
 # VM Images
 *qemu*.vma.zst
+
+graphify-out

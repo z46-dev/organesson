@@ -791,7 +791,7 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 		t.Fatalf("platform administrator artifact execution failed: status %d", response.StatusCode)
 	}
 	response.Body.Close()
-	if fakeArtifactDriver.callCount != 1 || executionResult.Execution.SHA256 != artifactDigest || executionResult.Execution.Status != "succeeded" || executionResult.Execution.ExitCode != 0 {
+	if fakeArtifactDriver.callCount != 1 || executionResult.Execution.SHA256 != artifactDigest || executionResult.Execution.Status != "succeeded" || executionResult.Execution.ExitCode != 0 || executionResult.Execution.Stdout != "guest stdout" || executionResult.Execution.Stderr != "guest stderr" {
 		t.Fatalf("artifact execution result or Proxmox call was not recorded: result=%#v calls=%d", executionResult.Execution, fakeArtifactDriver.callCount)
 	}
 	response = performBinaryRequest(t, application, jar, guestSetupPath, artifactArchive, csrfToken, map[string]string{
@@ -804,8 +804,8 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 		t.Fatalf("idempotent artifact retry failed: status %d", response.StatusCode)
 	}
 	response.Body.Close()
-	if !executionResult.Execution.Reused || fakeArtifactDriver.callCount != 1 {
-		t.Fatalf("successful artifact retry reran guest code: reused=%t executions=%d", executionResult.Execution.Reused, fakeArtifactDriver.callCount)
+	if executionResult.Execution.Status != "succeeded" || fakeArtifactDriver.callCount != 2 {
+		t.Fatalf("successful artifact retry did not rerun guest code: status=%s executions=%d", executionResult.Execution.Status, fakeArtifactDriver.callCount)
 	}
 	var rebootPath string = "/api/v1/virtual-machines/" + strconv.Itoa(vmResult.Resource.ID) + "/guest-reboot-wait"
 	response = performRequest(t, application, jar, http.MethodPost, rebootPath, `{"timeout_seconds":60}`, csrfToken)
@@ -861,7 +861,7 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 		t.Fatalf("failed artifact was not retried: status %d", response.StatusCode)
 	}
 	response.Body.Close()
-	if fakeArtifactDriver.callCount != 3 || executionResult.Execution.SHA256 != retryDigest {
+	if fakeArtifactDriver.callCount != 4 || executionResult.Execution.SHA256 != retryDigest {
 		t.Fatalf("failed guest execution retry was not recorded: result=%#v calls=%d", executionResult.Execution, fakeArtifactDriver.callCount)
 	}
 	response = performBinaryRequestWithAuthorization(t, application, nil, guestSetupPath, artifactArchive, "", "Bearer "+charlieCredential.Secret, map[string]string{
@@ -870,7 +870,7 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 		"X-Organesson-Artifact-Entrypoint": "entrypoint.sh",
 	})
 	response.Body.Close()
-	if response.StatusCode != fiber.StatusForbidden || fakeArtifactDriver.callCount != 3 {
+	if response.StatusCode != fiber.StatusForbidden || fakeArtifactDriver.callCount != 4 {
 		t.Fatalf("resource viewer without deployment management must not execute guest code: status=%d executions=%d", response.StatusCode, fakeArtifactDriver.callCount)
 	}
 	response = performBinaryRequestWithAuthorization(t, application, nil, guestSetupPath, artifactArchive, "", "Bearer "+daveCredential.Secret, map[string]string{
@@ -978,7 +978,7 @@ func (driver *fakeGuestArtifactDriver) Execute(_ context.Context, request proxmo
 		err = &proxmox.GuestArtifactExitError{ExitCode: 3}
 		return
 	}
-	result = proxmox.GuestArtifactResult{SHA256: request.SHA256, Status: "succeeded", ExitCode: 0}
+	result = proxmox.GuestArtifactResult{SHA256: request.SHA256, Status: "succeeded", ExitCode: 0, Stdout: "guest stdout", Stderr: "guest stderr"}
 	return
 }
 

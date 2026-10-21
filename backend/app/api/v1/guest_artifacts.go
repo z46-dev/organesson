@@ -38,14 +38,8 @@ func executeGuestArtifactHandler(services common.Services) (handler fiber.Handle
 		if services.Proxmox == nil || !services.Proxmox.Configured() {
 			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; artifact was not executed."})
 		}
-		var result proxmox.GuestArtifactResult
-		var alreadySucceeded bool
-		if result, alreadySucceeded, err = services.Domain.BeginGuestArtifactExecution(actorID, resourceID, request.SHA256, request.Entrypoint); err != nil {
+		if err = services.Domain.BeginGuestArtifactExecution(actorID, resourceID, request.SHA256, request.Entrypoint); err != nil {
 			return common.DomainError(ctx, err)
-		}
-		if alreadySucceeded {
-			err = ctx.JSON(fiber.Map{"execution": result})
-			return
 		}
 		if err = ensureGuestVMRunning(ctx, services, resourceID); err != nil {
 			var completionErr error = services.Domain.CompleteGuestArtifactExecution(actorID, resourceID, request.SHA256, request.Entrypoint, err)
@@ -54,6 +48,7 @@ func executeGuestArtifactHandler(services common.Services) (handler fiber.Handle
 			}
 			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox could not start the managed guest for setup."})
 		}
+		var result proxmox.GuestArtifactResult
 		result, err = services.Proxmox.ExecuteGuestArtifact(ctx, request)
 		var completionErr error = services.Domain.CompleteGuestArtifactExecution(actorID, resourceID, request.SHA256, request.Entrypoint, err)
 		if completionErr != nil {
