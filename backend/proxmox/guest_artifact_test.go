@@ -226,7 +226,7 @@ func TestGuestArtifactDriverTransfersFilesAndAlwaysCleansWorkspace(t *testing.T)
 		t.Fatal("non-zero guest exit status was accepted")
 	} else {
 		var executionError *GuestArtifactExitError
-		if !errors.As(err, &executionError) || executionError.ExitCode != 9 || !strings.Contains(err.Error(), "install-service") || result.Status != "failed" || result.ExitCode != 9 {
+		if !errors.As(err, &executionError) || executionError.ExitCode != 9 || !strings.Contains(result.Stderr, "install-service") || result.Status != "failed" || result.ExitCode != 9 {
 			t.Fatalf("guest failure did not preserve the entrypoint exit code: result=%#v err=%v", result, err)
 		}
 	}

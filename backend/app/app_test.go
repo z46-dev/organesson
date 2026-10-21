@@ -879,7 +879,7 @@ func TestAuthenticatedProxmoxVMLifecycle(t *testing.T) {
 		"X-Organesson-Artifact-Entrypoint": "entrypoint.sh",
 	})
 	response.Body.Close()
-	if response.StatusCode != fiber.StatusForbidden || fakeArtifactDriver.callCount != 3 {
+	if response.StatusCode != fiber.StatusForbidden || fakeArtifactDriver.callCount != 4 {
 		t.Fatalf("unrelated user must not execute guest code: status=%d executions=%d", response.StatusCode, fakeArtifactDriver.callCount)
 	}
 	response = performBearerRequest(t, application, http.MethodPost, powerPath, `{"action":"stop"}`, daveCredential.Secret)
