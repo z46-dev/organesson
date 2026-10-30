@@ -2,10 +2,13 @@ package v1
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/z46-dev/organesson/backend/app/api/common"
 	"github.com/z46-dev/organesson/backend/db"
+	"github.com/z46-dev/organesson/backend/domain"
 	"github.com/z46-dev/organesson/backend/proxmox"
 )
 
@@ -70,6 +73,13 @@ func createVMSnapshot(services common.Services) (handler fiber.Handler) {
 		var snapshot *db.ManagedVMSnapshot
 		var resource *db.ManagedResource
 		if snapshot, resource, err = services.Domain.ReserveVMSnapshot(actorID, resourceID, request.Description); err != nil {
+			if errors.Is(err, domain.ErrInvalidInput) {
+				var message string = strings.TrimPrefix(err.Error(), domain.ErrInvalidInput.Error()+": ")
+				if message == err.Error() {
+					message = "Snapshot creation is blocked by its configuration or capacity limits."
+				}
+				return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": message})
+			}
 			return common.DomainError(ctx, err)
 		}
 		if services.Proxmox == nil {
