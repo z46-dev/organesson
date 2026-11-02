@@ -86,6 +86,7 @@ table inet organesson {
         type filter hook input priority filter; policy drop;
         iifname "lo" accept
         ct state established,related accept
+        iifname "$wan_interface" meta l4proto ipv6-icmp icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-neighbor-solicit, nd-neighbor-advert } accept
         iifname "$lan_interface" udp dport { 53, 67 } accept
         iifname "$lan_interface" udp dport { 546, 547 } accept
         iifname "$lan_interface" tcp dport 53 accept
