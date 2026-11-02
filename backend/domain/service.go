@@ -250,6 +250,29 @@ func (service *Service) SetDeploymentCreationPermission(actorID int, accountID i
 
 // DeleteDeployment removes a deployment tree after platform-admin or deployment-owner authorization.
 func (service *Service) DeleteDeployment(actorID int, deploymentID int) (err error) {
+	var deployment *db.Deployment
+	if deployment, err = service.authorizeDeploymentDeletion(actorID, deploymentID); err != nil {
+		return
+	}
+	var resources []*db.ManagedResource
+	if resources, err = service.store.ManagedResources.SelectAll(); err != nil {
+		return
+	}
+	for _, resource := range resources {
+		if resource.DeploymentID == deploymentID {
+			err = fmt.Errorf("%w: deployment still has managed resources", ErrInvalidInput)
+			return
+		}
+	}
+	if err = service.store.Deployments.Delete(deploymentID); err != nil {
+		return
+	}
+	err = service.writeAudit(actorID, "deployment.delete", fmt.Sprintf("deployment:%d", deploymentID), "succeeded", map[string]string{"name": deployment.Name})
+	return
+}
+
+// authorizeDeploymentDeletion checks the same lifecycle permission used by deployment deletion.
+func (service *Service) authorizeDeploymentDeletion(actorID int, deploymentID int) (deployment *db.Deployment, err error) {
 	var actor *db.Account
 	if actor, err = service.store.Accounts.Select(actorID); err != nil {
 		return
@@ -258,7 +281,6 @@ func (service *Service) DeleteDeployment(actorID int, deploymentID int) (err err
 		err = ErrForbidden
 		return
 	}
-	var deployment *db.Deployment
 	if deployment, err = service.store.Deployments.Select(deploymentID); err != nil {
 		return
 	}
@@ -271,14 +293,8 @@ func (service *Service) DeleteDeployment(actorID int, deploymentID int) (err err
 			err = ErrNotFound
 			return
 		}
-		if err = service.Require(actorID, db.PermissionDeploymentManageLifecycle, *deployment.RootNodeID); err != nil {
-			return
-		}
+		err = service.Require(actorID, db.PermissionDeploymentManageLifecycle, *deployment.RootNodeID)
 	}
-	if err = service.store.Deployments.Delete(deploymentID); err != nil {
-		return
-	}
-	err = service.writeAudit(actorID, "deployment.delete", fmt.Sprintf("deployment:%d", deploymentID), "succeeded", map[string]string{"name": deployment.Name})
 	return
 }
 

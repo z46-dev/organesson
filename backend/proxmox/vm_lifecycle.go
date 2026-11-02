@@ -23,6 +23,7 @@ type (
 		Read(context.Context, string, string, string) (placement VMPlacement, err error)
 		Power(context.Context, string, string, string, string) (placement VMPlacement, err error)
 		Delete(context.Context, string, string, string) (err error)
+		DeleteUnplaced(context.Context, string, string) (err error)
 	}
 
 	// VMCloneRequest describes the bounded configuration applied to a VM clone.
@@ -143,6 +144,18 @@ func (service *Service) DeleteVM(ctx context.Context, node string, vmid string, 
 		return
 	}
 	err = service.vmDriver.Delete(ctx, node, vmid, operationKey)
+	return
+}
+
+// DeleteUnplacedVM removes a clone left behind before Organesson recorded its Proxmox VMID.
+func (service *Service) DeleteUnplacedVM(ctx context.Context, name string, operationKey string) (err error) {
+	if service == nil || service.vmDriver == nil || !service.Configured() {
+		err = ErrNotConfigured
+		return
+	}
+	service.lifecycleLock.Lock()
+	defer service.lifecycleLock.Unlock()
+	err = service.vmDriver.DeleteUnplaced(ctx, name, operationKey)
 	return
 }
 
@@ -634,6 +647,56 @@ func (driver *apiVMDriver) Delete(ctx context.Context, nodeName string, id strin
 		return
 	}
 	err = waitTask(ctx, client, task)
+	return
+}
+
+// DeleteUnplaced removes only a uniquely matched guest carrying the reservation's ownership marker.
+func (driver *apiVMDriver) DeleteUnplaced(ctx context.Context, name string, operationKey string) (err error) {
+	if name == "" || operationKey == "" {
+		err = errors.New("unplaced VM cleanup requires its name and operation key")
+		return
+	}
+	var client *pve.Client
+	if client, err = newAPIClient(driver.settings); err != nil {
+		return
+	}
+	defer driver.invalidateVMInventory()
+	var cluster *pve.Cluster
+	if cluster, err = client.Cluster(ctx); err != nil {
+		return
+	}
+	var resources pve.ClusterResources
+	if resources, err = cluster.Resources(ctx, "vm"); err != nil {
+		return
+	}
+	var marker string = "Organesson managed resource " + operationKey
+	var matchedNode string
+	var matchedVMID string
+	for _, resource := range resources {
+		if resource == nil || resource.Type != "qemu" || resource.Name != name || resource.Node == "" {
+			continue
+		}
+		var node *pve.Node
+		if node, err = client.Node(ctx, resource.Node); err != nil {
+			return
+		}
+		var vm *pve.VirtualMachine
+		if vm, err = node.VirtualMachine(ctx, int(resource.VMID)); err != nil {
+			return
+		}
+		if vm.VirtualMachineConfig == nil || vm.VirtualMachineConfig.Description != marker {
+			continue
+		}
+		if matchedVMID != "" {
+			err = errors.New("multiple Proxmox VMs match the incomplete Organesson reservation")
+			return
+		}
+		matchedNode = resource.Node
+		matchedVMID = strconv.FormatUint(resource.VMID, 10)
+	}
+	if matchedVMID != "" {
+		err = driver.Delete(ctx, matchedNode, matchedVMID, operationKey)
+	}
 	return
 }
 

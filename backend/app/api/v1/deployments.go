@@ -200,6 +200,16 @@ func deleteDeployment(services common.Services) (handler fiber.Handler) {
 		if deploymentID, err = common.ParseID(ctx, "deployment_id"); err != nil {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid deployment identifier."})
 		}
+		var reservations []*db.ManagedResource
+		if reservations, err = services.Domain.IncompleteProvisioningResourcesForDeployment(actorID, deploymentID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if err = cleanupIncompleteProvisioningResources(ctx, services, reservations); err != nil {
+			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm cleanup of incomplete provisioning; the deployment was retained."})
+		}
+		if err = services.Domain.RemoveIncompleteProvisioningResourcesForDeployment(actorID, deploymentID, incompleteProvisioningResourceIDs(reservations)); err != nil {
+			return common.DomainError(ctx, err)
+		}
 		if err = services.Domain.DeleteDeployment(actorID, deploymentID); err != nil {
 			return common.DomainError(ctx, err)
 		}
@@ -219,6 +229,16 @@ func deleteLogicalGroup(services common.Services) (handler fiber.Handler) {
 		var nodeID int
 		if nodeID, err = common.ParseID(ctx, "node_id"); err != nil {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid ownership node identifier."})
+		}
+		var reservations []*db.ManagedResource
+		if reservations, err = services.Domain.IncompleteProvisioningResourcesForGroup(actorID, nodeID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if err = cleanupIncompleteProvisioningResources(ctx, services, reservations); err != nil {
+			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm cleanup of incomplete provisioning; the group was retained."})
+		}
+		if err = services.Domain.RemoveIncompleteProvisioningResourcesForGroup(actorID, nodeID, incompleteProvisioningResourceIDs(reservations)); err != nil {
+			return common.DomainError(ctx, err)
 		}
 		if err = services.Domain.DeleteLogicalGroup(actorID, nodeID); err != nil {
 			return common.DomainError(ctx, err)
@@ -257,12 +277,55 @@ func deleteVirtualMachine(services common.Services) (handler fiber.Handler) {
 			if err = services.Proxmox.DeleteVM(ctx, resource.ExternalNode, resource.ExternalID, resource.OperationKey); err != nil {
 				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm VM deletion; the Organesson record was retained."})
 			}
+		} else if resource.PowerState == "provisioning" && resource.OperationKey != "" {
+			if services.Proxmox == nil {
+				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; the incomplete VM was not removed from Organesson."})
+			}
+			if err = services.Proxmox.DeleteUnplacedVM(ctx, resource.Name, resource.OperationKey); err != nil {
+				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm cleanup of the incomplete VM; the Organesson record was retained."})
+			}
 		}
 		if err = services.Domain.DeleteVirtualMachine(actorID, resourceID); err != nil {
 			return common.DomainError(ctx, err)
 		}
 		err = ctx.SendStatus(fiber.StatusNoContent)
 		return
+	}
+	return
+}
+
+// cleanupIncompleteProvisioningResources removes only partial Proxmox resources with matching ownership markers.
+func cleanupIncompleteProvisioningResources(ctx fiber.Ctx, services common.Services, reservations []*db.ManagedResource) (err error) {
+	if len(reservations) == 0 {
+		return
+	}
+	if services.Proxmox == nil {
+		err = proxmox.ErrNotConfigured
+		return
+	}
+	for _, reservation := range reservations {
+		switch reservation.Kind {
+		case "virtual_machine":
+			err = services.Proxmox.DeleteUnplacedVM(ctx, reservation.Name, reservation.OperationKey)
+		case "virtual_network":
+			var configuration domain.ManagedNetworkConfiguration
+			if err = json.Unmarshal([]byte(reservation.ConfigurationJSON), &configuration); err == nil {
+				err = services.Proxmox.DeleteSDNNetwork(ctx, configuration.Request, configuration.Placement)
+			}
+		default:
+			err = errors.New("unsupported incomplete resource kind")
+		}
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
+func incompleteProvisioningResourceIDs(reservations []*db.ManagedResource) (resourceIDs []int) {
+	resourceIDs = make([]int, 0, len(reservations))
+	for _, reservation := range reservations {
+		resourceIDs = append(resourceIDs, reservation.ID)
 	}
 	return
 }

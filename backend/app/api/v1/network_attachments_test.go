@@ -108,6 +108,10 @@ func (driver *testGuestNetworkVMDriver) Delete(context.Context, string, string, 
 	return nil
 }
 
+func (driver *testGuestNetworkVMDriver) DeleteUnplaced(context.Context, string, string) error {
+	return nil
+}
+
 func (driver *testGuestNetworkDriver) Configure(context.Context, proxmox.GuestNetworkRequest) error {
 	return nil
 }

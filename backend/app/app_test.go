@@ -1034,6 +1034,10 @@ func (driver *fakeProxmoxVMDriver) Delete(_ context.Context, _ string, vmid stri
 	return
 }
 
+func (driver *fakeProxmoxVMDriver) DeleteUnplaced(context.Context, string, string) error {
+	return nil
+}
+
 type testProxmoxInspector struct{}
 
 type testTemplateDetectionDriver struct{}
