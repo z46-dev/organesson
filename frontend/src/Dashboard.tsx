@@ -111,7 +111,9 @@ export function Dashboard({ request, onError }: Props) {
         return Number.isInteger(requestedID) && requestedID > 0 ? requestedID : null;
     });
     const [selectedDeployment, setSelectedDeployment] = useState<DeploymentDetail | null>(null);
-    const [deploymentAccess, setDeploymentAccess] = useState<DeploymentAccess | null>(null);
+    const [deploymentAccessByID, setDeploymentAccessByID] = useState<Record<number, DeploymentAccess>>({});
+    const [deploymentAccessLoadingID, setDeploymentAccessLoadingID] = useState<number | null>(null);
+    const [deploymentAccessErrorID, setDeploymentAccessErrorID] = useState<number | null>(null);
     const [selectedResourceID, setSelectedResourceID] = useState<number | null>(null);
     const [selectedUserID, setSelectedUserID] = useState<number | null>(null);
     const [selectedGroupID, setSelectedGroupID] = useState<number | null>(null);
@@ -125,6 +127,7 @@ export function Dashboard({ request, onError }: Props) {
     const [loadingDeployments, setLoadingDeployments] = useState(true);
     const [loadingDetails, setLoadingDetails] = useState(false);
     const selectedResource = selectedDeployment?.resources.find((resource) => resource.id === selectedResourceID);
+    const deploymentAccess = selectedDeploymentID === null ? null : deploymentAccessByID[selectedDeploymentID] ?? null;
 
     async function loadDeployments() {
         setLoadingDeployments(true);
@@ -149,7 +152,6 @@ export function Dashboard({ request, onError }: Props) {
     useEffect(() => {
         if (selectedDeploymentID === null) {
             setSelectedDeployment(null);
-            setDeploymentAccess(null);
             return;
         }
 
@@ -159,7 +161,6 @@ export function Dashboard({ request, onError }: Props) {
             .then((result) => {
                 if (!active) return;
                 setSelectedDeployment(result);
-                setDeploymentAccess(null);
                 setSelectedResourceID(null);
                 setSelectedUserID(null);
                 setSelectedGroupID(null);
@@ -199,14 +200,19 @@ export function Dashboard({ request, onError }: Props) {
 
     useEffect(() => {
         if (selectedDeploymentID === null || selectedDeployment?.deployment.id !== selectedDeploymentID || (!selectedDeployment.can_manage_groups && !selectedDeployment.can_manage_permissions)) {
-            setDeploymentAccess(null);
             return;
         }
         let active = true;
-        setDeploymentAccess(null);
+        setDeploymentAccessLoadingID(selectedDeploymentID);
+        setDeploymentAccessErrorID(null);
         request<DeploymentAccess>(`/deployments/${selectedDeploymentID}/access`)
-            .then((result) => active && setDeploymentAccess(result))
-            .catch((requestError: Error) => active && onError(requestError.message));
+            .then((result) => active && setDeploymentAccessByID((current) => ({ ...current, [selectedDeploymentID]: result })))
+            .catch((requestError: Error) => {
+                if (!active) return;
+                setDeploymentAccessErrorID(selectedDeploymentID);
+                onError(requestError.message);
+            })
+            .finally(() => active && setDeploymentAccessLoadingID((current) => current === selectedDeploymentID ? null : current));
         return () => {
             active = false;
         };
@@ -266,7 +272,8 @@ export function Dashboard({ request, onError }: Props) {
             const updated = await request<DeploymentDetail>(`/deployments/${selectedDeploymentID}`);
             setSelectedDeployment(updated);
             if (updated.can_manage_groups || updated.can_manage_permissions) {
-                setDeploymentAccess(await request<DeploymentAccess>(`/deployments/${selectedDeploymentID}/access`));
+                const access = await request<DeploymentAccess>(`/deployments/${selectedDeploymentID}/access`);
+                setDeploymentAccessByID((current) => ({ ...current, [selectedDeploymentID]: access }));
             }
         } catch (requestError) {
             onError((requestError as Error).message);
@@ -391,7 +398,8 @@ export function Dashboard({ request, onError }: Props) {
                         <ul className="deployment-tree">
                             {deployments.map((deployment) => {
                                 const isSelected = selectedDeploymentID === deployment.id;
-                                const isLoaded = selectedDeployment?.deployment.id === deployment.id;
+                                const isLoaded = selectedDeploymentID === deployment.id && selectedDeployment?.deployment.id === deployment.id;
+                                const deploymentAccess = deploymentAccessByID[deployment.id];
                                 const isExpanded = isSelected && (collapsedDeployments[deployment.id] ?? deployments.length < 2);
                                 const resources = isLoaded ? selectedDeployment?.resources.filter((resource) => resource.kind !== "network_attachment") ?? [] : [];
                                 return (
@@ -425,7 +433,7 @@ export function Dashboard({ request, onError }: Props) {
                                                         const expanded = branchIsExpanded(key);
                                                         return <>
                                                             <button className={`tree-category-button${selectedSection === "users" ? " is-active" : ""}`} type="button" aria-expanded={expanded} onClick={() => { toggleBranch(key); selectSection("users"); }}><span className="tree-branch-disclosure">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span><CircleUserRound size={14} /><span>Users</span><small>{deploymentAccess?.accounts.length ?? "—"}</small></button>
-                                                            <div className={`tree-collapse${expanded ? " is-expanded" : " is-collapsed"}`} aria-hidden={!expanded} inert={!expanded}><div className="tree-collapse-content"><ul className="tree-resources">{deploymentAccess?.accounts.map((account) => <li key={account.id}><button className={`tree-resource tree-entity${selectedUserID === account.id ? " is-current" : ""}`} type="button" onClick={() => selectUser(account.id)}><CircleUserRound size={13} /><span>{account.display_name}</span></button></li>)}</ul></div></div>
+                                                            <div className={`tree-collapse${expanded ? " is-expanded" : " is-collapsed"}`} aria-hidden={!expanded} inert={!expanded}><div className="tree-collapse-content"><ul className="tree-resources">{deploymentAccess?.accounts.map((account) => <li key={account.id}><button className={`tree-resource tree-entity${selectedUserID === account.id ? " is-current" : ""}`} type="button" onClick={() => selectUser(account.id)}><CircleUserRound size={13} /><span>{account.display_name}</span></button></li>)}{!deploymentAccess && deploymentAccessLoadingID === deployment.id && <li className="sidebar-hint">Loading users…</li>}{!deploymentAccess && deploymentAccessErrorID === deployment.id && <li className="sidebar-hint">Unable to load users.</li>}</ul></div></div>
                                                         </>;
                                                     })()}
                                                 </li>}
@@ -435,7 +443,7 @@ export function Dashboard({ request, onError }: Props) {
                                                         const expanded = branchIsExpanded(key);
                                                         return <>
                                                             <button className={`tree-category-button${selectedSection === "groups" ? " is-active" : ""}`} type="button" aria-expanded={expanded} onClick={() => { toggleBranch(key); selectSection("groups"); }}><span className="tree-branch-disclosure">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span><Users size={14} /><span>Groups</span><small>{deploymentAccess?.groups.length ?? "—"}</small></button>
-                                                            <div className={`tree-collapse${expanded ? " is-expanded" : " is-collapsed"}`} aria-hidden={!expanded} inert={!expanded}><div className="tree-collapse-content"><ul className="tree-resources">{deploymentAccess?.groups.map((group) => <li key={group.id}><button className={`tree-resource tree-entity${selectedGroupID === group.id ? " is-current" : ""}`} type="button" onClick={() => selectGroup(group.id)}><Users size={13} /><span>{group.name}</span></button></li>)}</ul></div></div>
+                                                            <div className={`tree-collapse${expanded ? " is-expanded" : " is-collapsed"}`} aria-hidden={!expanded} inert={!expanded}><div className="tree-collapse-content"><ul className="tree-resources">{deploymentAccess?.groups.map((group) => <li key={group.id}><button className={`tree-resource tree-entity${selectedGroupID === group.id ? " is-current" : ""}`} type="button" onClick={() => selectGroup(group.id)}><Users size={13} /><span>{group.name}</span></button></li>)}{!deploymentAccess && deploymentAccessLoadingID === deployment.id && <li className="sidebar-hint">Loading groups…</li>}{!deploymentAccess && deploymentAccessErrorID === deployment.id && <li className="sidebar-hint">Unable to load groups.</li>}</ul></div></div>
                                                         </>;
                                                     })()}
                                                 </li>}
@@ -463,7 +471,7 @@ export function Dashboard({ request, onError }: Props) {
                                 selectedGroupID={selectedGroupID}
                                 onSelectUser={selectUser}
                                 onSelectGroup={selectGroup}
-                            /> : selectedSection !== "resources" ? <div className="workspace-empty panel" role="status"><p>Loading access…</p></div> : selectedResource ? (
+                            /> : selectedSection !== "resources" ? <div className="workspace-empty panel" role="status"><p>{deploymentAccessErrorID === selectedDeploymentID ? "Unable to load deployment access." : "Loading access…"}</p></div> : selectedResource ? (
                                 <>
                                 <section className={`resource-detail panel${selectedResource.kind === "virtual_machine" ? " vm-summary-panel" : ""}${selectedResource.kind === "virtual_network" && selectedResourceDetails?.configuration && "mode" in selectedResourceDetails.configuration.request && selectedResourceDetails.configuration.request.mode === "managed" ? " managed-network-panel" : ""}`} aria-labelledby="resource-detail-heading">
                                     <div className="resource-detail-heading">

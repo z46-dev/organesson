@@ -945,13 +945,17 @@ func (service *Service) GetDeploymentAccess(actorID int, deploymentID int) (acce
 		Accounts: []DeploymentAccessAccount{}, Groups: []DeploymentAccessGroup{},
 		OwnershipNodes: []*db.OwnershipNode{}, PermissionGrants: []DeploymentAccessGrant{},
 	}
-	if access.CanManageGroups, err = service.Can(actorID, db.PermissionDeploymentManageGroups, *deployment.RootNodeID); err != nil {
+	var evaluator *permissionEvaluator
+	if evaluator, err = service.newDeploymentPermissionEvaluator(actorID, deploymentID); err != nil {
 		return
 	}
-	if access.CanManageConfiguration, err = service.Can(actorID, db.PermissionDeploymentManage, *deployment.RootNodeID); err != nil {
+	if access.CanManageGroups, err = evaluator.can(db.PermissionDeploymentManageGroups, *deployment.RootNodeID); err != nil {
 		return
 	}
-	if access.CanManagePermissions, err = service.Can(actorID, db.PermissionDeploymentManagePermissions, *deployment.RootNodeID); err != nil {
+	if access.CanManageConfiguration, err = evaluator.can(db.PermissionDeploymentManage, *deployment.RootNodeID); err != nil {
+		return
+	}
+	if access.CanManagePermissions, err = evaluator.can(db.PermissionDeploymentManagePermissions, *deployment.RootNodeID); err != nil {
 		return
 	}
 	if !access.CanManageGroups && !access.CanManagePermissions {
@@ -959,97 +963,47 @@ func (service *Service) GetDeploymentAccess(actorID int, deploymentID int) (acce
 		return
 	}
 
-	var identities []*db.AccountIdentity
-	var accounts []*db.Account
 	var groups []*db.UserGroup
-	var memberships []*db.GroupMembership
-	var identityByAccount map[int]string = make(map[int]string)
-	if identities, err = service.store.AccountIdentities.SelectAll(); err != nil {
-		return
-	}
-	for _, identity := range identities {
-		if _, exists := identityByAccount[identity.AccountID]; !exists {
-			identityByAccount[identity.AccountID] = identity.QualifiedName
-		}
-	}
-	if accounts, err = service.store.Accounts.SelectAll(); err != nil {
-		return
-	}
 	if access.CanManageGroups || access.CanManagePermissions {
-		if groups, err = service.store.UserGroups.SelectAll(); err != nil {
+		if groups, err = service.store.UserGroups.SelectAllWithFilter(gosqlite.NewFilter().KeyCmp(
+			service.store.UserGroups.FieldByGoName("DeploymentID"), gosqlite.OpEqual, deploymentID,
+		)); err != nil {
 			return
 		}
-		for _, account := range accounts {
-			if account.Disabled || account.ActivatedAt == nil {
-				continue
-			}
-			if identityName := identityByAccount[account.ID]; identityName != "" {
-				access.Accounts = append(access.Accounts, DeploymentAccessAccount{
-					ID: account.ID, QualifiedName: identityName, DisplayName: account.DisplayName,
-				})
-			}
-		}
-		sort.Slice(access.Accounts, func(left int, right int) bool {
-			return access.Accounts[left].QualifiedName < access.Accounts[right].QualifiedName
-		})
-		if memberships, err = service.store.GroupMemberships.SelectAll(); err != nil {
+	}
+
+	var groupByID map[int]*db.UserGroup = make(map[int]*db.UserGroup, len(groups))
+	var groupIDs []int
+	for _, group := range groups {
+		groupByID[group.ID] = group
+		groupIDs = append(groupIDs, group.ID)
+	}
+	var memberships []*db.GroupMembership
+	if len(groupIDs) > 0 {
+		if memberships, err = service.store.GroupMemberships.SelectAllWithFilter(gosqlite.NewFilter().KeyCmp(
+			service.store.GroupMemberships.FieldByGoName("GroupID"), gosqlite.OpIn, groupIDs,
+		)); err != nil {
 			return
 		}
-		for _, group := range groups {
-			if group.DeploymentID != deploymentID {
-				continue
-			}
-			var accessGroup DeploymentAccessGroup = DeploymentAccessGroup{UserGroup: group, Members: []DeploymentAccessAccount{}}
-			for _, membership := range memberships {
-				if membership.GroupID != group.ID {
-					continue
-				}
-				for _, account := range access.Accounts {
-					if account.ID == membership.AccountID {
-						accessGroup.Members = append(accessGroup.Members, account)
-						break
-					}
-				}
-			}
-			access.Groups = append(access.Groups, accessGroup)
-		}
-		sort.Slice(access.Groups, func(left int, right int) bool {
-			return access.Groups[left].Name < access.Groups[right].Name
-		})
+	}
+	var relevantAccountIDs map[int]struct{} = make(map[int]struct{})
+	for _, membership := range memberships {
+		relevantAccountIDs[membership.AccountID] = struct{}{}
 	}
 
 	if access.CanManagePermissions {
-		var nodes []*db.OwnershipNode
-		var grants []*db.PermissionGrant
-		if groups == nil {
-			if groups, err = service.store.UserGroups.SelectAll(); err != nil {
-				return
-			}
-		}
-		if nodes, err = service.store.OwnershipNodes.SelectAll(); err != nil {
-			return
-		}
-		if grants, err = service.store.PermissionGrants.SelectAll(); err != nil {
-			return
-		}
 		var nodeByID map[int]*db.OwnershipNode = make(map[int]*db.OwnershipNode)
-		var groupByID map[int]*db.UserGroup = make(map[int]*db.UserGroup)
-		var allNodesByID map[int]*db.OwnershipNode = make(map[int]*db.OwnershipNode, len(nodes))
-		for _, node := range nodes {
-			allNodesByID[node.ID] = node
+		var nodesByID map[int]*db.OwnershipNode = make(map[int]*db.OwnershipNode, len(evaluator.nodeByID))
+		for nodeID, node := range evaluator.nodeByID {
+			nodesByID[nodeID] = node
 		}
-		for _, node := range nodes {
-			if node.DeploymentID == deploymentID && !service.hasInternalAncestor(node, allNodesByID) {
+		for _, node := range nodesByID {
+			if !service.hasInternalAncestor(node, nodesByID) {
 				access.OwnershipNodes = append(access.OwnershipNodes, node)
 				nodeByID[node.ID] = node
 			}
 		}
-		for _, group := range groups {
-			if group.DeploymentID == deploymentID {
-				groupByID[group.ID] = group
-			}
-		}
-		for _, grant := range grants {
+		for _, grant := range evaluator.grants {
 			node := nodeByID[grant.TargetNodeID]
 			if node == nil {
 				continue
@@ -1057,7 +1011,7 @@ func (service *Service) GetDeploymentAccess(actorID int, deploymentID int) (acce
 			var subjectName string
 			switch grant.SubjectKind {
 			case db.GrantSubjectKindAccount:
-				subjectName = identityByAccount[grant.SubjectID]
+				relevantAccountIDs[grant.SubjectID] = struct{}{}
 			case db.GrantSubjectKindGroup:
 				if group := groupByID[grant.SubjectID]; group != nil {
 					subjectName = group.Name
@@ -1073,6 +1027,127 @@ func (service *Service) GetDeploymentAccess(actorID int, deploymentID int) (acce
 		sort.Slice(access.PermissionGrants, func(left int, right int) bool {
 			return access.PermissionGrants[left].ID < access.PermissionGrants[right].ID
 		})
+	}
+
+	var accountIDs []int
+	for accountID := range relevantAccountIDs {
+		accountIDs = append(accountIDs, accountID)
+	}
+	var accounts []*db.Account
+	var identities []*db.AccountIdentity
+	var identityByAccount map[int]string = make(map[int]string, len(accountIDs))
+	if len(accountIDs) > 0 {
+		if accounts, err = service.store.Accounts.SelectAllWithFilter(gosqlite.NewFilter().KeyCmp(
+			service.store.Accounts.FieldByGoName("ID"), gosqlite.OpIn, accountIDs,
+		)); err != nil {
+			return
+		}
+		if identities, err = service.store.AccountIdentities.SelectAllWithFilter(gosqlite.NewFilter().KeyCmp(
+			service.store.AccountIdentities.FieldByGoName("AccountID"), gosqlite.OpIn, accountIDs,
+		)); err != nil {
+			return
+		}
+	}
+	for _, identity := range identities {
+		if _, exists := identityByAccount[identity.AccountID]; !exists {
+			identityByAccount[identity.AccountID] = identity.QualifiedName
+		}
+	}
+	var accountByID map[int]DeploymentAccessAccount = make(map[int]DeploymentAccessAccount, len(accounts))
+	for _, account := range accounts {
+		if account.Disabled || account.ActivatedAt == nil {
+			continue
+		}
+		if identityName := identityByAccount[account.ID]; identityName != "" {
+			var accessAccount DeploymentAccessAccount = DeploymentAccessAccount{
+				ID: account.ID, QualifiedName: identityName, DisplayName: account.DisplayName,
+			}
+			access.Accounts = append(access.Accounts, accessAccount)
+			accountByID[account.ID] = accessAccount
+		}
+	}
+	for _, group := range groups {
+		var accessGroup DeploymentAccessGroup = DeploymentAccessGroup{UserGroup: group, Members: []DeploymentAccessAccount{}}
+		for _, membership := range memberships {
+			if membership.GroupID == group.ID {
+				if account, exists := accountByID[membership.AccountID]; exists {
+					accessGroup.Members = append(accessGroup.Members, account)
+				}
+			}
+		}
+		access.Groups = append(access.Groups, accessGroup)
+	}
+	for index := range access.PermissionGrants {
+		if access.PermissionGrants[index].SubjectKind == db.GrantSubjectKindAccount {
+			access.PermissionGrants[index].SubjectName = identityByAccount[access.PermissionGrants[index].SubjectID]
+		}
+	}
+	sort.Slice(access.Accounts, func(left int, right int) bool {
+		return access.Accounts[left].QualifiedName < access.Accounts[right].QualifiedName
+	})
+	sort.Slice(access.Groups, func(left int, right int) bool {
+		return access.Groups[left].Name < access.Groups[right].Name
+	})
+	return
+}
+
+// newDeploymentPermissionEvaluator loads only the permission records needed for one deployment.
+func (service *Service) newDeploymentPermissionEvaluator(actorID int, deploymentID int) (evaluator *permissionEvaluator, err error) {
+	evaluator = &permissionEvaluator{actorID: actorID}
+	var actor *db.Account
+	if actor, err = service.store.Accounts.Select(actorID); err != nil {
+		return
+	}
+	if actor == nil || actor.Disabled {
+		return
+	}
+	evaluator.active = true
+	evaluator.platformAdmin = actor.PlatformAdministrator
+	var nodes []*db.OwnershipNode
+	if nodes, err = service.store.OwnershipNodes.SelectAllWithFilter(gosqlite.NewFilter().KeyCmp(
+		service.store.OwnershipNodes.FieldByGoName("DeploymentID"), gosqlite.OpEqual, deploymentID,
+	)); err != nil {
+		return
+	}
+	evaluator.nodeByID = make(map[int]*db.OwnershipNode, len(nodes))
+	var nodeIDs []int
+	for _, node := range nodes {
+		evaluator.nodeByID[node.ID] = node
+		nodeIDs = append(nodeIDs, node.ID)
+	}
+	if len(nodeIDs) > 0 {
+		if evaluator.grants, err = service.store.PermissionGrants.SelectAllWithFilter(gosqlite.NewFilter().KeyCmp(
+			service.store.PermissionGrants.FieldByGoName("TargetNodeID"), gosqlite.OpIn, nodeIDs,
+		)); err != nil {
+			return
+		}
+	}
+	if evaluator.platformAdmin {
+		return
+	}
+	var memberships []*db.GroupMembership
+	if memberships, err = service.store.GroupMemberships.SelectAllWithFilter(gosqlite.NewFilter().KeyCmp(
+		service.store.GroupMemberships.FieldByGoName("AccountID"), gosqlite.OpEqual, actorID,
+	)); err != nil {
+		return
+	}
+	var groupIDs []int
+	for _, membership := range memberships {
+		groupIDs = append(groupIDs, membership.GroupID)
+	}
+	evaluator.groups = make(map[int]*db.UserGroup, len(groupIDs))
+	evaluator.memberGroupIDs = make(map[int]struct{}, len(groupIDs))
+	if len(groupIDs) > 0 {
+		var groups []*db.UserGroup
+		if groups, err = service.store.UserGroups.SelectAllWithFilter(gosqlite.NewFilter().KeyCmp(
+			service.store.UserGroups.FieldByGoName("ID"), gosqlite.OpIn, groupIDs,
+		)); err != nil {
+			return
+		}
+		for _, group := range groups {
+			evaluator.groups[group.ID] = group
+			evaluator.memberGroupIDs[group.ID] = struct{}{}
+		}
 	}
 	return
 }
