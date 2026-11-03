@@ -154,23 +154,29 @@ export function Dashboard({ request, onError }: Props) {
         }
 
         let active = true;
-        setSelectedDeployment(null);
-        setDeploymentAccess(null);
-        setSelectedResourceID(null);
-        setSelectedUserID(null);
-        setSelectedGroupID(null);
         setLoadingDetails(true);
         request<DeploymentDetail>(`/deployments/${selectedDeploymentID}`)
             .then((result) => {
                 if (!active) return;
                 setSelectedDeployment(result);
+                setDeploymentAccess(null);
+                setSelectedResourceID(null);
+                setSelectedUserID(null);
+                setSelectedGroupID(null);
                 if (initialResourceLink.current?.deploymentID === selectedDeploymentID && result.resources.some((resource) => resource.id === initialResourceLink.current?.resourceID)) {
                     setSelectedResourceID(initialResourceLink.current.resourceID);
                     initialResourceLink.current = null;
                     window.history.replaceState({}, "", "/");
                 }
             })
-            .catch((requestError: Error) => active && onError(requestError.message))
+            .catch((requestError: Error) => {
+                if (!active) return;
+                if (selectedDeployment?.deployment.id !== selectedDeploymentID) {
+                    setSelectedDeployment(null);
+                    setSelectedResourceID(null);
+                }
+                onError(requestError.message);
+            })
             .finally(() => active && setLoadingDetails(false));
         return () => {
             active = false;
@@ -178,7 +184,7 @@ export function Dashboard({ request, onError }: Props) {
     }, [request, onError, selectedDeploymentID]);
 
     useEffect(() => {
-        if (selectedDeploymentID === null) return;
+        if (selectedDeploymentID === null || selectedDeployment?.deployment.id !== selectedDeploymentID) return;
         let active = true;
         const refreshTimer = window.setInterval(() => {
             request<DeploymentDetail>(`/deployments/${selectedDeploymentID}`)
@@ -189,7 +195,7 @@ export function Dashboard({ request, onError }: Props) {
             active = false;
             window.clearInterval(refreshTimer);
         };
-    }, [request, selectedDeploymentID]);
+    }, [request, selectedDeploymentID, selectedDeployment?.deployment.id]);
 
     useEffect(() => {
         if (selectedDeploymentID === null || selectedDeployment?.deployment.id !== selectedDeploymentID || (!selectedDeployment.can_manage_groups && !selectedDeployment.can_manage_permissions)) {
@@ -207,6 +213,7 @@ export function Dashboard({ request, onError }: Props) {
     }, [request, onError, selectedDeploymentID, selectedDeployment?.can_manage_groups, selectedDeployment?.can_manage_permissions]);
 
     useEffect(() => {
+        if (selectedDeployment?.deployment.id !== selectedDeploymentID) return;
         const resource = selectedDeployment?.resources.find((item) => item.id === selectedResourceID);
         if (!resource || (resource.kind !== "virtual_machine" && resource.kind !== "virtual_network" && resource.kind !== "address_pool_request" && resource.kind !== "network_attachment")) {
             setSelectedResourceDetails(null);
@@ -247,7 +254,7 @@ export function Dashboard({ request, onError }: Props) {
                 window.clearInterval(refreshTimer);
             }
         };
-    }, [request, onError, selectedDeploymentID, selectedResourceID, selectedResource?.kind]);
+    }, [request, onError, selectedDeploymentID, selectedDeployment?.deployment.id, selectedResourceID, selectedResource?.kind]);
 
     async function refreshSelectedDeployment() {
         if (selectedDeploymentID === null) {
@@ -384,8 +391,9 @@ export function Dashboard({ request, onError }: Props) {
                         <ul className="deployment-tree">
                             {deployments.map((deployment) => {
                                 const isSelected = selectedDeploymentID === deployment.id;
+                                const isLoaded = selectedDeployment?.deployment.id === deployment.id;
                                 const isExpanded = isSelected && (collapsedDeployments[deployment.id] ?? deployments.length < 2);
-                                const resources = isSelected ? selectedDeployment?.resources.filter((resource) => resource.kind !== "network_attachment") ?? [] : [];
+                                const resources = isLoaded ? selectedDeployment?.resources.filter((resource) => resource.kind !== "network_attachment") ?? [] : [];
                                 return (
                                     <li className="tree-deployment" key={deployment.id}>
                                         <button className={`tree-deployment-button${isSelected ? " is-selected" : ""}`} type="button" aria-expanded={isExpanded} onClick={() => {
@@ -395,8 +403,6 @@ export function Dashboard({ request, onError }: Props) {
                                                 setSelectedDeploymentID(deployment.id);
                                                 setCollapsedDeployments((current) => ({ ...current, [deployment.id]: false }));
                                             }
-                                            setSelectedResourceID(null);
-                                            setSelectedSection("resources");
                                         }}>
                                             {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                                             <Boxes size={16} />
@@ -408,12 +414,12 @@ export function Dashboard({ request, onError }: Props) {
                                                         const key = `${deployment.id}:resources`;
                                                         const expanded = branchIsExpanded(key);
                                                         return <>
-                                                            <button className={`tree-category-button${selectedSection === "resources" ? " is-active" : ""}`} type="button" aria-expanded={expanded} onClick={() => { toggleBranch(key); selectSection("resources"); }}><span className="tree-branch-disclosure">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span><Server size={14} /><span>Resources</span><small>{selectedDeployment ? selectedDeployment.resources.filter((resource) => resource.kind !== "network_attachment").length : "—"}</small></button>
+                                                            <button className={`tree-category-button${selectedSection === "resources" ? " is-active" : ""}`} type="button" aria-expanded={expanded} onClick={() => { toggleBranch(key); selectSection("resources"); }}><span className="tree-branch-disclosure">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span><Server size={14} /><span>Resources</span><small>{isLoaded ? selectedDeployment?.resources.filter((resource) => resource.kind !== "network_attachment").length : "—"}</small></button>
                                                             <div className={`tree-collapse${expanded && resources.length > 0 && selectedDeployment?.deployment.root_node_id !== null && selectedDeployment?.deployment.root_node_id !== undefined ? " is-expanded" : " is-collapsed"}`} aria-hidden={!expanded} inert={!expanded}><div className="tree-collapse-content">{resources.length > 0 && selectedDeployment?.deployment.root_node_id !== null && selectedDeployment?.deployment.root_node_id !== undefined && <ul className="tree-resources">{renderOwnershipNodes(selectedDeployment.deployment.root_node_id)}</ul>}</div></div>
                                                         </>;
                                                     })()}
                                                 </li>
-                                                {(selectedDeployment?.can_manage_groups || selectedDeployment?.can_manage_permissions) && <li>
+                                                {isLoaded && (selectedDeployment?.can_manage_groups || selectedDeployment?.can_manage_permissions) && <li>
                                                     {(() => {
                                                         const key = `${deployment.id}:users`;
                                                         const expanded = branchIsExpanded(key);
@@ -423,7 +429,7 @@ export function Dashboard({ request, onError }: Props) {
                                                         </>;
                                                     })()}
                                                 </li>}
-                                                {(selectedDeployment?.can_manage_groups || selectedDeployment?.can_manage_permissions) && <li>
+                                                {isLoaded && (selectedDeployment?.can_manage_groups || selectedDeployment?.can_manage_permissions) && <li>
                                                     {(() => {
                                                         const key = `${deployment.id}:groups`;
                                                         const expanded = branchIsExpanded(key);
