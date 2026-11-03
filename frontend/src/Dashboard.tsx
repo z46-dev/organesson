@@ -357,13 +357,12 @@ export function Dashboard({ request, onError }: Props) {
             }
             const isExpanded = collapsedGroups[node.id] !== true;
             return <li className="tree-owner-group" key={node.id}>
-                    <details className="tree-group-details" open={isExpanded}>
-                        <summary className="tree-group-button" aria-expanded={isExpanded} onClick={(event) => {
-                            event.preventDefault();
+                    <div className="tree-group-details">
+                        <button className="tree-group-button" type="button" aria-expanded={isExpanded} onClick={() => {
                             setCollapsedGroups((current) => ({ ...current, [node.id]: isExpanded }));
-                        }}><span className="tree-group-disclosure"><ChevronRight size={13} /><ChevronDown size={13} /></span><FolderTree size={13} /><span>{node.name}</span></summary>
-                        <ul className="tree-resources">{renderOwnershipNodes(node.id)}</ul>
-                    </details>
+                        }}><span className="tree-group-disclosure">{isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span><FolderTree size={13} /><span>{node.name}</span></button>
+                        <div className={`tree-collapse${isExpanded ? " is-expanded" : " is-collapsed"}`} aria-hidden={!isExpanded} inert={!isExpanded}><div className="tree-collapse-content"><ul className="tree-resources">{renderOwnershipNodes(node.id)}</ul></div></div>
+                    </div>
                 </li>;
         });
     }
@@ -385,7 +384,7 @@ export function Dashboard({ request, onError }: Props) {
                         <ul className="deployment-tree">
                             {deployments.map((deployment) => {
                                 const isSelected = selectedDeploymentID === deployment.id;
-                                const isExpanded = isSelected && collapsedDeployments[deployment.id] !== true;
+                                const isExpanded = isSelected && (collapsedDeployments[deployment.id] ?? deployments.length < 2);
                                 const resources = isSelected ? selectedDeployment?.resources.filter((resource) => resource.kind !== "network_attachment") ?? [] : [];
                                 return (
                                     <li className="tree-deployment" key={deployment.id}>
@@ -403,15 +402,14 @@ export function Dashboard({ request, onError }: Props) {
                                             <Boxes size={16} />
                                             <span>{deployment.name}</span>
                                         </button>
-                                                {isExpanded && (
-                                                    <ul className="tree-branches">
+                                                <div className={`tree-collapse${isExpanded ? " is-expanded" : " is-collapsed"}`} aria-hidden={!isExpanded} inert={!isExpanded}><div className="tree-collapse-content"><ul className="tree-branches">
                                                         <li>
                                                     {(() => {
                                                         const key = `${deployment.id}:resources`;
                                                         const expanded = branchIsExpanded(key);
                                                         return <>
                                                             <button className={`tree-category-button${selectedSection === "resources" ? " is-active" : ""}`} type="button" aria-expanded={expanded} onClick={() => { toggleBranch(key); selectSection("resources"); }}><span className="tree-branch-disclosure">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span><Server size={14} /><span>Resources</span><small>{selectedDeployment ? selectedDeployment.resources.filter((resource) => resource.kind !== "network_attachment").length : "—"}</small></button>
-                                                            {expanded && resources.length > 0 && selectedDeployment?.deployment.root_node_id !== null && selectedDeployment?.deployment.root_node_id !== undefined && <ul className="tree-resources">{renderOwnershipNodes(selectedDeployment.deployment.root_node_id)}</ul>}
+                                                            <div className={`tree-collapse${expanded && resources.length > 0 && selectedDeployment?.deployment.root_node_id !== null && selectedDeployment?.deployment.root_node_id !== undefined ? " is-expanded" : " is-collapsed"}`} aria-hidden={!expanded} inert={!expanded}><div className="tree-collapse-content">{resources.length > 0 && selectedDeployment?.deployment.root_node_id !== null && selectedDeployment?.deployment.root_node_id !== undefined && <ul className="tree-resources">{renderOwnershipNodes(selectedDeployment.deployment.root_node_id)}</ul>}</div></div>
                                                         </>;
                                                     })()}
                                                 </li>
@@ -421,7 +419,7 @@ export function Dashboard({ request, onError }: Props) {
                                                         const expanded = branchIsExpanded(key);
                                                         return <>
                                                             <button className={`tree-category-button${selectedSection === "users" ? " is-active" : ""}`} type="button" aria-expanded={expanded} onClick={() => { toggleBranch(key); selectSection("users"); }}><span className="tree-branch-disclosure">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span><CircleUserRound size={14} /><span>Users</span><small>{deploymentAccess?.accounts.length ?? "—"}</small></button>
-                                                            {expanded && <ul className="tree-resources">{deploymentAccess?.accounts.map((account) => <li key={account.id}><button className={`tree-resource tree-entity${selectedUserID === account.id ? " is-current" : ""}`} type="button" onClick={() => selectUser(account.id)}><CircleUserRound size={13} /><span>{account.display_name}</span></button></li>)}</ul>}
+                                                            <div className={`tree-collapse${expanded ? " is-expanded" : " is-collapsed"}`} aria-hidden={!expanded} inert={!expanded}><div className="tree-collapse-content"><ul className="tree-resources">{deploymentAccess?.accounts.map((account) => <li key={account.id}><button className={`tree-resource tree-entity${selectedUserID === account.id ? " is-current" : ""}`} type="button" onClick={() => selectUser(account.id)}><CircleUserRound size={13} /><span>{account.display_name}</span></button></li>)}</ul></div></div>
                                                         </>;
                                                     })()}
                                                 </li>}
@@ -431,12 +429,11 @@ export function Dashboard({ request, onError }: Props) {
                                                         const expanded = branchIsExpanded(key);
                                                         return <>
                                                             <button className={`tree-category-button${selectedSection === "groups" ? " is-active" : ""}`} type="button" aria-expanded={expanded} onClick={() => { toggleBranch(key); selectSection("groups"); }}><span className="tree-branch-disclosure">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span><Users size={14} /><span>Groups</span><small>{deploymentAccess?.groups.length ?? "—"}</small></button>
-                                                            {expanded && <ul className="tree-resources">{deploymentAccess?.groups.map((group) => <li key={group.id}><button className={`tree-resource tree-entity${selectedGroupID === group.id ? " is-current" : ""}`} type="button" onClick={() => selectGroup(group.id)}><Users size={13} /><span>{group.name}</span></button></li>)}</ul>}
+                                                            <div className={`tree-collapse${expanded ? " is-expanded" : " is-collapsed"}`} aria-hidden={!expanded} inert={!expanded}><div className="tree-collapse-content"><ul className="tree-resources">{deploymentAccess?.groups.map((group) => <li key={group.id}><button className={`tree-resource tree-entity${selectedGroupID === group.id ? " is-current" : ""}`} type="button" onClick={() => selectGroup(group.id)}><Users size={13} /><span>{group.name}</span></button></li>)}</ul></div></div>
                                                         </>;
                                                     })()}
                                                 </li>}
-                                            </ul>
-                                        )}
+                                            </ul></div></div>
                                     </li>
                                 );
                             })}

@@ -1440,6 +1440,30 @@ h2 {
     list-style: none;
 }
 
+.tree-collapse {
+    display: grid;
+    grid-template-rows: 0fr;
+    visibility: hidden;
+    transition: grid-template-rows 180ms ease, visibility 0s linear 180ms;
+}
+
+.tree-collapse.is-expanded {
+    grid-template-rows: 1fr;
+    visibility: visible;
+    transition-delay: 0s;
+}
+
+.tree-collapse-content {
+    min-height: 0;
+    overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tree-collapse {
+        transition: none;
+    }
+}
+
 .deployment-tree {
     min-height: 0;
     flex: 1;
@@ -1547,10 +1571,6 @@ h2 {
     text-align: left;
 }
 
-.tree-group-button::-webkit-details-marker {
-    display: none;
-}
-
 .tree-group-button > span:last-child {
     overflow: hidden;
     flex: 1;
@@ -1563,15 +1583,6 @@ h2 {
     width: 13px;
     flex: 0 0 13px;
     place-items: center;
-}
-
-.tree-group-disclosure svg:last-child,
-.tree-group-details[open] .tree-group-disclosure svg:first-child {
-    display: none;
-}
-
-.tree-group-details[open] .tree-group-disclosure svg:last-child {
-    display: block;
 }
 
 .tree-group-button:hover,
