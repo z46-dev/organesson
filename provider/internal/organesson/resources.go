@@ -122,12 +122,16 @@ func resourceNetworkMode(mode string) (resource *schema.Resource) {
 			ExactlyOneOf: []string{"deployment_id", "logical_group_id"},
 			Description:  "The owning logical group identifier for a private network.",
 		},
-		"name":         {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The virtual network name."},
-		"power_state":  {Type: schema.TypeString, Computed: true, Description: "Proxmox SDN provisioning state."},
-		"router_vmid":  {Type: schema.TypeInt, Optional: true, ForceNew: true, Description: "Deployment-managed router VM queried through QEMU Guest Agent for Router Polling."},
-		"proxmox_vnet": {Type: schema.TypeString, Computed: true, Description: "The Organesson-owned Proxmox SDN VNet identifier."},
-		"proxmox_zone": {Type: schema.TypeString, Computed: true, Description: "The Proxmox SDN zone containing this VNet."},
-		"summary":      summarySchema(),
+		"name":                               {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The virtual network name."},
+		"power_state":                        {Type: schema.TypeString, Computed: true, Description: "Proxmox SDN provisioning state."},
+		"router_vmid":                        {Type: schema.TypeInt, Optional: true, ForceNew: true, Description: "Deployment-managed router VM queried through QEMU Guest Agent for Router Polling."},
+		"external_bridge_vm_resource_id":     {Type: schema.TypeString, Computed: true, Description: "Hidden platform bridge VM resource for an external VLAN on an unmanaged network."},
+		"external_bridge_group_id":           {Type: schema.TypeString, Computed: true, Description: "Hidden ownership group for the external VLAN bridge VM."},
+		"external_bridge_lan_attachment_id":  {Type: schema.TypeString, Computed: true, Description: "Hidden bridge VM attachment to this VNet."},
+		"external_bridge_vlan_attachment_id": {Type: schema.TypeString, Computed: true, Description: "Hidden bridge VM attachment to the external VLAN."},
+		"proxmox_vnet":                       {Type: schema.TypeString, Computed: true, Description: "The Organesson-owned Proxmox SDN VNet identifier."},
+		"proxmox_zone":                       {Type: schema.TypeString, Computed: true, Description: "The Proxmox SDN zone containing this VNet."},
+		"summary":                            summarySchema(),
 	}
 	resource = apiResource(fields, networkOperations(mode))
 

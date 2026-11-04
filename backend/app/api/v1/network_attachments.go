@@ -39,6 +39,7 @@ func createNetworkAttachmentHandler(services common.Services) (handler fiber.Han
 			LogicalNetworkID: request.LogicalNetworkID, AddressPoolRequestID: request.AddressPoolRequestID,
 			RequestedAddressCount: request.RequestedAddressCount, IPv6AddressPoolRequestID: request.IPv6AddressPoolRequestID,
 			RequestedIPv6AddressCount: request.RequestedIPv6AddressCount,
+			ExternalVLANPort:          request.ExternalVLANPort,
 		}); err != nil {
 			return common.DomainError(ctx, err)
 		}

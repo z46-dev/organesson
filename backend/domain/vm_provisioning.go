@@ -93,6 +93,10 @@ func (service *Service) ReserveProxmoxVirtualMachine(actorID int, deploymentID i
 	if parent.Kind == db.OwnershipNodeKindInternal {
 		template, err = service.ProvisioningSystemVMTemplate(request.TemplateAlias)
 	} else {
+		if request.TargetNode != "" {
+			err = fmt.Errorf("%w: explicit Proxmox node placement is reserved for platform-owned VMs", ErrInvalidInput)
+			return
+		}
 		template, err = service.ProvisioningVMTemplate(request.TemplateAlias)
 	}
 	if err != nil {

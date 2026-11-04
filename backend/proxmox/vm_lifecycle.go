@@ -31,6 +31,7 @@ type (
 		SourceVMID    string `json:"source_vm_id"`
 		TemplateAlias string `json:"template_alias"`
 		Name          string `json:"name"`
+		TargetNode    string `json:"target_node,omitempty"`
 		Pool          string `json:"pool"`
 		Storage       string `json:"storage"`
 		Cores         int    `json:"cores"`
@@ -262,7 +263,13 @@ func (driver *apiVMDriver) Clone(ctx context.Context, request VMCloneRequest) (p
 		return
 	}
 	var targetNode string
-	if targetNode, err = selectVMCloneTarget(resources, storages, sourceNode, source.VirtualMachineConfig, request); err != nil {
+	if request.TargetNode != "" {
+		targetNode = request.TargetNode
+		if !nodeCanHostClone(resources, storages, sourceNode, source.VirtualMachineConfig, request, targetNode) {
+			err = fmt.Errorf("requested Proxmox node %q cannot host this VM clone", targetNode)
+			return
+		}
+	} else if targetNode, err = selectVMCloneTarget(resources, storages, sourceNode, source.VirtualMachineConfig, request); err != nil {
 		return
 	}
 	var vmid int

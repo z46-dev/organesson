@@ -104,6 +104,9 @@ type (
 				RouterVMID   int                        `json:"router_vmid"`
 				ExternalVLAN *networkExternalVLANResult `json:"external_vlan,omitempty"`
 			} `json:"request"`
+			Placement struct {
+				ExternalVNet string `json:"external_vnet"`
+			} `json:"placement"`
 		} `json:"configuration"`
 	}
 	networkAttachmentResult struct {
@@ -281,6 +284,20 @@ func networkOperations(mode string) (operations remoteResourceOperations) {
 		if err != nil {
 			return
 		}
+		if mode == "unmanaged-layer-2" && result.Configuration.Placement.ExternalVNet != "" {
+			var bridgeVMID string
+			var bridgeGroupID string
+			var bridgeLANID string
+			var bridgeVLANID string
+			if bridgeVMID, bridgeGroupID, bridgeLANID, bridgeVLANID, err = provisionExternalBridgeVM(ctx, client, data, deploymentID, result.Resource.ID); err != nil {
+				managedNetworkRollback(ctx, client, bridgeLANID, "", strconv.Itoa(result.Resource.ID), bridgeVMID, bridgeGroupID, bridgeVLANID)
+				return
+			}
+			_ = data.Set("external_bridge_vm_resource_id", bridgeVMID)
+			_ = data.Set("external_bridge_group_id", bridgeGroupID)
+			_ = data.Set("external_bridge_lan_attachment_id", bridgeLANID)
+			_ = data.Set("external_bridge_vlan_attachment_id", bridgeVLANID)
+		}
 		data.SetId(strconv.Itoa(result.Resource.ID))
 		_ = data.Set("power_state", result.Resource.PowerState)
 		_ = data.Set("proxmox_vnet", result.Resource.ExternalID)
@@ -318,7 +335,26 @@ func networkOperations(mode string) (operations remoteResourceOperations) {
 		if id, err = remoteID(data.Id()); err != nil {
 			return
 		}
-		return client.request(ctx, http.MethodDelete, "/api/v1/networks/"+id, nil, nil)
+		for _, attachmentID := range []string{data.Get("external_bridge_vlan_attachment_id").(string), data.Get("external_bridge_lan_attachment_id").(string)} {
+			if attachmentID == "" {
+				continue
+			}
+			if err = client.request(ctx, http.MethodDelete, "/api/v1/network-attachments/"+attachmentID, nil, nil); err != nil {
+				return
+			}
+		}
+		if err = client.request(ctx, http.MethodDelete, "/api/v1/networks/"+id, nil, nil); err != nil {
+			return
+		}
+		if vmID := data.Get("external_bridge_vm_resource_id").(string); vmID != "" {
+			if err = client.request(ctx, http.MethodDelete, "/api/v1/virtual-machines/"+vmID, nil, nil); err != nil {
+				return
+			}
+		}
+		if groupID := data.Get("external_bridge_group_id").(string); groupID != "" {
+			err = client.request(ctx, http.MethodDelete, "/api/v1/ownership-nodes/"+groupID, nil, nil)
+		}
+		return
 	}
 	return
 }

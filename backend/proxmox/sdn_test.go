@@ -300,8 +300,8 @@ func TestAPISDNNetworkDriverCreatesOnlyIsolatedSimpleZoneAndDeletesIt(t *testing
 	if placement, err = driver.Create(context.Background(), request); err != nil {
 		t.Fatalf("create externally exposed VLAN network: %v", err)
 	}
-	if placement.Zone == "ogvxlan" || placement.Tag != 2048 || zones[placement.Zone]["type"] != "vlan" || zones[placement.Zone]["bridge"] != "ogtrunk" || zones[placement.Zone]["nodes"] != "tungsten" || vnets[placement.VNet]["zone"] != placement.Zone || uint32(vnets[placement.VNet]["tag"].(float64)) != 2048 {
-		t.Fatalf("external VLAN was not represented by a dedicated tagged VLAN zone: placement=%#v zones=%#v vnets=%#v", placement, zones, vnets)
+	if placement.Zone != "ogvxlan" || placement.ExternalZone == "" || placement.ExternalVNet == "" || placement.ExternalTag != 2048 || placement.Tag == 0 || zones[placement.ExternalZone]["type"] != "vlan" || zones[placement.ExternalZone]["bridge"] != "ogtrunk" || zones[placement.ExternalZone]["nodes"] != "tungsten" || vnets[placement.VNet]["zone"] != "ogvxlan" || uint32(vnets[placement.VNet]["tag"].(float64)) != placement.Tag || vnets[placement.ExternalVNet]["zone"] != placement.ExternalZone || uint32(vnets[placement.ExternalVNet]["tag"].(float64)) != 2048 {
+		t.Fatalf("external VLAN did not preserve the VXLAN LAN and add a trunk-local VLAN VNet: placement=%#v zones=%#v vnets=%#v", placement, zones, vnets)
 	}
 	if err = driver.Read(context.Background(), request, placement); err != nil {
 		t.Fatalf("read externally exposed VLAN network: %v", err)

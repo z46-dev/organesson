@@ -22,6 +22,7 @@ type (
 	createVMRequest struct {
 		ParentNodeID     int    `json:"parent_node_id"`
 		Name             string `json:"name"`
+		TargetNode       string `json:"target_node,omitempty"`
 		ProvisioningMode string `json:"provisioning_mode"`
 		Template         string `json:"template"`
 		Pool             string `json:"pool"`
@@ -65,6 +66,7 @@ type (
 		RequestedAddressCount     int    `json:"requested_address_count"`
 		IPv6AddressPoolRequestID  int    `json:"ipv6_address_pool_request_id"`
 		RequestedIPv6AddressCount int    `json:"requested_ipv6_address_count"`
+		ExternalVLANPort          bool   `json:"external_vlan_port,omitempty"`
 	}
 
 	setPowerRequest struct {
@@ -908,6 +910,7 @@ func createVirtualMachine(services common.Services) (handler fiber.Handler) {
 			var spec proxmox.VMCloneRequest = proxmox.VMCloneRequest{
 				TemplateAlias: request.Template,
 				Name:          request.Name,
+				TargetNode:    request.TargetNode,
 				Pool:          request.Pool,
 				Storage:       request.Storage,
 				Cores:         request.Cores,
@@ -933,6 +936,7 @@ func createVirtualMachine(services common.Services) (handler fiber.Handler) {
 					SourceVMID:    template.SourceID,
 					TemplateAlias: spec.TemplateAlias,
 					Name:          spec.Name,
+					TargetNode:    spec.TargetNode,
 					Pool:          spec.Pool,
 					Storage:       spec.Storage,
 					Cores:         spec.Cores,

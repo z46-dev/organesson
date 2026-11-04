@@ -25,6 +25,7 @@ type (
 		RequestedAddressCount     int    `json:"requested_address_count,omitempty"`
 		IPv6AddressPoolRequestID  int    `json:"ipv6_address_pool_request_id,omitempty"`
 		RequestedIPv6AddressCount int    `json:"requested_ipv6_address_count,omitempty"`
+		ExternalVLANPort          bool   `json:"external_vlan_port,omitempty"`
 	}
 
 	// ManagedNetworkAttachmentConfiguration persists desired inputs, IP claims, and the PVE device.
@@ -120,15 +121,45 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 		if err = json.Unmarshal([]byte(network.ConfigurationJSON), &networkConfiguration); err != nil {
 			return
 		}
-		if exposure := networkConfiguration.Request.ExternalVLAN; exposure != nil && !containsString(exposure.Nodes, vm.ExternalNode) {
-			err = fmt.Errorf("%w: external VLAN %d is not available on VM node %q", ErrInvalidInput, exposure.VLANID, vm.ExternalNode)
-			return
+		if request.ExternalVLANPort {
+			if request.AddressPoolRequestID != 0 || request.RequestedAddressCount != 0 || request.IPv6AddressPoolRequestID != 0 || request.RequestedIPv6AddressCount != 0 {
+				err = fmt.Errorf("%w: an external VLAN port cannot reserve guest addresses", ErrInvalidInput)
+				return
+			}
+			var bridgeOwner *db.OwnershipNode
+			if bridgeOwner, err = service.store.OwnershipNodes.Select(vm.OwnershipID); err != nil {
+				return
+			}
+			var authorizedBridge bool
+			if networkConfiguration.Request.Mode == "managed" {
+				var vmID int
+				if vmID, err = strconv.Atoi(vm.ExternalID); err != nil {
+					return
+				}
+				authorizedBridge = networkConfiguration.Request.RouterVMID == vmID
+			} else {
+				authorizedBridge = bridgeOwner != nil && bridgeOwner.Kind == db.OwnershipNodeKindInternal
+			}
+			if !authorizedBridge || networkConfiguration.Request.ExternalVLAN == nil || vm.ExternalNode != networkConfiguration.Request.ExternalVLAN.TrunkNode || networkConfiguration.Placement.ExternalVNet == "" {
+				err = fmt.Errorf("%w: external VLAN port is reserved for this network's router on the selected trunk node", ErrInvalidInput)
+				return
+			}
+			pveNetwork = networkConfiguration.Placement.ExternalVNet
+			enforceAddressFilter = false
+			allowUnallocatedRouterLAN = false
+			allowManagedNetworkSubnet = false
+			allowDHCPv4Server = false
+			allowDHCPv6Server = false
+			allowedClientSubnets = nil
+			allowedPeerSubnets = nil
+			configuration.Addresses = nil
+			configuration.IPv6Addresses = nil
 		}
 		configuration.NetworkDHCPEnabled = networkConfiguration.Request.DHCPEnabled
 		configuration.NetworkIPv6DHCPEnabled = networkConfiguration.Request.IPv6DHCPEnabled
 		managedIPv4Subnet = networkConfiguration.Request.Subnet
 		managedIPv6Subnet = networkConfiguration.Request.IPv6Subnet
-		enforceAddressFilter = networkConfiguration.Request.Mode == "managed"
+		enforceAddressFilter = networkConfiguration.Request.Mode == "managed" && !request.ExternalVLANPort
 		var vmID int
 		if vmID, err = strconv.Atoi(vm.ExternalID); err != nil {
 			return
@@ -223,7 +254,7 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 		if err = json.Unmarshal([]byte(current.ConfigurationJSON), &configuration); err != nil {
 			return
 		}
-		if configuration.VirtualMachineID != request.VirtualMachineID || configuration.EnvironmentNetwork != request.EnvironmentNetwork || configuration.LogicalNetworkID != request.LogicalNetworkID || configuration.AddressPoolRequestID != request.AddressPoolRequestID || configuration.RequestedAddressCount != request.RequestedAddressCount || configuration.IPv6AddressPoolRequestID != request.IPv6AddressPoolRequestID || configuration.RequestedIPv6AddressCount != request.RequestedIPv6AddressCount {
+		if configuration.VirtualMachineID != request.VirtualMachineID || configuration.EnvironmentNetwork != request.EnvironmentNetwork || configuration.LogicalNetworkID != request.LogicalNetworkID || configuration.AddressPoolRequestID != request.AddressPoolRequestID || configuration.RequestedAddressCount != request.RequestedAddressCount || configuration.IPv6AddressPoolRequestID != request.IPv6AddressPoolRequestID || configuration.RequestedIPv6AddressCount != request.RequestedIPv6AddressCount || configuration.Request.ExternalVLANPort != request.ExternalVLANPort {
 			err = fmt.Errorf("%w: network attachment already exists with different settings", ErrInvalidInput)
 			return
 		}
@@ -290,7 +321,7 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 	}
 	configuration.Request = proxmox.NetworkAttachmentRequest{
 		Node: vm.ExternalNode, VMID: vm.ExternalID, VMOperationKey: vm.OperationKey,
-		Bridge: pveNetwork, Model: request.Model, NetworkOperationKey: networkOperationKey, AttachmentOperationKey: operationKey,
+		Bridge: pveNetwork, Model: request.Model, NetworkOperationKey: networkOperationKey, ExternalVLANPort: request.ExternalVLANPort, AttachmentOperationKey: operationKey,
 		EnforceAddressFilter: enforceAddressFilter, AllowDHCPv4Server: allowDHCPv4Server, AllowDHCPv6Server: allowDHCPv6Server,
 		AllowedAddresses: allowedAddresses, AllowedClientSubnets: allowedClientSubnets, AllowedPeerSubnets: allowedPeerSubnets,
 	}

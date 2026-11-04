@@ -57,6 +57,7 @@ func resourceManagedNetwork() (resource *schema.Resource) {
 			"router_resource_id":                    {Type: schema.TypeString, Computed: true, Description: "Platform-owned Organesson VM record for the router."},
 			"internal_group_id":                     {Type: schema.TypeString, Computed: true, Description: "Platform-owned hidden ownership branch for the router."},
 			"lan_attachment_id":                     {Type: schema.TypeString, Computed: true, Description: "Platform-owned router LAN attachment."},
+			"external_vlan_attachment_id":           {Type: schema.TypeString, Computed: true, Description: "Platform-owned router attachment for the external VLAN bridge port."},
 			"egress_attachment_id":                  {Type: schema.TypeString, Computed: true, Description: "Platform-owned router WAN attachment, if enabled."},
 			"summary":                               summarySchema(),
 		},
@@ -70,6 +71,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 	var deploymentID string
 	var networkParentID int
 	var err error
+	var externalVLANAttachmentID string
 	if deploymentID, networkParentID, err = resolveManagedNetworkParent(ctx, client, data); err != nil {
 		diagnostics = diag.FromErr(err)
 		return
@@ -201,7 +203,8 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 	var vm vmResult
 	if err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+deploymentID+"/virtual-machines", map[string]any{
 		"parent_node_id": group.Node.ID, "name": data.Get("name").(string) + "-router", "provisioning_mode": "proxmox",
-		"cpu_cores": data.Get("router_cpu_cores").(int), "memory_mib": data.Get("router_memory_mib").(int), "boot_disk_gib": data.Get("router_boot_disk_gib").(int),
+		"target_node": externalVLANTrunkNode(data),
+		"cpu_cores":   data.Get("router_cpu_cores").(int), "memory_mib": data.Get("router_memory_mib").(int), "boot_disk_gib": data.Get("router_boot_disk_gib").(int),
 	}, &vm); err != nil {
 		_ = client.request(ctx, http.MethodDelete, "/api/v1/ownership-nodes/"+groupID, nil, nil)
 		diagnostics = diag.FromErr(err)
@@ -211,7 +214,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 	var vmID int
 	if vmID, err = strconv.Atoi(vm.Resource.ExternalID); err != nil {
 		diagnostics = diag.Errorf("Organesson returned an invalid router VMID")
-		managedNetworkRollback(ctx, client, "", "", "", vmResourceID, groupID)
+		managedNetworkRollback(ctx, client, "", "", "", vmResourceID, groupID, externalVLANAttachmentID)
 		return
 	}
 	var network networkResult
@@ -221,7 +224,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 		"ipv6_subnet": ipv6SubnetText, "ipv6_gateway": ipv6GatewayText, "ipv6_dhcp_enabled": data.Get("ipv6_dhcp_enabled").(bool),
 		"egress_policy": "isolated", "router_vmid": vmID, "external_vlan": externalVLANRequest(data),
 	}, &network); err != nil {
-		managedNetworkRollback(ctx, client, "", "", "", vmResourceID, groupID)
+		managedNetworkRollback(ctx, client, "", "", "", vmResourceID, groupID, externalVLANAttachmentID)
 		diagnostics = diag.FromErr(err)
 		return
 	}
@@ -230,25 +233,38 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 	if err = client.request(ctx, http.MethodPost, "/api/v1/virtual-machines/"+vmResourceID+"/network-attachments", map[string]any{
 		"name": "lan", "environment_network": "", "address_pool_request_id": 0, "requested_address_count": 0, "logical_network_id": network.Resource.ID,
 	}, &lan); err != nil {
-		managedNetworkRollback(ctx, client, "", "", networkID, vmResourceID, groupID)
+		managedNetworkRollback(ctx, client, "", "", networkID, vmResourceID, groupID, externalVLANAttachmentID)
 		diagnostics = diag.FromErr(err)
 		return
 	}
 	var lanID string = strconv.Itoa(lan.Resource.ID)
+	var externalVLANMAC string
+	if network.Configuration.Placement.ExternalVNet != "" {
+		var external networkAttachmentResult
+		if err = client.request(ctx, http.MethodPost, "/api/v1/virtual-machines/"+vmResourceID+"/network-attachments", map[string]any{
+			"name": "external-vlan", "environment_network": "", "logical_network_id": network.Resource.ID, "external_vlan_port": true,
+		}, &external); err != nil {
+			managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID, externalVLANAttachmentID)
+			diagnostics = diag.FromErr(err)
+			return
+		}
+		externalVLANAttachmentID = strconv.Itoa(external.Resource.ID)
+		externalVLANMAC = external.Configuration.Placement.MAC
+	}
 	var lanGuestConfiguration map[string]any = map[string]any{
 		"ipv4_method": "disabled", "ipv4_address": "", "ipv4_gateway": "", "ipv4_dns": []string{}, "ipv4_never_default": true,
 		"ipv6_method": "disabled", "ipv6_address": "", "ipv6_gateway": "", "ipv6_dns": []string{}, "ipv6_never_default": true,
 	}
-	if subnetText != "" {
+	if subnetText != "" && externalVLANMAC == "" {
 		lanGuestConfiguration["ipv4_method"] = "static"
 		lanGuestConfiguration["ipv4_address"] = gatewayText + "/" + strconv.Itoa(subnet.Bits())
 	}
-	if ipv6Subnet.IsValid() {
+	if ipv6Subnet.IsValid() && externalVLANMAC == "" {
 		lanGuestConfiguration["ipv6_method"] = "static"
 		lanGuestConfiguration["ipv6_address"] = ipv6Gateway.String() + "/" + strconv.Itoa(ipv6Subnet.Bits())
 	}
 	if err = createGuestNetworkConfiguration(ctx, client, lanID, lanGuestConfiguration); err != nil {
-		managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID)
+		managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID, externalVLANAttachmentID)
 		diagnostics = diag.FromErr(err)
 		return
 	}
@@ -258,7 +274,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 		var poolID int
 		if raw := data.Get("egress_address_pool_request_id").(string); raw != "" {
 			if poolID, err = strconv.Atoi(raw); err != nil {
-				managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID)
+				managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID, externalVLANAttachmentID)
 				diagnostics = diag.FromErr(err)
 				return
 			}
@@ -266,7 +282,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 		var ipv6PoolID int
 		if raw := data.Get("egress_ipv6_address_pool_request_id").(string); raw != "" {
 			if ipv6PoolID, err = strconv.Atoi(raw); err != nil {
-				managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID)
+				managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID, externalVLANAttachmentID)
 				diagnostics = diag.FromErr(err)
 				return
 			}
@@ -279,7 +295,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 		if egressUpstreamDeploymentNetworkID != "" {
 			var upstreamNetworkID int
 			if upstreamNetworkID, err = strconv.Atoi(egressUpstreamDeploymentNetworkID); err != nil || upstreamNetworkID < 1 {
-				managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID)
+				managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID, externalVLANAttachmentID)
 				diagnostics = diag.Errorf("egress_upstream_deployment_network_id must be a valid deployment network ID")
 				return
 			}
@@ -287,7 +303,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 			egressAttachmentRequest["logical_network_id"] = upstreamNetworkID
 		}
 		if err = client.request(ctx, http.MethodPost, "/api/v1/virtual-machines/"+vmResourceID+"/network-attachments", egressAttachmentRequest, &wan); err != nil {
-			managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID)
+			managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID, externalVLANAttachmentID)
 			diagnostics = diag.FromErr(err)
 			return
 		}
@@ -301,13 +317,13 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 			guestConfig["ipv4_never_default"] = true
 		} else if data.Get("egress_ipv4_method").(string) == "static" {
 			if len(wan.Configuration.Addresses) != 1 || wan.Configuration.AddressPrefix == "" {
-				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
+				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID, externalVLANAttachmentID)
 				diagnostics = diag.Errorf("static router egress did not receive one address and its network prefix")
 				return
 			}
 			prefix, prefixErr := netip.ParsePrefix(wan.Configuration.AddressPrefix)
 			if prefixErr != nil || !prefix.Addr().Is4() {
-				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
+				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID, externalVLANAttachmentID)
 				diagnostics = diag.Errorf("router egress source returned an invalid IPv4 prefix")
 				return
 			}
@@ -315,19 +331,19 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 			guestConfig["ipv4_gateway"] = wan.Configuration.AddressGateway
 			guestConfig["ipv4_dns"] = wan.Configuration.AddressDNS
 		} else if poolID > 0 && len(wan.Configuration.Addresses) != 1 {
-			managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
+			managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID, externalVLANAttachmentID)
 			diagnostics = diag.Errorf("DHCP router egress requires exactly one reserved IPv4 address")
 			return
 		}
 		if ipv6PoolID > 0 {
 			if len(wan.Configuration.IPv6Addresses) != 1 || wan.Configuration.IPv6AddressPrefix == "" {
-				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
+				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID, externalVLANAttachmentID)
 				diagnostics = diag.Errorf("static IPv6 router egress did not receive one address and its network prefix")
 				return
 			}
 			prefix, prefixErr := netip.ParsePrefix(wan.Configuration.IPv6AddressPrefix)
 			if prefixErr != nil || !prefix.Addr().Is6() || prefix.Addr().Is4In6() {
-				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
+				managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID, externalVLANAttachmentID)
 				diagnostics = diag.Errorf("router egress source returned an invalid IPv6 prefix")
 				return
 			}
@@ -338,15 +354,15 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 			guestConfig["ipv6_never_default"] = false
 		}
 		if err = createGuestNetworkConfiguration(ctx, client, wanID, guestConfig); err != nil {
-			managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
+			managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID, externalVLANAttachmentID)
 			diagnostics = diag.FromErr(err)
 			return
 		}
 	}
-	if err = executeManagedRouter(ctx, client, vmResourceID, lanID, wanID, gatewayText, subnetText, dhcpStartText, dhcpEndText, dnsServers,
+	if err = executeManagedRouter(ctx, client, vmResourceID, lanID, wanID, externalVLANMAC, gatewayText, subnetText, dhcpStartText, dhcpEndText, dnsServers,
 		ipv6GatewayText, ipv6SubnetText, data.Get("ipv6_dhcp_start").(string), data.Get("ipv6_dhcp_end").(string), ipv6DNSServers,
 	); err != nil {
-		managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID)
+		managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID, externalVLANAttachmentID)
 		diagnostics = diag.FromErr(err)
 		return
 	}
@@ -355,6 +371,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 	_ = data.Set("router_resource_id", vmResourceID)
 	_ = data.Set("internal_group_id", groupID)
 	_ = data.Set("lan_attachment_id", lanID)
+	_ = data.Set("external_vlan_attachment_id", externalVLANAttachmentID)
 	_ = data.Set("egress_attachment_id", wanID)
 	_ = data.Set("power_state", network.Resource.PowerState)
 	_ = data.Set("proxmox_vnet", network.Resource.ExternalID)
@@ -364,10 +381,29 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 	return
 }
 
+func externalVLANTrunkNode(data *schema.ResourceData) (node string) {
+	var blocks []interface{} = data.Get("external_vlan").([]interface{})
+	if len(blocks) > 0 {
+		if values, ok := blocks[0].(map[string]interface{}); ok {
+			node, _ = values["trunk_node"].(string)
+		}
+	}
+	return
+}
+
 // boolCount converts a reservation's presence into its one-address count.
 func boolCount(enabled bool) (count int) {
 	if enabled {
 		count = 1
+	}
+	return
+}
+
+func subnetPrefixBits(value string) (bits int) {
+	if value != "" {
+		if prefix, err := netip.ParsePrefix(value); err == nil {
+			bits = prefix.Bits()
+		}
 	}
 	return
 }
@@ -424,7 +460,7 @@ func createGuestNetworkConfiguration(ctx context.Context, client *apiClient, att
 }
 
 // executeManagedRouter packages and applies the hidden router's DHCP/DNS and firewall configuration.
-func executeManagedRouter(ctx context.Context, client *apiClient, vmResourceID string, lanID string, wanID string, gateway string, subnet string, dhcpStart string, dhcpEnd string, dns []string, ipv6Gateway string, ipv6Subnet string, ipv6DHCPStart string, ipv6DHCPEnd string, ipv6DNS []string) (err error) {
+func executeManagedRouter(ctx context.Context, client *apiClient, vmResourceID string, lanID string, wanID string, externalVLANMAC string, gateway string, subnet string, dhcpStart string, dhcpEnd string, dns []string, ipv6Gateway string, ipv6Subnet string, ipv6DHCPStart string, ipv6DHCPEnd string, ipv6DNS []string) (err error) {
 	var vmID string
 	if vmID, err = remoteID(vmResourceID); err != nil {
 		return
@@ -452,8 +488,8 @@ func executeManagedRouter(ctx context.Context, client *apiClient, vmResourceID s
 		return
 	}
 	var configuration string = strings.Join([]string{
-		"LAN_MAC=" + shellQuoted(lanMAC), "WAN_MAC=" + shellQuoted(wanMAC), "LAN_ADDRESS=" + shellQuoted(gateway),
-		"LAN_SUBNET=" + shellQuoted(subnet), "DHCP_START=" + shellQuoted(dhcpStart), "DHCP_END=" + shellQuoted(dhcpEnd),
+		"LAN_MAC=" + shellQuoted(lanMAC), "WAN_MAC=" + shellQuoted(wanMAC), "EXTERNAL_VLAN_MAC=" + shellQuoted(externalVLANMAC), "LAN_ADDRESS=" + shellQuoted(gateway),
+		"LAN_SUBNET=" + shellQuoted(subnet), "LAN_PREFIX=" + strconv.Itoa(subnetPrefixBits(subnet)), "LAN_IPV6_PREFIX=" + strconv.Itoa(subnetPrefixBits(ipv6Subnet)), "DHCP_START=" + shellQuoted(dhcpStart), "DHCP_END=" + shellQuoted(dhcpEnd),
 		"DNS_SERVERS=(" + strings.Join(dns, " ") + ")",
 		"LAN_IPV6_ADDRESS=" + shellQuoted(ipv6Gateway), "LAN_IPV6_SUBNET=" + shellQuoted(ipv6Subnet),
 		"DHCPV6_START=" + shellQuoted(ipv6DHCPStart), "DHCPV6_END=" + shellQuoted(ipv6DHCPEnd),
@@ -480,12 +516,58 @@ func executeManagedRouter(ctx context.Context, client *apiClient, vmResourceID s
 	return
 }
 
+func provisionExternalBridgeVM(ctx context.Context, client *apiClient, data *schema.ResourceData, deploymentID string, networkID int) (vmResourceID string, groupID string, lanID string, externalID string, err error) {
+	var rootID int
+	if rootID, err = managedDeploymentRootID(ctx, client, deploymentID); err != nil {
+		return
+	}
+	var group nodeResult
+	if err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+deploymentID+"/logical-groups", map[string]any{
+		"name": data.Get("name").(string) + "-external-bridge", "parent_node_id": rootID, "internal": true,
+	}, &group); err != nil {
+		return
+	}
+	groupID = strconv.Itoa(group.Node.ID)
+	var vm vmResult
+	if err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+deploymentID+"/virtual-machines", map[string]any{
+		"parent_node_id": group.Node.ID, "name": data.Get("name").(string) + "-external-bridge", "provisioning_mode": "proxmox",
+		"target_node": externalVLANTrunkNode(data), "cpu_cores": 1, "memory_mib": 512, "boot_disk_gib": 8,
+	}, &vm); err != nil {
+		_ = client.request(ctx, http.MethodDelete, "/api/v1/ownership-nodes/"+groupID, nil, nil)
+		return
+	}
+	vmResourceID = strconv.Itoa(vm.Resource.ID)
+	var lan networkAttachmentResult
+	if err = client.request(ctx, http.MethodPost, "/api/v1/virtual-machines/"+vmResourceID+"/network-attachments", map[string]any{
+		"name": "lan", "logical_network_id": networkID,
+	}, &lan); err != nil {
+		managedNetworkRollback(ctx, client, "", "", strconv.Itoa(networkID), vmResourceID, groupID)
+		return
+	}
+	lanID = strconv.Itoa(lan.Resource.ID)
+	var external networkAttachmentResult
+	if err = client.request(ctx, http.MethodPost, "/api/v1/virtual-machines/"+vmResourceID+"/network-attachments", map[string]any{
+		"name": "external-vlan", "logical_network_id": networkID, "external_vlan_port": true,
+	}, &external); err != nil {
+		managedNetworkRollback(ctx, client, lanID, "", strconv.Itoa(networkID), vmResourceID, groupID)
+		return
+	}
+	externalID = strconv.Itoa(external.Resource.ID)
+	if err = executeManagedRouter(ctx, client, vmResourceID, lanID, "", external.Configuration.Placement.MAC, "", "", "", "", nil, "", "", "", "", nil); err != nil {
+		managedNetworkRollback(ctx, client, lanID, "", strconv.Itoa(networkID), vmResourceID, groupID, externalID)
+		return
+	}
+	return
+}
+
 // managedNetworkRollback best-effort removes every child already created during a failed composite apply.
-func managedNetworkRollback(ctx context.Context, client *apiClient, lanID string, wanID string, networkID string, vmID string, groupID string) {
+func managedNetworkRollback(ctx context.Context, client *apiClient, lanID string, wanID string, networkID string, vmID string, groupID string, externalVLANIDs ...string) {
 	var operations []struct {
 		path string
 	}
-	for _, attachmentID := range []string{wanID, lanID} {
+	var attachmentIDs []string = []string{wanID, lanID}
+	attachmentIDs = append(attachmentIDs, externalVLANIDs...)
+	for _, attachmentID := range attachmentIDs {
 		if attachmentID != "" {
 			operations = append(operations,
 				struct{ path string }{"/api/v1/network-attachments/" + attachmentID + "/guest-network-configuration"},
@@ -519,7 +601,7 @@ func managedNetworkRead(ctx context.Context, data *schema.ResourceData, meta int
 	var result networkResult
 	if err = client.request(ctx, http.MethodGet, "/api/v1/networks/"+id, nil, &result); err != nil {
 		if errors.Is(err, errRemoteNotFound) {
-			managedNetworkRollback(ctx, client, data.Get("lan_attachment_id").(string), data.Get("egress_attachment_id").(string), data.Id(), data.Get("router_resource_id").(string), data.Get("internal_group_id").(string))
+			managedNetworkRollback(ctx, client, data.Get("lan_attachment_id").(string), data.Get("egress_attachment_id").(string), data.Id(), data.Get("router_resource_id").(string), data.Get("internal_group_id").(string), data.Get("external_vlan_attachment_id").(string))
 			data.SetId("")
 		} else {
 			diagnostics = diag.FromErr(err)
@@ -549,6 +631,9 @@ func managedNetworkDelete(ctx context.Context, data *schema.ResourceData, meta i
 		if attachmentID != "" {
 			operations = append(operations, "/api/v1/network-attachments/"+attachmentID+"/guest-network-configuration", "/api/v1/network-attachments/"+attachmentID)
 		}
+	}
+	if attachmentID := data.Get("external_vlan_attachment_id").(string); attachmentID != "" {
+		operations = append(operations, "/api/v1/network-attachments/"+attachmentID)
 	}
 	operations = append(operations, "/api/v1/networks/"+data.Id())
 	if routerID := data.Get("router_resource_id").(string); routerID != "" {

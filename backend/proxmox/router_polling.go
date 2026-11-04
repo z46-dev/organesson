@@ -47,9 +47,14 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 		return
 	}
 	var expected SDNNetworkPlacement = placementForSDNNetwork(request)
-	if placement.Zone != expected.Zone || placement.VNet != expected.VNet {
+	var legacyPlacement SDNNetworkPlacement = legacyExternalVLANPlacement(request)
+	var legacyExternalVLAN bool = request.ExternalVLAN != nil && placement.Zone == legacyPlacement.Zone && placement.ExternalZone == "" && placement.ExternalVNet == ""
+	if placement.Zone != expected.Zone && !legacyExternalVLAN || placement.VNet != expected.VNet {
 		err = errors.New("stored Proxmox SDN placement does not match its operation key")
 		return
+	}
+	if legacyExternalVLAN {
+		expected.Zone = legacyPlacement.Zone
 	}
 	var client *pve.Client
 	if client, err = newAPIClient(driver.settings); err != nil {
@@ -70,6 +75,10 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 	var networkOwned bool
 	for _, vnet := range vnets {
 		if vnet != nil && vnet.Name == placement.VNet && vnet.Zone == placement.Zone && vnet.Alias == "organesson:"+request.OperationKey {
+			if legacyExternalVLAN && vnet.Tag != legacyPlacement.Tag {
+				err = errors.New("stored Proxmox VLAN tag does not match the legacy network resource")
+				return
+			}
 			networkOwned = true
 			break
 		}

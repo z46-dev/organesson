@@ -25,6 +25,7 @@ type (
 		Bridge                 string   `json:"bridge"`
 		Model                  string   `json:"model,omitempty"`
 		NetworkOperationKey    string   `json:"network_operation_key,omitempty"`
+		ExternalVLANPort       bool     `json:"external_vlan_port,omitempty"`
 		AttachmentOperationKey string   `json:"attachment_operation_key"`
 		EnforceAddressFilter   bool     `json:"enforce_address_filter,omitempty"`
 		AllowDHCPv4Server      bool     `json:"allow_dhcpv4_server,omitempty"`
@@ -1045,8 +1046,20 @@ func verifyAttachmentTarget(ctx context.Context, client *pve.Client, node *pve.N
 			if vnet == nil || vnet.Name != request.Bridge {
 				continue
 			}
-			var expected SDNNetworkPlacement = namesForSDNNetwork(request.NetworkOperationKey)
-			if vnet.Alias != "organesson:"+request.NetworkOperationKey || vnet.Name != expected.VNet {
+			var networkRequest SDNNetworkRequest = SDNNetworkRequest{OperationKey: request.NetworkOperationKey}
+			if request.ExternalVLANPort {
+				networkRequest.ExternalVLAN = &SDNExternalVLANExposure{}
+			}
+			var expected SDNNetworkPlacement = placementForSDNNetwork(networkRequest)
+			var expectedAlias string = "organesson:" + request.NetworkOperationKey
+			if request.ExternalVLANPort {
+				expectedAlias += ":external-vlan"
+			}
+			var expectedVNet string = expected.VNet
+			if request.ExternalVLANPort {
+				expectedVNet = expected.ExternalVNet
+			}
+			if vnet.Alias != expectedAlias || vnet.Name != expectedVNet {
 				err = errors.New("target Proxmox SDN VNet is not owned by the referenced Organesson network")
 				return
 			}

@@ -154,9 +154,9 @@ func (service *Service) ReadySDNNetwork(actorID int, resourceID int, placement p
 	}
 	var expected proxmox.SDNNetworkPlacement = proxmox.SDNNetworkPlacementForRequest(configuration.Request)
 	if placement.Zone != expected.Zone || placement.VNet != expected.VNet || resource.ExternalID != expected.VNet || resource.ExternalNode != expected.Zone ||
-		configuration.Request.ExternalVLAN == nil && configuration.Request.VNetSourceZone == "" && placement.Tag != 0 ||
-		configuration.Request.ExternalVLAN == nil && configuration.Request.VNetSourceZone != "" && (placement.Tag == 0 || placement.Tag > 16777215) ||
-		configuration.Request.ExternalVLAN != nil && placement.Tag != uint32(configuration.Request.ExternalVLAN.VLANID) {
+		configuration.Request.VNetSourceZone == "" && placement.Tag != 0 ||
+		configuration.Request.VNetSourceZone != "" && (placement.Tag == 0 || placement.Tag > 16777215) ||
+		configuration.Request.ExternalVLAN != nil && (placement.ExternalZone != expected.ExternalZone || placement.ExternalVNet != expected.ExternalVNet || placement.ExternalTag != uint32(configuration.Request.ExternalVLAN.VLANID)) {
 		err = fmt.Errorf("%w: Proxmox SDN placement does not match the reserved resource", ErrInvalidInput)
 		return
 	}

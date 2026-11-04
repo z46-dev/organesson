@@ -24,8 +24,59 @@ find_interface() {
 
 lan_interface="$(find_interface "$LAN_MAC")"
 wan_interface=""
+external_vlan_interface=""
 if [[ -n "$WAN_MAC" ]]; then
     wan_interface="$(find_interface "$WAN_MAC")"
+fi
+if [[ -n "${EXTERNAL_VLAN_MAC:-}" ]]; then
+    external_vlan_interface="$(find_interface "$EXTERNAL_VLAN_MAC")"
+fi
+
+if [[ -n "$external_vlan_interface" ]]; then
+    lan_port="$lan_interface"
+    vlan_port="$external_vlan_interface"
+    bridge_device="ogbr0"
+    install -d -m 0755 /usr/local/sbin
+    cat >/usr/local/sbin/organesson-lan-bridge <<EOF
+#!/bin/bash
+set -euo pipefail
+ip link add name $bridge_device type bridge 2>/dev/null || true
+ip link set "$bridge_device" address "$LAN_MAC"
+ip link set "$lan_port" down
+ip link set "$vlan_port" down
+ip addr flush dev "$lan_port"
+ip addr flush dev "$vlan_port"
+ip link set "$lan_port" master $bridge_device
+ip link set "$vlan_port" master $bridge_device
+ip link set "$lan_port" up
+ip link set "$vlan_port" up
+ip link set "$bridge_device" up
+EOF
+    if [[ -n "$LAN_ADDRESS" ]]; then
+        printf 'ip address replace %s/%s dev %s\n' "$LAN_ADDRESS" "$LAN_PREFIX" "$bridge_device" >>/usr/local/sbin/organesson-lan-bridge
+    fi
+    if [[ -n "${LAN_IPV6_ADDRESS:-}" ]]; then
+        printf 'ip -6 address replace %s/%s dev %s\n' "$LAN_IPV6_ADDRESS" "$LAN_IPV6_PREFIX" "$bridge_device" >>/usr/local/sbin/organesson-lan-bridge
+    fi
+    chmod 0755 /usr/local/sbin/organesson-lan-bridge
+    cat >/etc/systemd/system/organesson-lan-bridge.service <<EOF
+[Unit]
+Description=Organesson router LAN external VLAN bridge
+After=NetworkManager.service
+Wants=NetworkManager.service
+Before=dnsmasq.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/organesson-lan-bridge
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    /usr/local/sbin/organesson-lan-bridge
+    systemctl enable organesson-lan-bridge.service
+    lan_interface="$bridge_device"
 fi
 
 if ! command -v dnsmasq >/dev/null 2>&1 || ! command -v nft >/dev/null 2>&1; then

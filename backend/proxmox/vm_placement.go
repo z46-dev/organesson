@@ -85,6 +85,25 @@ func selectVMCloneTarget(resources pve.ClusterResources, storages pve.ClusterSto
 	return
 }
 
+// nodeCanHostClone verifies an explicitly requested placement against live node and storage inventory.
+func nodeCanHostClone(resources pve.ClusterResources, storages pve.ClusterStorages, sourceNode string, sourceConfig *pve.VirtualMachineConfig, request VMCloneRequest, target string) (available bool) {
+	var online bool
+	for _, resource := range resources {
+		if resource != nil && resource.Type == "node" && resource.Node == target && resource.Status == "online" {
+			online = true
+			break
+		}
+	}
+	if !online || !storageCanHostImage(storages, request.Storage, target) {
+		return
+	}
+	if target != sourceNode && !sourceVMIsOnSharedStorage(sourceConfig, storages) {
+		return
+	}
+	available = true
+	return
+}
+
 // sourceVMIsOnSharedStorage confirms every source disk can be read from a different node.
 func sourceVMIsOnSharedStorage(source *pve.VirtualMachineConfig, storages pve.ClusterStorages) (shared bool) {
 	if source == nil {
