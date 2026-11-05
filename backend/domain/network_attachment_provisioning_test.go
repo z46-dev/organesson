@@ -60,6 +60,17 @@ func TestGuestNetworkInputMayUseTheManagedNetworkSubnetWithoutAReservation(t *te
 	}
 }
 
+func TestOnlyExternalVLANRouterLANMayDisableBothAddressFamilies(t *testing.T) {
+	var input GuestNetworkInput = GuestNetworkInput{Method: "disabled", IPv6Method: "disabled"}
+	if err := validateGuestNetworkInput(ManagedNetworkAttachmentConfiguration{}, input); err == nil {
+		t.Fatal("addressless guest configuration was accepted for an ordinary attachment")
+	}
+	var configuration ManagedNetworkAttachmentConfiguration = ManagedNetworkAttachmentConfiguration{AllowNoIPGuestConfiguration: true}
+	if err := validateGuestNetworkInput(configuration, input); err != nil {
+		t.Fatalf("addressless external VLAN router LAN configuration was rejected: %v", err)
+	}
+}
+
 func TestGuestNetworkInputMustUseAddressesAllocatedToFilteredInterface(t *testing.T) {
 	var configuration ManagedNetworkAttachmentConfiguration = ManagedNetworkAttachmentConfiguration{
 		Request: proxmox.NetworkAttachmentRequest{

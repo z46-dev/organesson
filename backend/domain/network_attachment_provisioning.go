@@ -30,27 +30,28 @@ type (
 
 	// ManagedNetworkAttachmentConfiguration persists desired inputs, IP claims, and the PVE device.
 	ManagedNetworkAttachmentConfiguration struct {
-		Request                   proxmox.NetworkAttachmentRequest   `json:"request"`
-		VirtualMachineID          int                                `json:"virtual_machine_id"`
-		LogicalNetworkID          int                                `json:"logical_network_id,omitempty"`
-		NetworkDHCPEnabled        bool                               `json:"network_dhcp_enabled,omitempty"`
-		NetworkIPv6DHCPEnabled    bool                               `json:"network_ipv6_dhcp_enabled,omitempty"`
-		EnvironmentNetwork        string                             `json:"environment_network,omitempty"`
-		AddressPoolRequestID      int                                `json:"address_pool_request_id,omitempty"`
-		RequestedAddressCount     int                                `json:"requested_address_count,omitempty"`
-		IPv6AddressPoolRequestID  int                                `json:"ipv6_address_pool_request_id,omitempty"`
-		RequestedIPv6AddressCount int                                `json:"requested_ipv6_address_count,omitempty"`
-		Addresses                 []string                           `json:"addresses"`
-		AddressFamily             string                             `json:"address_family,omitempty"`
-		AddressPrefix             string                             `json:"address_prefix,omitempty"`
-		AddressGateway            string                             `json:"address_gateway,omitempty"`
-		AddressDNS                []string                           `json:"address_dns,omitempty"`
-		IPv6Addresses             []string                           `json:"ipv6_addresses,omitempty"`
-		IPv6AddressPrefix         string                             `json:"ipv6_address_prefix,omitempty"`
-		IPv6AddressGateway        string                             `json:"ipv6_address_gateway,omitempty"`
-		IPv6AddressDNS            []string                           `json:"ipv6_address_dns,omitempty"`
-		Placement                 proxmox.NetworkAttachmentPlacement `json:"placement"`
-		GuestNetwork              *proxmox.GuestNetworkRequest       `json:"guest_network,omitempty"`
+		Request                     proxmox.NetworkAttachmentRequest   `json:"request"`
+		VirtualMachineID            int                                `json:"virtual_machine_id"`
+		LogicalNetworkID            int                                `json:"logical_network_id,omitempty"`
+		NetworkDHCPEnabled          bool                               `json:"network_dhcp_enabled,omitempty"`
+		NetworkIPv6DHCPEnabled      bool                               `json:"network_ipv6_dhcp_enabled,omitempty"`
+		AllowNoIPGuestConfiguration bool                               `json:"allow_no_ip_guest_configuration,omitempty"`
+		EnvironmentNetwork          string                             `json:"environment_network,omitempty"`
+		AddressPoolRequestID        int                                `json:"address_pool_request_id,omitempty"`
+		RequestedAddressCount       int                                `json:"requested_address_count,omitempty"`
+		IPv6AddressPoolRequestID    int                                `json:"ipv6_address_pool_request_id,omitempty"`
+		RequestedIPv6AddressCount   int                                `json:"requested_ipv6_address_count,omitempty"`
+		Addresses                   []string                           `json:"addresses"`
+		AddressFamily               string                             `json:"address_family,omitempty"`
+		AddressPrefix               string                             `json:"address_prefix,omitempty"`
+		AddressGateway              string                             `json:"address_gateway,omitempty"`
+		AddressDNS                  []string                           `json:"address_dns,omitempty"`
+		IPv6Addresses               []string                           `json:"ipv6_addresses,omitempty"`
+		IPv6AddressPrefix           string                             `json:"ipv6_address_prefix,omitempty"`
+		IPv6AddressGateway          string                             `json:"ipv6_address_gateway,omitempty"`
+		IPv6AddressDNS              []string                           `json:"ipv6_address_dns,omitempty"`
+		Placement                   proxmox.NetworkAttachmentPlacement `json:"placement"`
+		GuestNetwork                *proxmox.GuestNetworkRequest       `json:"guest_network,omitempty"`
 	}
 )
 
@@ -96,6 +97,7 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 	var allowManagedNetworkSubnet bool
 	var allowDHCPv4Server bool
 	var allowDHCPv6Server bool
+	var allowNoIPGuestConfiguration bool
 	var allowedClientSubnets []string
 	var allowedPeerSubnets []string
 	var managedIPv4Subnet string
@@ -165,6 +167,7 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 			return
 		}
 		allowUnallocatedRouterLAN = enforceAddressFilter && networkConfiguration.Request.RouterVMID == vmID
+		allowNoIPGuestConfiguration = allowUnallocatedRouterLAN && networkConfiguration.Request.ExternalVLAN != nil
 		allowManagedNetworkSubnet = enforceAddressFilter && !allowUnallocatedRouterLAN
 		allowDHCPv4Server = allowUnallocatedRouterLAN && networkConfiguration.Request.DHCPEnabled
 		allowDHCPv6Server = allowUnallocatedRouterLAN && networkConfiguration.Request.IPv6DHCPEnabled
@@ -306,6 +309,7 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 	configuration.VirtualMachineID = vm.ID
 	configuration.EnvironmentNetwork = request.EnvironmentNetwork
 	configuration.LogicalNetworkID = request.LogicalNetworkID
+	configuration.AllowNoIPGuestConfiguration = allowNoIPGuestConfiguration
 	configuration.AddressPoolRequestID = request.AddressPoolRequestID
 	configuration.RequestedAddressCount = request.RequestedAddressCount
 	configuration.IPv6AddressPoolRequestID = request.IPv6AddressPoolRequestID
@@ -411,6 +415,7 @@ func (service *Service) SaveGuestNetworkConfiguration(actorID int, resourceID in
 		IPv6Method: input.IPv6Method, IPv6Address: input.IPv6Address, IPv6Prefix: configuration.IPv6AddressPrefix,
 		IPv6Gateway: input.IPv6Gateway, IPv6DNS: input.IPv6DNS, IPv6NeverDefault: input.IPv6NeverDefault,
 		EnforceAddressFilter: configuration.Request.EnforceAddressFilter, AllowedAddresses: append([]string{}, configuration.Request.AllowedAddresses...),
+		AllowNoIP: configuration.AllowNoIPGuestConfiguration,
 	}
 	configuration.GuestNetwork = &request
 	var encoded []byte
@@ -445,6 +450,10 @@ func (service *Service) ValidateGuestNetworkInput(actorID int, resourceID int, i
 
 // validateGuestNetworkInput binds static guest addresses to reservations or the managed network's subnet scope.
 func validateGuestNetworkInput(configuration ManagedNetworkAttachmentConfiguration, input GuestNetworkInput) (err error) {
+	if input.Method == "disabled" && (input.IPv6Method == "" || input.IPv6Method == "disabled") && !configuration.AllowNoIPGuestConfiguration {
+		err = fmt.Errorf("%w: at least one guest IP family must be enabled", ErrInvalidInput)
+		return
+	}
 	if !configuration.Request.EnforceAddressFilter {
 		return
 	}

@@ -38,6 +38,7 @@ type (
 		IPv6NeverDefault     bool                       `json:"ipv6_never_default,omitempty"`
 		EnforceAddressFilter bool                       `json:"enforce_address_filter,omitempty"`
 		AllowedAddresses     []string                   `json:"allowed_addresses,omitempty"`
+		AllowNoIP            bool                       `json:"allow_no_ip,omitempty"`
 	}
 
 	apiGuestNetworkDriver struct {
@@ -253,7 +254,7 @@ func validateGuestNetworkRequest(request GuestNetworkRequest) (err error) {
 		}
 		request.IPv6Method = "disabled"
 	}
-	if request.Method == "disabled" && request.IPv6Method == "disabled" {
+	if request.Method == "disabled" && request.IPv6Method == "disabled" && !request.AllowNoIP {
 		err = errors.New("at least one guest IP family must be enabled")
 		return
 	}

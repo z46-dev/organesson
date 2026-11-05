@@ -146,6 +146,21 @@ func TestValidateGuestNetworkRequest(t *testing.T) {
 	}
 }
 
+func TestAddresslessGuestNetworkRequiresTrustedRouterLANException(t *testing.T) {
+	var request GuestNetworkRequest = GuestNetworkRequest{
+		Node: "pve1", VMID: "901", VMOperationKey: "og-vm", AttachmentKey: "og-nic", Bridge: "vnet123",
+		Placement: NetworkAttachmentPlacement{Device: "net1", MAC: "02:11:22:33:44:55"},
+		Method:    "disabled", IPv6Method: "disabled",
+	}
+	if err := validateGuestNetworkRequest(request); err == nil {
+		t.Fatal("addressless guest configuration was accepted without the trusted router LAN exception")
+	}
+	request.AllowNoIP = true
+	if err := validateGuestNetworkRequest(request); err != nil {
+		t.Fatalf("addressless external VLAN router LAN configuration was rejected: %v", err)
+	}
+}
+
 func TestOmittedGuestIPv6MethodDefaultsToDisabled(t *testing.T) {
 	var request GuestNetworkRequest = GuestNetworkRequest{Method: "dhcp"}
 	var normalized GuestNetworkRequest = normalizeGuestNetworkRequest(request)

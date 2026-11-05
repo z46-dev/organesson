@@ -175,6 +175,7 @@ func configureGuestNetworkHandler(services common.Services) (handler fiber.Handl
 			IPv6Method: input.IPv6Method, IPv6Address: input.IPv6Address, IPv6Prefix: attachment.IPv6AddressPrefix,
 			IPv6Gateway: input.IPv6Gateway, IPv6DNS: input.IPv6DNS, IPv6NeverDefault: input.IPv6NeverDefault,
 			EnforceAddressFilter: attachment.Request.EnforceAddressFilter, AllowedAddresses: append([]string{}, attachment.Request.AllowedAddresses...),
+			AllowNoIP: attachment.AllowNoIPGuestConfiguration,
 		}
 		if services.Proxmox == nil || !services.Proxmox.Configured() {
 			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; guest network configuration was not applied."})
