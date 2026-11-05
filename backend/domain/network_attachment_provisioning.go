@@ -98,6 +98,7 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 	var allowDHCPv4Server bool
 	var allowDHCPv6Server bool
 	var allowNoIPGuestConfiguration bool
+	var externalVLANRouterLAN bool
 	var allowedClientSubnets []string
 	var allowedPeerSubnets []string
 	var managedIPv4Subnet string
@@ -161,16 +162,17 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 		configuration.NetworkIPv6DHCPEnabled = networkConfiguration.Request.IPv6DHCPEnabled
 		managedIPv4Subnet = networkConfiguration.Request.Subnet
 		managedIPv6Subnet = networkConfiguration.Request.IPv6Subnet
-		enforceAddressFilter = networkConfiguration.Request.Mode == "managed" && !request.ExternalVLANPort
 		var vmID int
 		if vmID, err = strconv.Atoi(vm.ExternalID); err != nil {
 			return
 		}
-		allowUnallocatedRouterLAN = enforceAddressFilter && networkConfiguration.Request.RouterVMID == vmID
-		allowNoIPGuestConfiguration = allowUnallocatedRouterLAN && networkConfiguration.Request.ExternalVLAN != nil
+		allowUnallocatedRouterLAN = networkConfiguration.Request.Mode == "managed" && !request.ExternalVLANPort && networkConfiguration.Request.RouterVMID == vmID
+		externalVLANRouterLAN = isExternalVLANRouterLAN(networkConfiguration, vmID, request.ExternalVLANPort)
+		enforceAddressFilter = networkConfiguration.Request.Mode == "managed" && !request.ExternalVLANPort && !externalVLANRouterLAN
+		allowNoIPGuestConfiguration = externalVLANRouterLAN
 		allowManagedNetworkSubnet = enforceAddressFilter && !allowUnallocatedRouterLAN
-		allowDHCPv4Server = allowUnallocatedRouterLAN && networkConfiguration.Request.DHCPEnabled
-		allowDHCPv6Server = allowUnallocatedRouterLAN && networkConfiguration.Request.IPv6DHCPEnabled
+		allowDHCPv4Server = allowUnallocatedRouterLAN && !externalVLANRouterLAN && networkConfiguration.Request.DHCPEnabled
+		allowDHCPv6Server = allowUnallocatedRouterLAN && !externalVLANRouterLAN && networkConfiguration.Request.IPv6DHCPEnabled
 		if allowManagedNetworkSubnet {
 			if networkConfiguration.Request.Subnet != "" {
 				allowedPeerSubnets = append(allowedPeerSubnets, networkConfiguration.Request.Subnet)
@@ -179,7 +181,7 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 				allowedPeerSubnets = append(allowedPeerSubnets, networkConfiguration.Request.IPv6Subnet)
 			}
 		}
-		if allowUnallocatedRouterLAN {
+		if allowUnallocatedRouterLAN && !externalVLANRouterLAN {
 			configuration.Addresses = []string{networkConfiguration.Request.Gateway}
 			if networkConfiguration.Request.IPv6Gateway != "" {
 				configuration.IPv6Addresses = []string{networkConfiguration.Request.IPv6Gateway}
@@ -350,6 +352,12 @@ func (service *Service) ReserveNetworkAttachment(actorID int, request NetworkAtt
 		return
 	}
 	err = service.writeAudit(actorID, "resource.network_attachment_started", fmt.Sprintf("resource:%d", resource.ID), "succeeded", map[string]string{"name": request.Name, "vm": vm.Name})
+	return
+}
+
+// isExternalVLANRouterLAN identifies the router's bridged LAN NIC that must pass downstream client MACs.
+func isExternalVLANRouterLAN(network ManagedNetworkConfiguration, vmID int, externalVLANPort bool) (isBridge bool) {
+	isBridge = network.Request.Mode == "managed" && !externalVLANPort && network.Request.RouterVMID == vmID && network.Request.ExternalVLAN != nil
 	return
 }
 

@@ -269,8 +269,8 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 		return
 	}
 	var wanID string
+	var wan networkAttachmentResult
 	if data.Get("egress_enabled").(bool) {
-		var wan networkAttachmentResult
 		var poolID int
 		if raw := data.Get("egress_address_pool_request_id").(string); raw != "" {
 			if poolID, err = strconv.Atoi(raw); err != nil {
@@ -359,8 +359,16 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 			return
 		}
 	}
+	var wanAllowedNetworks []string
+	if wanID != "" {
+		if wanAllowedNetworks, err = routerWANAllowedNetworks(wan); err != nil {
+			managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID, externalVLANAttachmentID)
+			diagnostics = diag.FromErr(err)
+			return
+		}
+	}
 	if err = executeManagedRouter(ctx, client, vmResourceID, lanID, wanID, externalVLANMAC, gatewayText, subnetText, dhcpStartText, dhcpEndText, dnsServers,
-		ipv6GatewayText, ipv6SubnetText, data.Get("ipv6_dhcp_start").(string), data.Get("ipv6_dhcp_end").(string), ipv6DNSServers,
+		ipv6GatewayText, ipv6SubnetText, data.Get("ipv6_dhcp_start").(string), data.Get("ipv6_dhcp_end").(string), ipv6DNSServers, wanAllowedNetworks,
 	); err != nil {
 		managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID, externalVLANAttachmentID)
 		diagnostics = diag.FromErr(err)
@@ -459,8 +467,37 @@ func createGuestNetworkConfiguration(ctx context.Context, client *apiClient, att
 	return client.request(ctx, http.MethodPost, "/api/v1/network-attachments/"+id+"/guest-network-configuration", body, nil)
 }
 
+// routerWANAllowedNetworks returns only the validated address scopes assigned to the router's WAN.
+func routerWANAllowedNetworks(attachment networkAttachmentResult) (networks []string, err error) {
+	var seen map[string]bool = make(map[string]bool)
+	var candidates []string = append(append([]string{}, attachment.Configuration.Request.AllowedAddresses...), attachment.Configuration.AddressPrefix, attachment.Configuration.IPv6AddressPrefix)
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		var prefix netip.Prefix
+		var parseErr error
+		if prefix, parseErr = netip.ParsePrefix(candidate); parseErr == nil {
+			candidate = prefix.Masked().String()
+		} else {
+			var address netip.Addr
+			if address, parseErr = netip.ParseAddr(candidate); parseErr != nil {
+				err = fmt.Errorf("router WAN address scope %q is invalid", candidate)
+				return
+			}
+			var bits int = address.BitLen()
+			candidate = netip.PrefixFrom(address, bits).String()
+		}
+		if !seen[candidate] {
+			networks = append(networks, candidate)
+			seen[candidate] = true
+		}
+	}
+	return
+}
+
 // executeManagedRouter packages and applies the hidden router's DHCP/DNS and firewall configuration.
-func executeManagedRouter(ctx context.Context, client *apiClient, vmResourceID string, lanID string, wanID string, externalVLANMAC string, gateway string, subnet string, dhcpStart string, dhcpEnd string, dns []string, ipv6Gateway string, ipv6Subnet string, ipv6DHCPStart string, ipv6DHCPEnd string, ipv6DNS []string) (err error) {
+func executeManagedRouter(ctx context.Context, client *apiClient, vmResourceID string, lanID string, wanID string, externalVLANMAC string, gateway string, subnet string, dhcpStart string, dhcpEnd string, dns []string, ipv6Gateway string, ipv6Subnet string, ipv6DHCPStart string, ipv6DHCPEnd string, ipv6DNS []string, wanAllowedNetworks []string) (err error) {
 	var vmID string
 	if vmID, err = remoteID(vmResourceID); err != nil {
 		return
@@ -490,6 +527,7 @@ func executeManagedRouter(ctx context.Context, client *apiClient, vmResourceID s
 	var configuration string = strings.Join([]string{
 		"LAN_MAC=" + shellQuoted(lanMAC), "WAN_MAC=" + shellQuoted(wanMAC), "EXTERNAL_VLAN_MAC=" + shellQuoted(externalVLANMAC), "LAN_ADDRESS=" + shellQuoted(gateway),
 		"LAN_SUBNET=" + shellQuoted(subnet), "LAN_PREFIX=" + strconv.Itoa(subnetPrefixBits(subnet)), "LAN_IPV6_PREFIX=" + strconv.Itoa(subnetPrefixBits(ipv6Subnet)), "DHCP_START=" + shellQuoted(dhcpStart), "DHCP_END=" + shellQuoted(dhcpEnd),
+		"WAN_ALLOWED_NETWORKS=(" + shellQuotedValues(wanAllowedNetworks) + ")",
 		"DNS_SERVERS=(" + strings.Join(dns, " ") + ")",
 		"LAN_IPV6_ADDRESS=" + shellQuoted(ipv6Gateway), "LAN_IPV6_SUBNET=" + shellQuoted(ipv6Subnet),
 		"DHCPV6_START=" + shellQuoted(ipv6DHCPStart), "DHCPV6_END=" + shellQuoted(ipv6DHCPEnd),
@@ -553,7 +591,7 @@ func provisionExternalBridgeVM(ctx context.Context, client *apiClient, data *sch
 		return
 	}
 	externalID = strconv.Itoa(external.Resource.ID)
-	if err = executeManagedRouter(ctx, client, vmResourceID, lanID, "", external.Configuration.Placement.MAC, "", "", "", "", nil, "", "", "", "", nil); err != nil {
+	if err = executeManagedRouter(ctx, client, vmResourceID, lanID, "", external.Configuration.Placement.MAC, "", "", "", "", nil, "", "", "", "", nil, nil); err != nil {
 		managedNetworkRollback(ctx, client, lanID, "", strconv.Itoa(networkID), vmResourceID, groupID, externalID)
 		return
 	}

@@ -685,6 +685,10 @@ func (driver *providerLifecycleVMDriver) Delete(_ context.Context, _ string, vmi
 	return
 }
 
+func (*providerLifecycleVMDriver) DeleteUnplaced(_ context.Context, _ string, _ string) (err error) {
+	return
+}
+
 func createAcceptanceLab(t *testing.T, provider *schema.Provider, ctx context.Context, client *apiClient, deploymentID string, name string) (data *schema.ResourceData) {
 	t.Helper()
 	data = schema.TestResourceDataRaw(t, provider.ResourcesMap["organesson_logical_group"].Schema, map[string]interface{}{

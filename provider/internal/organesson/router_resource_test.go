@@ -26,3 +26,22 @@ func TestRouterBroadcastAddress(t *testing.T) {
 		t.Fatalf("unexpected subnet broadcast address: %s", address)
 	}
 }
+
+func TestRouterWANAllowedNetworksUsesOnlyValidatedScopes(t *testing.T) {
+	var attachment networkAttachmentResult
+	attachment.Configuration.Request.AllowedAddresses = []string{"172.29.0.0/16", "192.0.2.10", "fd42::/64"}
+	attachment.Configuration.AddressPrefix = "172.29.0.0/16"
+	attachment.Configuration.IPv6AddressPrefix = "fd42::/64"
+	var networks []string
+	var err error
+	if networks, err = routerWANAllowedNetworks(attachment); err != nil {
+		t.Fatalf("valid router egress scopes were rejected: %v", err)
+	}
+	if strings.Join(networks, ",") != "172.29.0.0/16,192.0.2.10/32,fd42::/64" {
+		t.Fatalf("unexpected normalized router egress scopes: %#v", networks)
+	}
+	attachment.Configuration.Request.AllowedAddresses = []string{"not-a-network"}
+	if _, err = routerWANAllowedNetworks(attachment); err == nil {
+		t.Fatal("invalid router egress scope was accepted")
+	}
+}

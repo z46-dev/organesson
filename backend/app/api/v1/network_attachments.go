@@ -339,7 +339,15 @@ func getNetworkAttachmentHandler(services common.Services) (handler fiber.Handle
 		}
 		var liveState string = "unavailable"
 		if services.Proxmox != nil && services.Proxmox.Configured() {
-			if err = services.Proxmox.ReadNetworkAttachment(ctx, configuration.Request, configuration.Placement); err == nil {
+			var readRequest proxmox.NetworkAttachmentRequest = configuration.Request
+			if configuration.AllowNoIPGuestConfiguration {
+				readRequest.EnforceAddressFilter = false
+				readRequest.AllowDHCPv4Server = false
+				readRequest.AllowDHCPv6Server = false
+				readRequest.AllowedAddresses = nil
+				readRequest.AllowedClientSubnets = nil
+			}
+			if err = services.Proxmox.ReadNetworkAttachment(ctx, readRequest, configuration.Placement); err == nil {
 				liveState = "verified"
 			} else if errors.Is(err, proxmox.ErrNetworkAttachmentNotFound) {
 				liveState = "missing"

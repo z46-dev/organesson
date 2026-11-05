@@ -71,6 +71,22 @@ func TestOnlyExternalVLANRouterLANMayDisableBothAddressFamilies(t *testing.T) {
 	}
 }
 
+func TestExternalVLANBridgeAppliesOnlyToManagedRouterLAN(t *testing.T) {
+	var network ManagedNetworkConfiguration = ManagedNetworkConfiguration{
+		Request: proxmox.SDNNetworkRequest{Mode: "managed", RouterVMID: 580, ExternalVLAN: &proxmox.SDNExternalVLANExposure{}},
+	}
+	if !isExternalVLANRouterLAN(network, 580, false) {
+		t.Fatal("managed router LAN with external VLAN was not identified as a bridge")
+	}
+	if isExternalVLANRouterLAN(network, 581, false) || isExternalVLANRouterLAN(network, 580, true) {
+		t.Fatal("external VLAN bridge policy applied outside the router LAN")
+	}
+	network.Request.ExternalVLAN = nil
+	if isExternalVLANRouterLAN(network, 580, false) {
+		t.Fatal("managed router LAN without external VLAN was identified as a bridge")
+	}
+}
+
 func TestGuestNetworkInputMustUseAddressesAllocatedToFilteredInterface(t *testing.T) {
 	var configuration ManagedNetworkAttachmentConfiguration = ManagedNetworkAttachmentConfiguration{
 		Request: proxmox.NetworkAttachmentRequest{

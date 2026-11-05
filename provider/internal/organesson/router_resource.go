@@ -184,6 +184,15 @@ func shellQuoted(value string) (quoted string) {
 	return
 }
 
+func shellQuotedValues(values []string) (quoted string) {
+	var escaped []string
+	for _, value := range values {
+		escaped = append(escaped, shellQuoted(value))
+	}
+	quoted = strings.Join(escaped, " ")
+	return
+}
+
 func routerBroadcastAddress(prefix netip.Prefix) (address netip.Addr) {
 	var network [4]byte = prefix.Masked().Addr().As4()
 	var hostBits uint = uint(32 - prefix.Bits())

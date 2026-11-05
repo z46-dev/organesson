@@ -117,7 +117,8 @@ type (
 		} `json:"resource"`
 		Configuration struct {
 			Request struct {
-				Model string `json:"model"`
+				Model            string   `json:"model"`
+				AllowedAddresses []string `json:"allowed_addresses"`
 			} `json:"request"`
 			VirtualMachineID          int      `json:"virtual_machine_id"`
 			LogicalNetworkID          int      `json:"logical_network_id"`
