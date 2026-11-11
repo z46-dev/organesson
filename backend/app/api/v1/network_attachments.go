@@ -196,7 +196,7 @@ func configureGuestNetworkHandler(services common.Services) (handler fiber.Handl
 	return
 }
 
-// getGuestNetworkConfigurationHandler checks saved guest setup against the active Linux network manager through QGA.
+// getGuestNetworkConfigurationHandler returns saved guest setup and defers verification when QGA cannot confirm it.
 func getGuestNetworkConfigurationHandler(services common.Services) (handler fiber.Handler) {
 	handler = func(ctx fiber.Ctx) (err error) {
 		var actorID int
@@ -229,10 +229,14 @@ func getGuestNetworkConfigurationHandler(services common.Services) (handler fibe
 	return
 }
 
-// verifyGuestNetworkConfiguration defers only the QGA check when the verified VM is stopped.
+// verifyGuestNetworkConfiguration defers guest verification when the VM or its QEMU Guest Agent is unavailable.
 func verifyGuestNetworkConfiguration(ctx fiber.Ctx, services common.Services, request proxmox.GuestNetworkRequest) (deferred bool, err error) {
 	var placement proxmox.VMPlacement
 	if placement, err = services.Proxmox.ReadVM(ctx, request.Node, request.VMID, request.VMOperationKey); err != nil {
+		if errors.Is(err, proxmox.ErrVMNotFound) {
+			deferred = true
+			err = nil
+		}
 		return
 	}
 	if placement.PowerState == "stopped" {
@@ -243,7 +247,10 @@ func verifyGuestNetworkConfiguration(ctx fiber.Ctx, services common.Services, re
 		err = errors.New("managed guest power state is not available for QEMU Guest Agent verification")
 		return
 	}
-	err = services.Proxmox.ReadGuestNetwork(ctx, request)
+	if err = services.Proxmox.ReadGuestNetwork(ctx, request); err != nil {
+		deferred = true
+		err = nil
+	}
 	return
 }
 
@@ -272,11 +279,14 @@ func deleteGuestNetworkConfigurationHandler(services common.Services) (handler f
 		if services.Proxmox == nil || !services.Proxmox.Configured() {
 			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; guest setup state was retained."})
 		}
-		if err = ensureGuestVMRunning(ctx, services, attachment.VirtualMachineID); err != nil {
+		if err = ensureGuestVMRunning(ctx, services, attachment.VirtualMachineID); err != nil && !errors.Is(err, proxmox.ErrVMNotFound) {
 			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox could not start the guest for managed profile cleanup."})
 		}
-		if err = services.Proxmox.RemoveGuestNetwork(ctx, *attachment.GuestNetwork); err != nil {
-			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "QEMU Guest Agent did not confirm managed guest profile removal."})
+		if err == nil {
+			if err = services.Proxmox.RemoveGuestNetwork(ctx, *attachment.GuestNetwork); err != nil {
+				log.Printf("network attachment %d guest profile cleanup deferred: %v", resourceID, err)
+				err = nil
+			}
 		}
 		if err = services.Domain.ClearGuestNetworkConfiguration(actorID, resourceID); err != nil {
 			return common.DomainError(ctx, err)
@@ -383,7 +393,7 @@ func deleteNetworkAttachmentHandler(services common.Services) (handler fiber.Han
 		if services.Proxmox == nil || !services.Proxmox.Configured() {
 			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; the NIC record and address claim were retained."})
 		}
-		if err = services.Proxmox.DetachNetwork(ctx, configuration.Request, configuration.Placement); err != nil && !errors.Is(err, proxmox.ErrNetworkAttachmentNotFound) {
+		if err = services.Proxmox.DetachNetwork(ctx, configuration.Request, configuration.Placement); err != nil && !errors.Is(err, proxmox.ErrNetworkAttachmentNotFound) && !errors.Is(err, proxmox.ErrVMNotFound) {
 			log.Printf("network attachment %d Proxmox detach failed: %v", resourceID, err)
 			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm NIC removal; the record and address claim were retained."})
 		}

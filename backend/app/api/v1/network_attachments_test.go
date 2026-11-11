@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,10 +21,12 @@ import (
 type (
 	testGuestNetworkVMDriver struct {
 		powerState string
+		missing    bool
 	}
 
 	testGuestNetworkDriver struct {
 		readCount int
+		readErr   error
 	}
 )
 
@@ -32,6 +35,10 @@ func (driver *testGuestNetworkVMDriver) Clone(context.Context, proxmox.VMCloneRe
 }
 
 func (driver *testGuestNetworkVMDriver) Read(_ context.Context, node string, vmid string, _ string) (placement proxmox.VMPlacement, err error) {
+	if driver.missing {
+		err = proxmox.ErrVMNotFound
+		return
+	}
 	placement = proxmox.VMPlacement{Node: node, VMID: vmid, PowerState: driver.powerState}
 	return
 }
@@ -116,9 +123,10 @@ func (driver *testGuestNetworkDriver) Configure(context.Context, proxmox.GuestNe
 	return nil
 }
 
-func (driver *testGuestNetworkDriver) Read(context.Context, proxmox.GuestNetworkRequest) error {
+func (driver *testGuestNetworkDriver) Read(context.Context, proxmox.GuestNetworkRequest) (err error) {
 	driver.readCount++
-	return nil
+	err = driver.readErr
+	return
 }
 
 func (driver *testGuestNetworkDriver) Remove(context.Context, proxmox.GuestNetworkRequest) error {
@@ -162,13 +170,31 @@ func TestStoppedGuestNetworkRefreshDefersQGAAndStillRefreshesRunningGuests(t *te
 		t.Fatalf("running guest should verify through QGA: status=%d guest reads=%d body=%s", response.StatusCode, guestNetworkDriver.readCount, body)
 	}
 	response.Body.Close()
+	guestNetworkDriver.readErr = errors.New("QEMU Guest Agent is unavailable")
+	if response, err = application.Test(httptest.NewRequest(http.MethodGet, "/verify", nil)); err != nil {
+		t.Fatalf("refresh guest without QGA: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK || guestNetworkDriver.readCount != 2 {
+		t.Fatalf("unavailable QGA should defer verification: status=%d guest reads=%d", response.StatusCode, guestNetworkDriver.readCount)
+	}
+	guestNetworkDriver.readErr = nil
 
 	vmDriver.powerState = "unknown"
 	if response, err = application.Test(httptest.NewRequest(http.MethodGet, "/verify", nil)); err != nil {
 		t.Fatalf("refresh guest with unknown power state: %v", err)
 	}
 	response.Body.Close()
-	if response.StatusCode != fiber.StatusBadGateway || guestNetworkDriver.readCount != 1 {
+	if response.StatusCode != fiber.StatusBadGateway || guestNetworkDriver.readCount != 2 {
 		t.Fatalf("unknown guest state must fail closed: status=%d guest reads=%d", response.StatusCode, guestNetworkDriver.readCount)
+	}
+
+	vmDriver.missing = true
+	if response, err = application.Test(httptest.NewRequest(http.MethodGet, "/verify", nil)); err != nil {
+		t.Fatalf("refresh missing guest: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != fiber.StatusOK || guestNetworkDriver.readCount != 2 {
+		t.Fatalf("missing guest should defer QGA verification: status=%d guest reads=%d", response.StatusCode, guestNetworkDriver.readCount)
 	}
 }

@@ -100,7 +100,7 @@ func (driver *apiSDNRouterPoller) PollRouter(ctx context.Context, request SDNNet
 		break
 	}
 	if !vmFound {
-		err = errClusterVMNotFound
+		err = ErrVMNotFound
 		return
 	}
 	var vm *pve.VirtualMachine

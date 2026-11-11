@@ -14,7 +14,8 @@ import (
 	"github.com/z46-dev/organesson/backend/config"
 )
 
-var errClusterVMNotFound = errors.New("Proxmox VM is missing from the cluster inventory")
+// ErrVMNotFound reports that the VM no longer exists in the Proxmox cluster inventory.
+var ErrVMNotFound = errors.New("Proxmox VM is missing from the cluster inventory")
 
 type (
 	// VMDriver owns Proxmox operations for Organesson-managed QEMU VMs.
@@ -429,7 +430,7 @@ func (driver *apiVMDriver) ReadMany(ctx context.Context, requests []VMReadReques
 		}
 		requestedNodes[index] = nodeByVMID[uint64(vmIDs[index])]
 		if requestedNodes[index] == "" {
-			results[index].Err = errClusterVMNotFound
+			results[index].Err = ErrVMNotFound
 			continue
 		}
 		nodeNames[requestedNodes[index]] = struct{}{}
@@ -624,7 +625,7 @@ func (driver *apiVMDriver) Delete(ctx context.Context, nodeName string, id strin
 	defer driver.invalidateVMInventory()
 	var node *pve.Node
 	var vm *pve.VirtualMachine
-	if node, vm, _, err = driver.locateManagedVM(ctx, client, vmid); errors.Is(err, errClusterVMNotFound) {
+	if node, vm, _, err = driver.locateManagedVM(ctx, client, vmid); errors.Is(err, ErrVMNotFound) {
 		err = nil
 		return
 	} else if err != nil {
@@ -726,7 +727,7 @@ func locateManagedVMWithInventory(ctx context.Context, client *pve.Client, vmid 
 		break
 	}
 	if nodeName == "" {
-		err = errClusterVMNotFound
+		err = ErrVMNotFound
 		return
 	}
 	if node, err = client.Node(ctx, nodeName); err != nil {
