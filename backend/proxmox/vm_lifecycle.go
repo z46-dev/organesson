@@ -623,6 +623,16 @@ func (driver *apiVMDriver) Delete(ctx context.Context, nodeName string, id strin
 		return
 	}
 	defer driver.invalidateVMInventory()
+	defer func() {
+		if err == nil {
+			return
+		}
+		var missing bool
+		var verifyErr error
+		if missing, verifyErr = driver.confirmVMAbsent(ctx, client, vmid); verifyErr == nil && missing {
+			err = nil
+		}
+	}()
 	var node *pve.Node
 	var vm *pve.VirtualMachine
 	if node, vm, _, err = driver.locateManagedVM(ctx, client, vmid); errors.Is(err, ErrVMNotFound) {
@@ -655,6 +665,23 @@ func (driver *apiVMDriver) Delete(ctx context.Context, nodeName string, id strin
 		return
 	}
 	err = waitTask(ctx, client, task)
+	return
+}
+
+// confirmVMAbsent checks fresh cluster inventory after a failed deletion operation.
+func (driver *apiVMDriver) confirmVMAbsent(ctx context.Context, client *pve.Client, vmid int) (missing bool, err error) {
+	driver.invalidateVMInventory()
+	var resources pve.ClusterResources
+	if resources, err = clusterVMResources(ctx, client, driver.inventory); err != nil {
+		return
+	}
+	missing = true
+	for _, resource := range resources {
+		if resource != nil && resource.Type == "qemu" && resource.VMID == uint64(vmid) {
+			missing = false
+			return
+		}
+	}
 	return
 }
 

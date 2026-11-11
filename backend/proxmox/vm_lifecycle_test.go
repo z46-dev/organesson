@@ -129,13 +129,19 @@ func TestCloneVMUsesPVECloneTasksAndAppliesTheRequestedSafeBaseline(t *testing.T
 func TestVMDriverRequiresOwnershipMarkerBeforePowerOrDelete(t *testing.T) {
 	var vmState string = "stopped"
 	var vmDescription string = "Organesson managed resource og-owned"
+	var taskExitStatus string = "OK"
+	var vmExists bool = true
 	var powerActions int
 	var deletes int
 	var fakePVE *httptest.Server
 	fakePVE = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/resources":
-			writePVEData(response, []map[string]any{{"type": "qemu", "vmid": 901, "node": "pve1", "name": "managed-vm", "status": vmState}})
+			var resources []map[string]any
+			if vmExists {
+				resources = []map[string]any{{"type": "qemu", "vmid": 901, "node": "pve1", "name": "managed-vm", "status": vmState}}
+			}
+			writePVEData(response, resources)
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/cluster/status":
 			writePVEData(response, []any{})
 		case request.Method == http.MethodGet && request.URL.Path == "/api2/json/nodes/pve1/status":
@@ -156,9 +162,10 @@ func TestVMDriverRequiresOwnershipMarkerBeforePowerOrDelete(t *testing.T) {
 			writePVEData(response, "UPID:pve1:1:1:1:qmpower:901:root@pam:")
 		case request.Method == http.MethodDelete && request.URL.Path == "/api2/json/nodes/pve1/qemu/901":
 			deletes++
+			vmExists = false
 			writePVEData(response, "UPID:pve1:2:2:2:qmdestroy:901:root@pam:")
 		case request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/tasks/UPID:") && strings.HasSuffix(request.URL.Path, "/status"):
-			writePVEData(response, map[string]any{"status": "stopped", "exitstatus": "OK"})
+			writePVEData(response, map[string]any{"status": "stopped", "exitstatus": taskExitStatus})
 		default:
 			t.Errorf("unexpected fake PVE request: %s %s", request.Method, request.URL.String())
 			writePVEData(response, nil)
@@ -211,6 +218,16 @@ func TestVMDriverRequiresOwnershipMarkerBeforePowerOrDelete(t *testing.T) {
 	if deletes != 1 || powerActions != 3 || vmState != "stopped" {
 		t.Fatalf("delete must stop only the owned running VM before purge: deletes=%d power actions=%d state=%s", deletes, powerActions, vmState)
 	}
+	vmExists = true
+	taskExitStatus = "TASK ERROR"
+	if err = driver.Delete(ctx, "pve1", "901", "og-owned"); err != nil {
+		t.Fatalf("confirmed-absent VM after failed delete task should count as deleted: %v", err)
+	}
+	if deletes != 2 || vmExists {
+		t.Fatalf("delete failure should be accepted only after fresh inventory confirms absence: deletes=%d exists=%t", deletes, vmExists)
+	}
+	vmExists = true
+	taskExitStatus = "OK"
 	vmDescription = "Unrelated VM"
 	if _, err = driver.Read(ctx, "pve1", "901", "og-owned"); err == nil {
 		t.Fatal("refresh must reject a VM whose ownership marker changed")
