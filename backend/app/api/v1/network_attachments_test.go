@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +110,62 @@ func TestGuestSetupStartsVMWhenPersistedPowerStateIsStale(t *testing.T) {
 	}
 	if vm.PowerState != "running" {
 		t.Fatalf("started guest's persisted power state is %q, want running", vm.PowerState)
+	}
+}
+
+func TestGetVirtualMachineKeepsMissingProxmoxVMDeletable(t *testing.T) {
+	var store *db.Store
+	var err error
+	if store, err = db.Open(filepath.Join(t.TempDir(), "organesson.db"), golog.New(), false); err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+
+	var admin *db.Account
+	if admin, _, err = store.InitialAdministrator(); err != nil {
+		t.Fatalf("get administrator: %v", err)
+	}
+	var domainService *domain.Service = domain.New(store)
+	var deployment *db.Deployment
+	if deployment, err = domainService.CreateDeployment(admin.ID, "missing-vm", ""); err != nil {
+		t.Fatalf("create deployment: %v", err)
+	}
+	var root *db.OwnershipNode
+	if root, err = store.OwnershipNodes.Select(*deployment.RootNodeID); err != nil {
+		t.Fatalf("load deployment root: %v", err)
+	}
+	var ownership *db.OwnershipNode = &db.OwnershipNode{
+		DeploymentID: deployment.ID, ParentID: &root.ID, Kind: db.OwnershipNodeKindResource,
+		Name: "missing-vm", CreatedAt: time.Now(),
+	}
+	if err = store.OwnershipNodes.Insert(ownership); err != nil {
+		t.Fatalf("create VM ownership node: %v", err)
+	}
+	var vm *db.ManagedResource = &db.ManagedResource{
+		DeploymentID: deployment.ID, OwnershipID: ownership.ID, Kind: "virtual_machine", Name: "missing-vm",
+		PowerState: "running", ExternalID: "101", ExternalNode: "pve1", OperationKey: "og-vm-test", CreatedAt: time.Now(),
+	}
+	if err = store.ManagedResources.Insert(vm); err != nil {
+		t.Fatalf("create managed VM record: %v", err)
+	}
+
+	var service *proxmox.Service = proxmox.NewWithVMDriver(&testGuestNetworkVMDriver{missing: true})
+	var application *fiber.App = fiber.New()
+	application.Get("/virtual-machines/:resource_id", func(ctx fiber.Ctx) (err error) {
+		ctx.Locals("account_id", admin.ID)
+		return getVirtualMachine(common.Services{Store: store, Domain: domainService, Proxmox: service})(ctx)
+	})
+	var response *http.Response
+	if response, err = application.Test(httptest.NewRequest(http.MethodGet, "/virtual-machines/"+strconv.Itoa(vm.ID), nil)); err != nil {
+		t.Fatalf("refresh missing VM: %v", err)
+	}
+	defer response.Body.Close()
+	var body []byte
+	if body, err = io.ReadAll(response.Body); err != nil {
+		t.Fatalf("read VM response: %v", err)
+	}
+	if response.StatusCode != fiber.StatusOK || !strings.Contains(string(body), `"power_state":"missing"`) {
+		t.Fatalf("missing Proxmox VM should remain available for the subsequent DELETE call: status=%d body=%s", response.StatusCode, body)
 	}
 }
 

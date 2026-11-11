@@ -1055,15 +1055,24 @@ func getVirtualMachine(services common.Services) (handler fiber.Handler) {
 			return common.DomainError(ctx, err)
 		}
 		var liveCPU proxmox.VMPlacement
+		var vmMissing bool
 		if resource.ExternalID != "" {
 			if services.Proxmox == nil {
 				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; live VM state cannot be refreshed."})
 			}
 			if liveCPU, err = services.Proxmox.ReadVM(ctx, resource.ExternalNode, resource.ExternalID, resource.OperationKey); err != nil {
-				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not refresh this VM from Proxmox."})
+				if errors.Is(err, proxmox.ErrVMNotFound) {
+					vmMissing = true
+				} else {
+					return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not refresh this VM from Proxmox."})
+				}
 			}
-			if resource, err = services.Domain.RecordLiveVMPlacement(actorID, resourceID, liveCPU); err != nil {
-				return common.DomainError(ctx, err)
+			if vmMissing {
+				resource.PowerState = "missing"
+			} else {
+				if resource, err = services.Domain.RecordLiveVMPlacement(actorID, resourceID, liveCPU); err != nil {
+					return common.DomainError(ctx, err)
+				}
 			}
 		}
 		var canConsoleControl bool
