@@ -2,6 +2,7 @@ package proxmox
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -175,8 +176,11 @@ func (driver *apiGuestNetworkDriver) execute(ctx context.Context, request GuestN
 
 // executeWindows delivers the same per-NIC configuration through Windows PowerShell and QEMU Guest Agent.
 func (driver *apiGuestNetworkDriver) executeWindows(ctx context.Context, vm *pve.VirtualMachine, request GuestNetworkRequest, script string) (err error) {
-	var digest [sha256.Size]byte = sha256.Sum256([]byte(request.AttachmentKey))
-	var scriptPath string = `C:\Windows\Temp\Organesson-Network-` + hex.EncodeToString(digest[:8]) + `.ps1`
+	var nonce [16]byte
+	if _, err = rand.Read(nonce[:]); err != nil {
+		return
+	}
+	var scriptPath string = `C:\Windows\Temp\Organesson-Network-` + hex.EncodeToString(nonce[:]) + `.ps1`
 	if err = guestAgentFileWriteWithRetry(ctx, vm, scriptPath, []byte(script)); err != nil {
 		return
 	}
