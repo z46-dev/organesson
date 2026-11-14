@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
@@ -246,6 +247,20 @@ func artifactResource(fields map[string]*schema.Schema) (resource *schema.Resour
 
 // artifactCustomizeDiff fingerprints files during planning without placing their contents in plan or state.
 func artifactCustomizeDiff(_ context.Context, data *schema.ResourceDiff, _ interface{}) (err error) {
+	var inlineFilesConfig cty.Value
+	var diagnostics diag.Diagnostics
+	if inlineFilesConfig, diagnostics = data.GetRawConfigAt(cty.GetAttrPath("inline_files")); diagnostics.HasError() {
+		err = fmt.Errorf("read inline_files configuration: %s", diagnostics[0].Detail)
+		return
+	}
+	if !inlineFilesConfig.IsWhollyKnown() {
+		for _, field := range []string{"file_count", "sha256", "size_bytes", "summary"} {
+			if err = data.SetNewComputed(field); err != nil {
+				return
+			}
+		}
+		return
+	}
 	var previousDigest any
 	previousDigest, _ = data.GetChange("sha256")
 	var artifact artifactPackage

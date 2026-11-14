@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,26 +98,26 @@ func (service *Service) RemoveGuestNetwork(ctx context.Context, request GuestNet
 	return
 }
 
-// Configure applies or deletes one identified NetworkManager connection inside a managed guest.
+// Configure applies the requested per-NIC settings through the guest's native network configuration.
 func (driver *apiGuestNetworkDriver) Configure(ctx context.Context, request GuestNetworkRequest) (err error) {
-	err = driver.execute(ctx, request, guestNetworkScript(request, false))
+	err = driver.execute(ctx, request, guestNetworkScript(request, false), guestNetworkPowerShellScript(request, false, false))
 	return
 }
 
-// Read asks NetworkManager to confirm the requested per-NIC IPv4 settings.
+// Read asks the guest's network manager to confirm its saved per-NIC settings.
 func (driver *apiGuestNetworkDriver) Read(ctx context.Context, request GuestNetworkRequest) (err error) {
-	err = driver.execute(ctx, request, guestNetworkReadScript(request))
+	err = driver.execute(ctx, request, guestNetworkReadScript(request), guestNetworkPowerShellScript(request, false, true))
 	return
 }
 
 // Remove removes the Organesson-owned connection without touching unrelated guest profiles.
 func (driver *apiGuestNetworkDriver) Remove(ctx context.Context, request GuestNetworkRequest) (err error) {
-	err = driver.execute(ctx, request, guestNetworkScript(request, true))
+	err = driver.execute(ctx, request, guestNetworkScript(request, true), guestNetworkPowerShellScript(request, true, false))
 	return
 }
 
 // execute delivers a short-lived root script through QGA and removes it after execution.
-func (driver *apiGuestNetworkDriver) execute(ctx context.Context, request GuestNetworkRequest, script string) (err error) {
+func (driver *apiGuestNetworkDriver) execute(ctx context.Context, request GuestNetworkRequest, script string, windowsScript string) (err error) {
 	var client *pve.Client
 	if client, err = newAPIClient(driver.settings); err != nil {
 		return
@@ -137,6 +138,10 @@ func (driver *apiGuestNetworkDriver) execute(ctx context.Context, request GuestN
 		return
 	}
 	if err = waitForGuestAgent(ctx, vm); err != nil {
+		return
+	}
+	if windowsGuest(vm) {
+		err = driver.executeWindows(ctx, vm, request, windowsScript)
 		return
 	}
 	var digest [sha256.Size]byte = sha256.Sum256([]byte(request.AttachmentKey))
@@ -164,6 +169,163 @@ func (driver *apiGuestNetworkDriver) execute(ctx context.Context, request GuestN
 	}
 	if status.ExitCode != 0 {
 		err = fmt.Errorf("guest network command failed: %s", strings.TrimSpace(status.ErrData+" "+status.OutData))
+	}
+	return
+}
+
+// executeWindows delivers the same per-NIC configuration through Windows PowerShell and QEMU Guest Agent.
+func (driver *apiGuestNetworkDriver) executeWindows(ctx context.Context, vm *pve.VirtualMachine, request GuestNetworkRequest, script string) (err error) {
+	var digest [sha256.Size]byte = sha256.Sum256([]byte(request.AttachmentKey))
+	var scriptPath string = `C:\Windows\Temp\Organesson-Network-` + hex.EncodeToString(digest[:8]) + `.ps1`
+	if err = guestAgentFileWriteWithRetry(ctx, vm, scriptPath, []byte(script)); err != nil {
+		return
+	}
+	defer func() {
+		var cleanupError error
+		if _, cleanupError = runWindowsArtifactCommand(ctx, driver.settings, vm, request.Node, request.VMID, "Remove-Item -LiteralPath "+powershellSingleQuoted(scriptPath)+" -Force -ErrorAction SilentlyContinue", 15); err == nil && cleanupError != nil {
+			err = cleanupError
+		}
+	}()
+	var status guestAgentExecStatus
+	if status, err = runWindowsArtifactCommand(ctx, driver.settings, vm, request.Node, request.VMID, "& "+powershellSingleQuoted(scriptPath), 120); err == nil && status.ExitCode != 0 {
+		err = fmt.Errorf("Windows guest network command failed (exit %d): %s", status.ExitCode, strings.TrimSpace(status.ErrData+" "+status.OutData))
+	}
+	return
+}
+
+// windowsGuest identifies Proxmox's Windows guest OS types before selecting the native setup runner.
+func windowsGuest(vm *pve.VirtualMachine) (windows bool) {
+	if vm == nil || vm.VirtualMachineConfig == nil || vm.VirtualMachineConfig.OSType == nil {
+		return
+	}
+	var osType string = strings.ToLower(*vm.VirtualMachineConfig.OSType)
+	windows = strings.HasPrefix(osType, "win") || strings.HasPrefix(osType, "w2k")
+	return
+}
+
+// guestNetworkPowerShellScript applies and verifies only the adapter identified by its managed MAC address.
+func guestNetworkPowerShellScript(request GuestNetworkRequest, remove bool, read bool) (script string) {
+	var mac string = strings.ReplaceAll(strings.ToLower(request.Placement.MAC), ":", "-")
+	script = "$ErrorActionPreference = 'Stop'\n$mac = " + powershellSingleQuoted(mac) + "\n$adapter = Get-NetAdapter -IncludeHidden | Where-Object { $_.MacAddress.ToLower() -eq $mac } | Select-Object -First 1\nif (-not $adapter) { throw 'managed NIC MAC was not found' }\n$index = $adapter.ifIndex\n"
+	if read {
+		script += windowsNetworkReadOperation(request)
+		return
+	}
+	if remove {
+		script += "Get-NetRoute -InterfaceIndex $index -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue\nGet-NetRoute -InterfaceIndex $index -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue\nGet-NetIPAddress -InterfaceIndex $index -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\nGet-NetIPAddress -InterfaceIndex $index -AddressFamily IPv6 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\nSet-NetIPInterface -InterfaceIndex $index -AddressFamily IPv4 -Dhcp Enabled\nSet-NetIPInterface -InterfaceIndex $index -AddressFamily IPv6 -Dhcp Enabled -RouterDiscovery Enabled\nSet-DnsClientServerAddress -InterfaceIndex $index -ResetServerAddresses\n"
+		return
+	}
+	script += windowsNetworkFamilyOperation("IPv4", request.Method, request.Address, request.Gateway, request.NeverDefault, false)
+	script += windowsNetworkFamilyOperation("IPv6", request.IPv6Method, request.IPv6Address, request.IPv6Gateway, request.IPv6NeverDefault, true)
+	var dns []string = append(append([]string{}, request.DNS...), request.IPv6DNS...)
+	if len(dns) > 0 {
+		script += "Set-DnsClientServerAddress -InterfaceIndex $index -ServerAddresses @(" + powershellStringList(dns) + ")\n"
+	} else {
+		script += "Set-DnsClientServerAddress -InterfaceIndex $index -ResetServerAddresses\n"
+	}
+	return
+}
+
+// windowsNetworkFamilyOperation configures one Windows IP family without changing other adapters.
+func windowsNetworkFamilyOperation(family string, method string, address string, gateway string, neverDefault bool, ipv6 bool) (script string) {
+	var localAddressPrefix string = "0.0.0.0/0"
+	if ipv6 {
+		localAddressPrefix = "::/0"
+	}
+	script = "Get-NetRoute -InterfaceIndex $index -AddressFamily " + family + " -DestinationPrefix " + powershellSingleQuoted(localAddressPrefix) + " -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue\n"
+	if method == "disabled" {
+		script += "Set-NetIPInterface -InterfaceIndex $index -AddressFamily " + family + " -Dhcp Disabled"
+		if ipv6 {
+			script += " -RouterDiscovery Disabled"
+		}
+		script += "\nGet-NetIPAddress -InterfaceIndex $index -AddressFamily " + family + " -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n"
+		return
+	}
+	if method == "dhcp" || method == "slaac" {
+		var dhcp string = "Enabled"
+		var routerDiscovery string = "Disabled"
+		if ipv6 && method == "slaac" {
+			dhcp = "Disabled"
+			routerDiscovery = "Enabled"
+		} else if ipv6 {
+			routerDiscovery = "Enabled"
+		}
+		script += "Get-NetIPAddress -InterfaceIndex $index -AddressFamily " + family + " -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n"
+		script += "Set-NetIPInterface -InterfaceIndex $index -AddressFamily " + family + " -Dhcp " + dhcp
+		if ipv6 {
+			script += " -RouterDiscovery " + routerDiscovery
+		}
+		script += "\n"
+	} else {
+		var prefix netip.Prefix
+		prefix, _ = netip.ParsePrefix(address)
+		script += "Set-NetIPInterface -InterfaceIndex $index -AddressFamily " + family + " -Dhcp Disabled"
+		if ipv6 {
+			script += " -RouterDiscovery Disabled"
+		}
+		script += "\nGet-NetIPAddress -InterfaceIndex $index -AddressFamily " + family + " -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\nNew-NetIPAddress -InterfaceIndex $index -IPAddress " + powershellSingleQuoted(prefix.Addr().String()) + " -PrefixLength " + strconv.Itoa(prefix.Bits()) + " -ErrorAction Stop | Out-Null\n"
+		if gateway != "" && !neverDefault {
+			script += "New-NetRoute -InterfaceIndex $index -DestinationPrefix " + powershellSingleQuoted(localAddressPrefix) + " -NextHop " + powershellSingleQuoted(gateway) + " -ErrorAction Stop | Out-Null\n"
+		}
+	}
+	return
+}
+
+// windowsNetworkReadOperation verifies saved Windows adapter settings during refresh.
+func windowsNetworkReadOperation(request GuestNetworkRequest) (script string) {
+	for _, value := range []struct {
+		family       string
+		method       string
+		address      string
+		gateway      string
+		neverDefault bool
+		ipv6         bool
+	}{
+		{family: "IPv4", method: request.Method, address: request.Address, gateway: request.Gateway, neverDefault: request.NeverDefault},
+		{family: "IPv6", method: request.IPv6Method, address: request.IPv6Address, gateway: request.IPv6Gateway, neverDefault: request.IPv6NeverDefault, ipv6: true},
+	} {
+		var dhcpExpected string = "Disabled"
+		if value.method == "dhcp" {
+			dhcpExpected = "Enabled"
+		}
+		if value.method == "slaac" {
+			dhcpExpected = "Disabled"
+		}
+		script += "$dhcp = (Get-NetIPInterface -InterfaceIndex $index -AddressFamily " + value.family + ").Dhcp.ToString()\nif ($dhcp -ne " + powershellSingleQuoted(dhcpExpected) + ") { throw 'guest " + value.family + " DHCP setting drift detected' }\n"
+		if value.ipv6 {
+			var routerDiscovery string = "Disabled"
+			if value.method == "dhcp" || value.method == "slaac" {
+				routerDiscovery = "Enabled"
+			}
+			script += "$routerDiscovery = (Get-NetIPInterface -InterfaceIndex $index -AddressFamily IPv6).RouterDiscovery.ToString()\nif ($routerDiscovery -ne " + powershellSingleQuoted(routerDiscovery) + ") { throw 'guest IPv6 router discovery drift detected' }\n"
+		}
+		if value.method == "static" {
+			var prefix netip.Prefix
+			prefix, _ = netip.ParsePrefix(value.address)
+			script += "$addresses = @(Get-NetIPAddress -InterfaceIndex $index -AddressFamily " + value.family + " -ErrorAction SilentlyContinue | ForEach-Object { $_.IPAddress })\nif ($addresses -notcontains " + powershellSingleQuoted(prefix.Addr().String()) + ") { throw 'guest " + value.family + " address drift detected' }\n"
+		}
+		if value.gateway != "" && !value.neverDefault {
+			var destination string = "0.0.0.0/0"
+			if value.ipv6 {
+				destination = "::/0"
+			}
+			script += "$routes = @(Get-NetRoute -InterfaceIndex $index -DestinationPrefix " + powershellSingleQuoted(destination) + " -ErrorAction SilentlyContinue | ForEach-Object { $_.NextHop })\nif ($routes -notcontains " + powershellSingleQuoted(value.gateway) + ") { throw 'guest " + value.family + " gateway drift detected' }\n"
+		}
+	}
+	var dns []string = append(append([]string{}, request.DNS...), request.IPv6DNS...)
+	if len(dns) > 0 {
+		script += "$dns = @(Get-DnsClientServerAddress -InterfaceIndex $index | ForEach-Object { $_.ServerAddresses })\nforeach ($server in @(" + powershellStringList(dns) + ")) { if ($dns -notcontains $server) { throw 'guest DNS drift detected' } }\n"
+	}
+	return
+}
+
+// powershellStringList renders validated network values as PowerShell single-quoted strings.
+func powershellStringList(values []string) (result string) {
+	for index, value := range values {
+		if index > 0 {
+			result += ","
+		}
+		result += powershellSingleQuoted(value)
 	}
 	return
 }

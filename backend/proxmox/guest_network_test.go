@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	pve "github.com/luthermonson/go-proxmox"
 )
 
 func TestGuestNetworkScriptsAreValidAndNICScoped(t *testing.T) {
@@ -44,6 +46,28 @@ func TestGuestNetworkScriptsAreValidAndNICScoped(t *testing.T) {
 	request.NeverDefault = true
 	if !strings.Contains(guestNetworkScript(request, false), "ipv4.never-default yes") || !strings.Contains(guestNetworkReadScript(request), "guest IPv4 route preference drift detected") {
 		t.Fatal("guest setup does not preserve and verify the non-default-route preference")
+	}
+}
+
+func TestWindowsGuestNetworkScriptUsesManagedAdapterAndRoutes(t *testing.T) {
+	var request GuestNetworkRequest = GuestNetworkRequest{
+		Node: "pve1", VMID: "901", VMOperationKey: "og-vm",
+		AttachmentKey: "og-nic", Bridge: "vmbr0", Placement: NetworkAttachmentPlacement{Device: "net1", MAC: "02:11:22:33:44:55"},
+		Method: "static", Address: "172.29.1.10/16", Gateway: "172.29.0.1", DNS: []string{"172.29.1.1"},
+		IPv6Method: "disabled", NeverDefault: false,
+	}
+	var script string = guestNetworkPowerShellScript(request, false, false)
+	for _, expected := range []string{"Get-NetAdapter -IncludeHidden", "New-NetIPAddress", "New-NetRoute", "172.29.1.10", "172.29.0.1", "Set-DnsClientServerAddress"} {
+		if !strings.Contains(script, expected) {
+			t.Fatalf("Windows guest setup is missing %q: %s", expected, script)
+		}
+	}
+	if !strings.Contains(guestNetworkPowerShellScript(request, false, true), "guest IPv4 address drift detected") {
+		t.Fatal("Windows guest read script does not verify the configured address")
+	}
+	var osType string = "win11"
+	if !windowsGuest(&pve.VirtualMachine{VirtualMachineConfig: &pve.VirtualMachineConfig{OSType: &osType}}) {
+		t.Fatal("Windows Proxmox guest type was not detected")
 	}
 }
 
