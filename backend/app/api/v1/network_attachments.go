@@ -185,7 +185,7 @@ func configureGuestNetworkHandler(services common.Services) (handler fiber.Handl
 		}
 		if err = services.Proxmox.ConfigureGuestNetwork(ctx, request); err != nil {
 			log.Printf("network attachment %d guest network configuration failed: %v", resourceID, err)
-			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "QEMU Guest Agent did not confirm guest network configuration."})
+			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "QEMU Guest Agent did not confirm guest network configuration: " + err.Error()})
 		}
 		if resource, request, err = services.Domain.SaveGuestNetworkConfiguration(actorID, resourceID, input); err != nil {
 			return common.DomainError(ctx, err)
