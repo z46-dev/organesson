@@ -540,17 +540,40 @@ func guestAgentExecWithRetry(ctx context.Context, vm *pve.VirtualMachine, comman
 
 // guestAgentFileWriteWithRetry repeats an idempotent full-file write after an agent disconnect.
 func guestAgentFileWriteWithRetry(ctx context.Context, vm *pve.VirtualMachine, path string, content []byte) (err error) {
-	const maximumAttempts int = 3
+	const maximumAttempts int = 4
 	var attempt int
 	for attempt = 1; attempt <= maximumAttempts; attempt++ {
 		err = vm.AgentFileWrite(ctx, path, content)
-		if err == nil || attempt == maximumAttempts || !guestAgentUnavailableError(err) {
+		if err == nil || attempt == maximumAttempts || !retryableGuestFileWriteError(err) {
 			return
 		}
-		if err = waitForGuestAgent(ctx, vm); err != nil {
+		if guestAgentUnavailableError(err) {
+			if err = waitForGuestAgent(ctx, vm); err != nil {
+				return
+			}
+			continue
+		}
+		var timer *time.Timer = time.NewTimer(time.Duration(attempt*2) * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			err = ctx.Err()
 			return
+		case <-timer.C:
 		}
 	}
+	return
+}
+
+// retryableGuestFileWriteError recognizes idempotent writes that can recover from temporary QGA contention.
+func retryableGuestFileWriteError(err error) (retry bool) {
+	if err == nil {
+		return
+	}
+	var message string = strings.ToLower(err.Error())
+	retry = guestAgentUnavailableError(err) ||
+		(strings.Contains(message, "guest-file-open") && (strings.Contains(message, "timeout") || strings.Contains(message, "timed out"))) ||
+		(strings.Contains(message, "failed to open file") && strings.Contains(message, "being used by another process"))
 	return
 }
 

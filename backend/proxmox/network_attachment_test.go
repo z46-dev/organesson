@@ -223,6 +223,21 @@ func TestNetworkPeerFirewallRulesAreLimitedToApprovedSubnetsAndDevice(t *testing
 	}
 }
 
+func TestEnvironmentNetworkIngressIsLimitedToReservedEnvironmentNIC(t *testing.T) {
+	var request NetworkAttachmentRequest = NetworkAttachmentRequest{
+		AttachmentOperationKey: "environment-attachment", EnforceAddressFilter: true,
+		AllowedAddresses: []string{"198.51.100.20"},
+	}
+	var rules []*pve.FirewallRule = environmentNetworkIngressFirewallRules("net0", request)
+	if len(rules) != 1 || rules[0].Type != "in" || rules[0].Action != "ACCEPT" || rules[0].Enable != 1 || rules[0].Iface != "net0" || rules[0].Source != "" || rules[0].Comment != "Organesson environment ingress environment-attachment" {
+		t.Fatalf("environment ingress was not scoped to its reserved NIC: %+v", rules)
+	}
+	request.NetworkOperationKey = "managed-network"
+	if rules = environmentNetworkIngressFirewallRules("net0", request); len(rules) != 0 {
+		t.Fatalf("managed-network ingress should remain limited to approved peers: %+v", rules)
+	}
+}
+
 func TestParseIPSetEntryAcceptsHostsAndCanonicalSubnets(t *testing.T) {
 	for _, value := range []string{"192.0.2.10", "192.0.2.10/32", "2001:db8::10", "2001:db8::10/128", "192.0.2.0/24", "2001:db8::/64"} {
 		if _, err := parseIPSetEntry(value); err != nil {

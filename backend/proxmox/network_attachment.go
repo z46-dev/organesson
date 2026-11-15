@@ -132,6 +132,11 @@ func (driver *apiNetworkAttachmentDriver) Attach(ctx context.Context, request Ne
 				if err = driver.ensureVMInterfaceIPFilter(ctx, client, vm, device, request); err != nil {
 					return
 				}
+				if environmentNetworkIngressRequired(request) {
+					if err = ensureVMInterfaceFirewallRules(ctx, vm, environmentNetworkIngressFirewallRules(device, request), "environment network ingress"); err != nil {
+						return
+					}
+				}
 			}
 			if request.AllowDHCPv4Server {
 				if err = ensureVMInterfaceDHCPv4ServerRule(ctx, vm, device, request); err != nil {
@@ -181,6 +186,11 @@ func (driver *apiNetworkAttachmentDriver) Attach(ctx context.Context, request Ne
 	if request.EnforceAddressFilter {
 		if err = driver.ensureVMInterfaceIPFilter(ctx, client, vm, device, request); err != nil {
 			return
+		}
+		if environmentNetworkIngressRequired(request) {
+			if err = ensureVMInterfaceFirewallRules(ctx, vm, environmentNetworkIngressFirewallRules(device, request), "environment network ingress"); err != nil {
+				return
+			}
 		}
 	}
 	if request.AllowDHCPv4Server {
@@ -271,6 +281,11 @@ func (driver *apiNetworkAttachmentDriver) Read(ctx context.Context, request Netw
 		if err = verifyVMInterfaceIPFilter(ctx, client, vm, placement.Device, request); err != nil {
 			return
 		}
+		if environmentNetworkIngressRequired(request) {
+			if err = verifyVMInterfaceFirewallRules(ctx, vm, environmentNetworkIngressFirewallRules(placement.Device, request), "environment network ingress"); err != nil {
+				return
+			}
+		}
 	}
 	if request.AllowDHCPv4Server {
 		if err = verifyVMInterfaceDHCPv4ServerRule(ctx, vm, placement.Device, request); err != nil {
@@ -355,6 +370,11 @@ func (driver *apiNetworkAttachmentDriver) Detach(ctx context.Context, request Ne
 		}
 	}
 	if request.EnforceAddressFilter {
+		if environmentNetworkIngressRequired(request) {
+			if err = removeVMInterfaceFirewallRules(ctx, vm, environmentNetworkIngressFirewallRules(device, request), "environment network ingress"); err != nil {
+				return
+			}
+		}
 		if err = driver.removeVMInterfaceIPFilter(ctx, vm, device, request); err != nil {
 			return
 		}
@@ -451,6 +471,24 @@ func networkPeerFirewallRules(device string, request NetworkAttachmentRequest) (
 			Comment: "Organesson network peers " + request.AttachmentOperationKey + " " + subnet,
 		})
 	}
+	return
+}
+
+// environmentNetworkIngressRequired opens the reserved environment NIC; guest firewalls control exposed services.
+func environmentNetworkIngressRequired(request NetworkAttachmentRequest) (required bool) {
+	required = request.EnforceAddressFilter && request.NetworkOperationKey == ""
+	return
+}
+
+// environmentNetworkIngressFirewallRules allows inbound traffic only on the address-reserved environment NIC.
+func environmentNetworkIngressFirewallRules(device string, request NetworkAttachmentRequest) (rules []*pve.FirewallRule) {
+	if !environmentNetworkIngressRequired(request) {
+		return
+	}
+	rules = []*pve.FirewallRule{{
+		Type: "in", Action: "ACCEPT", Enable: 1, Iface: device,
+		Comment: "Organesson environment ingress " + request.AttachmentOperationKey,
+	}}
 	return
 }
 

@@ -88,6 +88,22 @@ func TestWindowsArtifactPowerShellQuoting(t *testing.T) {
 	}
 }
 
+func TestRetryableGuestFileWriteError(t *testing.T) {
+	for _, testCase := range []struct {
+		message string
+		retry   bool
+	}{
+		{message: "guest-file-open failed - got timeout", retry: true},
+		{message: "failed to open file: process is being used by another process", retry: true},
+		{message: "guest agent is not running", retry: true},
+		{message: "permission denied", retry: false},
+	} {
+		if retryableGuestFileWriteError(errors.New(testCase.message)) != testCase.retry {
+			t.Errorf("retryableGuestFileWriteError(%q) did not return %t", testCase.message, testCase.retry)
+		}
+	}
+}
+
 func TestWaitForGuestExecExitRetriesTemporaryProxmoxErrors(t *testing.T) {
 	var attempts int
 	var fakePVE *httptest.Server = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
