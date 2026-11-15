@@ -645,12 +645,31 @@ func (driver *apiVMDriver) Delete(ctx context.Context, nodeName string, id strin
 		return
 	}
 	if !vm.IsStopped() {
+		var shutdownErr error
 		var shutdownTask *pve.Task
-		if shutdownTask, err = vm.Shutdown(ctx); err != nil {
+		if shutdownTask, shutdownErr = vm.Shutdown(ctx); shutdownErr == nil {
+			shutdownErr = waitTask(ctx, client, shutdownTask)
+		}
+		if vm, err = node.VirtualMachine(ctx, vmid); err != nil {
+			if shutdownErr != nil {
+				err = fmt.Errorf("graceful shutdown failed (%v), and VM state could not be confirmed: %w", shutdownErr, err)
+			}
 			return
 		}
-		if err = waitTask(ctx, client, shutdownTask); err != nil {
-			return
+		if !vm.IsStopped() {
+			var stopTask *pve.Task
+			if stopTask, err = vm.Stop(ctx); err != nil {
+				if shutdownErr != nil {
+					err = fmt.Errorf("graceful shutdown failed (%v); force stop failed: %w", shutdownErr, err)
+				}
+				return
+			}
+			if err = waitTask(ctx, client, stopTask); err != nil {
+				if shutdownErr != nil {
+					err = fmt.Errorf("graceful shutdown failed (%v); force stop did not complete: %w", shutdownErr, err)
+				}
+				return
+			}
 		}
 		if vm, err = node.VirtualMachine(ctx, vmid); err != nil {
 			return

@@ -3,6 +3,7 @@ package v1
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
@@ -277,7 +278,7 @@ func deleteVirtualMachine(services common.Services) (handler fiber.Handler) {
 				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Proxmox is unavailable; the managed VM was not removed from Organesson."})
 			}
 			if err = services.Proxmox.DeleteVM(ctx, resource.ExternalNode, resource.ExternalID, resource.OperationKey); err != nil {
-				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox did not confirm VM deletion; the Organesson record was retained."})
+				return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": fmt.Sprintf("Proxmox did not confirm VM deletion; the Organesson record was retained: %v", err)})
 			}
 		} else if resource.PowerState == "provisioning" && resource.OperationKey != "" {
 			if services.Proxmox == nil {

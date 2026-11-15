@@ -499,7 +499,7 @@ func (driver *apiGuestArtifactDriver) executeUnix(ctx context.Context, vm *pve.V
 		return
 	}
 	var status guestAgentExecStatus
-	if status, err = waitForGuestExecExit(ctx, driver.settings, request.Node, vmid, pid, 1800); err != nil {
+	if status, err = waitForGuestExecExit(ctx, driver.settings, request.Node, vmid, pid, 900); err != nil {
 		return
 	}
 	if status.ExitCode != 0 {

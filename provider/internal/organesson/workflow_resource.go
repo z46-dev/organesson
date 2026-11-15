@@ -280,7 +280,7 @@ func retryableWorkflowGuestSetupError(err error) (retry bool) {
 		return
 	}
 	var message string = strings.ToLower(err.Error())
-	retry = strings.Contains(message, "guest-setup returned 502 bad gateway") && strings.Contains(message, `"exit_code":-1`)
+	retry = strings.Contains(message, "guest-setup returned 502 bad gateway") && strings.Contains(message, `"exit_code":-1`) && !strings.Contains(message, "guest command did not exit within")
 	return
 }
 
