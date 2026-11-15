@@ -24,6 +24,7 @@ func guestSetupResource() (resource *schema.Resource) {
 		ReadContext:   guestSetupRead,
 		UpdateContext: guestSetupUpdate,
 		DeleteContext: guestSetupDelete,
+		Timeouts:      &schema.ResourceTimeout{Create: schema.DefaultTimeout(60 * time.Minute)},
 		Importer:      &schema.ResourceImporter{StateContext: schema.ImportStatePassthroughContext},
 		Schema: map[string]*schema.Schema{
 			"artifact_id":             {Type: schema.TypeString, Required: true, ForceNew: true, Description: "The local artifact manifest resource identifier."},
@@ -92,10 +93,10 @@ func executeGuestSetupWithRetry(ctx context.Context, client *apiClient, vmID str
 	const maximumAttempts int = 3
 	var attempt int
 	for attempt = 1; attempt <= maximumAttempts; attempt++ {
-		err = client.requestBytes(ctx, "POST", "/api/v1/virtual-machines/"+vmID+"/guest-setup", "application/vnd.organesson.artifact+gzip", map[string]string{
+		err = client.requestBytesWithTimeout(ctx, "POST", "/api/v1/virtual-machines/"+vmID+"/guest-setup", "application/vnd.organesson.artifact+gzip", map[string]string{
 			"X-Organesson-Artifact-SHA256":     artifact.SHA256,
 			"X-Organesson-Artifact-Entrypoint": entrypoint,
-		}, artifact.Archive, result)
+		}, artifact.Archive, result, 35*time.Minute)
 		if err == nil || attempt == maximumAttempts || !retryableGuestSetupError(err, retryNetworkReadiness) {
 			return
 		}
