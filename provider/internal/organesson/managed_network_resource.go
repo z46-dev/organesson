@@ -270,6 +270,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 	}
 	var wanID string
 	var wan networkAttachmentResult
+	var upstreamNetwork *networkResult
 	if data.Get("egress_enabled").(bool) {
 		var poolID int
 		if raw := data.Get("egress_address_pool_request_id").(string); raw != "" {
@@ -297,6 +298,12 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 			if upstreamNetworkID, err = strconv.Atoi(egressUpstreamDeploymentNetworkID); err != nil || upstreamNetworkID < 1 {
 				managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID, externalVLANAttachmentID)
 				diagnostics = diag.Errorf("egress_upstream_deployment_network_id must be a valid deployment network ID")
+				return
+			}
+			upstreamNetwork = &networkResult{}
+			if err = client.request(ctx, http.MethodGet, "/api/v1/networks/"+strconv.Itoa(upstreamNetworkID), nil, upstreamNetwork); err != nil {
+				managedNetworkRollback(ctx, client, lanID, "", networkID, vmResourceID, groupID, externalVLANAttachmentID)
+				diagnostics = diag.FromErr(err)
 				return
 			}
 			egressAttachmentRequest["environment_network"] = ""
@@ -361,7 +368,7 @@ func managedNetworkCreate(ctx context.Context, data *schema.ResourceData, meta i
 	}
 	var wanAllowedNetworks []string
 	if wanID != "" {
-		if wanAllowedNetworks, err = routerWANAllowedNetworks(wan); err != nil {
+		if wanAllowedNetworks, err = routerWANAllowedNetworks(wan, upstreamNetwork); err != nil {
 			managedNetworkRollback(ctx, client, lanID, wanID, networkID, vmResourceID, groupID, externalVLANAttachmentID)
 			diagnostics = diag.FromErr(err)
 			return
@@ -468,9 +475,12 @@ func createGuestNetworkConfiguration(ctx context.Context, client *apiClient, att
 }
 
 // routerWANAllowedNetworks returns only the validated address scopes assigned to the router's WAN.
-func routerWANAllowedNetworks(attachment networkAttachmentResult) (networks []string, err error) {
+func routerWANAllowedNetworks(attachment networkAttachmentResult, upstream *networkResult) (networks []string, err error) {
 	var seen map[string]bool = make(map[string]bool)
 	var candidates []string = append(append([]string{}, attachment.Configuration.Request.AllowedAddresses...), attachment.Configuration.AddressPrefix, attachment.Configuration.IPv6AddressPrefix)
+	if upstream != nil {
+		candidates = append(candidates, upstream.Configuration.Request.Subnet, upstream.Configuration.Request.IPv6Subnet)
+	}
 	for _, candidate := range candidates {
 		if candidate == "" {
 			continue

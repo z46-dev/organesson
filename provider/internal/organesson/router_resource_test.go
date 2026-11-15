@@ -34,14 +34,14 @@ func TestRouterWANAllowedNetworksUsesOnlyValidatedScopes(t *testing.T) {
 	attachment.Configuration.IPv6AddressPrefix = "fd42::/64"
 	var networks []string
 	var err error
-	if networks, err = routerWANAllowedNetworks(attachment); err != nil {
+	if networks, err = routerWANAllowedNetworks(attachment, nil); err != nil {
 		t.Fatalf("valid router egress scopes were rejected: %v", err)
 	}
 	if strings.Join(networks, ",") != "172.29.0.0/16,192.0.2.10/32,fd42::/64" {
 		t.Fatalf("unexpected normalized router egress scopes: %#v", networks)
 	}
 	attachment.Configuration.Request.AllowedAddresses = []string{"not-a-network"}
-	if _, err = routerWANAllowedNetworks(attachment); err == nil {
+	if _, err = routerWANAllowedNetworks(attachment, nil); err == nil {
 		t.Fatal("invalid router egress scope was accepted")
 	}
 }
