@@ -21,16 +21,17 @@ type (
 	}
 
 	createVMRequest struct {
-		ParentNodeID     int    `json:"parent_node_id"`
-		Name             string `json:"name"`
-		TargetNode       string `json:"target_node,omitempty"`
-		ProvisioningMode string `json:"provisioning_mode"`
-		Template         string `json:"template"`
-		Pool             string `json:"pool"`
-		Storage          string `json:"storage"`
-		Cores            int    `json:"cpu_cores"`
-		MemoryMiB        int    `json:"memory_mib"`
-		BootDiskGiB      int    `json:"boot_disk_gib"`
+		ParentNodeID      int    `json:"parent_node_id"`
+		Name              string `json:"name"`
+		TargetNode        string `json:"target_node,omitempty"`
+		ProvisioningMode  string `json:"provisioning_mode"`
+		Template          string `json:"template"`
+		Pool              string `json:"pool"`
+		Storage           string `json:"storage"`
+		Cores             int    `json:"cpu_cores"`
+		MemoryMiB         int    `json:"memory_mib"`
+		BootDiskGiB       int    `json:"boot_disk_gib"`
+		FirewallMACFilter *bool  `json:"firewall_mac_filter"`
 	}
 
 	createAddressPoolRequest struct {
@@ -72,6 +73,10 @@ type (
 
 	setPowerRequest struct {
 		Action string `json:"action"`
+	}
+
+	setVMFirewallMACFilterRequest struct {
+		Enabled *bool `json:"enabled"`
 	}
 
 	createLogicalGroupRequest struct {
@@ -124,6 +129,7 @@ func initDeployments(parent fiber.Router, services common.Services) {
 	parent.Get("/permission-grants/:grant_id", common.RequireActor(services.Authentication), getPermissionGrant(services))
 	parent.Delete("/permission-grants/:grant_id", common.RequireActor(services.Authentication), deletePermissionGrant(services))
 	parent.Post("/virtual-machines/:resource_id/power", common.RequireActor(services.Authentication), setVirtualMachinePower(services, refreshManager))
+	parent.Put("/virtual-machines/:resource_id/firewall-mac-filter", common.RequireActor(services.Authentication), setVirtualMachineFirewallMACFilter(services))
 	parent.Get("/virtual-machines/:resource_id/snapshots", common.RequireActor(services.Authentication), listVMSnapshots(services))
 	parent.Post("/virtual-machines/:resource_id/snapshots", common.RequireActor(services.Authentication), createVMSnapshot(services))
 	parent.Get("/virtual-machines/:resource_id/console", common.RequireActor(services.Authentication), vmConsole(services))
@@ -846,6 +852,10 @@ func createVirtualMachine(services common.Services) (handler fiber.Handler) {
 		if err = ctx.Bind().Body(&request); err != nil || request.ParentNodeID < 1 {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "A valid owner node and VM name are required."})
 		}
+		if request.FirewallMACFilter == nil {
+			var enabled bool = true
+			request.FirewallMACFilter = &enabled
+		}
 		var accountID int
 		if accountID, _ = common.AccountID(ctx); accountID == 0 {
 			return ctx.SendStatus(fiber.StatusUnauthorized)
@@ -909,14 +919,15 @@ func createVirtualMachine(services common.Services) (handler fiber.Handler) {
 				}
 			}
 			var spec proxmox.VMCloneRequest = proxmox.VMCloneRequest{
-				TemplateAlias: request.Template,
-				Name:          request.Name,
-				TargetNode:    request.TargetNode,
-				Pool:          request.Pool,
-				Storage:       request.Storage,
-				Cores:         request.Cores,
-				MemoryMiB:     request.MemoryMiB,
-				BootDiskGiB:   request.BootDiskGiB,
+				TemplateAlias:     request.Template,
+				Name:              request.Name,
+				TargetNode:        request.TargetNode,
+				Pool:              request.Pool,
+				Storage:           request.Storage,
+				Cores:             request.Cores,
+				MemoryMiB:         request.MemoryMiB,
+				BootDiskGiB:       request.BootDiskGiB,
+				FirewallMACFilter: request.FirewallMACFilter,
 			}
 			var template *db.VMTemplate
 			if resource, template, err = services.Domain.ReserveProxmoxVirtualMachine(accountID, deploymentID, request.ParentNodeID, spec); err != nil {
@@ -934,16 +945,17 @@ func createVirtualMachine(services common.Services) (handler fiber.Handler) {
 			if resource.ExternalID == "" {
 				var placement proxmox.VMPlacement
 				if placement, err = services.Proxmox.CloneVM(ctx, proxmox.VMCloneRequest{
-					SourceVMID:    template.SourceID,
-					TemplateAlias: spec.TemplateAlias,
-					Name:          spec.Name,
-					TargetNode:    spec.TargetNode,
-					Pool:          spec.Pool,
-					Storage:       spec.Storage,
-					Cores:         spec.Cores,
-					MemoryMiB:     spec.MemoryMiB,
-					BootDiskGiB:   spec.BootDiskGiB,
-					OperationKey:  resource.OperationKey,
+					SourceVMID:        template.SourceID,
+					TemplateAlias:     spec.TemplateAlias,
+					Name:              spec.Name,
+					TargetNode:        spec.TargetNode,
+					Pool:              spec.Pool,
+					Storage:           spec.Storage,
+					Cores:             spec.Cores,
+					MemoryMiB:         spec.MemoryMiB,
+					BootDiskGiB:       spec.BootDiskGiB,
+					FirewallMACFilter: spec.FirewallMACFilter,
+					OperationKey:      resource.OperationKey,
 				}); err != nil {
 					return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Proxmox VM provisioning failed. The reservation was retained so a retry can safely recover or continue it."})
 				}
@@ -959,6 +971,43 @@ func createVirtualMachine(services common.Services) (handler fiber.Handler) {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "VM provisioning_mode must be simulated or proxmox."})
 		}
 		err = ctx.Status(fiber.StatusCreated).JSON(fiber.Map{"resource": resource})
+		return
+	}
+	return
+}
+
+// setVirtualMachineFirewallMACFilter updates the owned VM's Proxmox MAC filtering policy.
+func setVirtualMachineFirewallMACFilter(services common.Services) (handler fiber.Handler) {
+	handler = func(ctx fiber.Ctx) (err error) {
+		var request setVMFirewallMACFilterRequest
+		if err = ctx.Bind().Body(&request); err != nil || request.Enabled == nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "A MAC-filter enabled value is required."})
+		}
+		var actorID int
+		if actorID, _ = common.AccountID(ctx); actorID < 1 {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		var resourceID int
+		if resourceID, err = common.ParseID(ctx, "resource_id"); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid resource identifier."})
+		}
+		var resource *db.ManagedResource
+		if resource, err = services.Domain.GetVirtualMachine(actorID, resourceID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if err = services.Domain.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		if resource.ExternalID == "" || services.Proxmox == nil {
+			return ctx.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "A Proxmox-managed VM is required to update its MAC filter."})
+		}
+		if err = services.Proxmox.SetVMFirewallMACFilter(ctx, resource.ExternalNode, resource.ExternalID, resource.OperationKey, *request.Enabled); err != nil {
+			return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not update the Proxmox VM MAC filter."})
+		}
+		if resource, err = services.Domain.UpdateVMFirewallMACFilter(actorID, resourceID, *request.Enabled); err != nil {
+			return common.DomainError(ctx, err)
+		}
+		err = ctx.JSON(fiber.Map{"resource": resource})
 		return
 	}
 	return
@@ -1087,6 +1136,10 @@ func getVirtualMachine(services common.Services) (handler fiber.Handler) {
 			}
 		}
 		var architecture string
+		var firewallMACFilter bool = true
+		if specification.FirewallMACFilter != nil {
+			firewallMACFilter = *specification.FirewallMACFilter
+		}
 		if specification.TemplateAlias != "" {
 			var aliases []*db.VMTemplateAlias
 			if aliases, err = services.Store.VMTemplateAliases.SelectAll(); err != nil {
@@ -1118,15 +1171,16 @@ func getVirtualMachine(services common.Services) (handler fiber.Handler) {
 			*db.ManagedResource
 			CanConsoleControl bool `json:"can_console_control"`
 		}{resource, canConsoleControl}, "specification": fiber.Map{
-			"template_alias": specification.TemplateAlias,
-			"sockets":        sockets,
-			"cores":          cores,
-			"architecture":   architecture,
-			"cpu_model":      liveCPU.CPUModel,
-			"memory_mib":     specification.MemoryMiB,
-			"boot_disk_gib":  specification.BootDiskGiB,
-			"pool":           specification.Pool,
-			"storage":        specification.Storage,
+			"template_alias":      specification.TemplateAlias,
+			"sockets":             sockets,
+			"cores":               cores,
+			"architecture":        architecture,
+			"cpu_model":           liveCPU.CPUModel,
+			"memory_mib":          specification.MemoryMiB,
+			"boot_disk_gib":       specification.BootDiskGiB,
+			"firewall_mac_filter": firewallMACFilter,
+			"pool":                specification.Pool,
+			"storage":             specification.Storage,
 		}})
 		return
 	}

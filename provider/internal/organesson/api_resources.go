@@ -34,6 +34,9 @@ type (
 			Name         string `json:"name"`
 			PowerState   string `json:"power_state"`
 		} `json:"resource"`
+		Specification struct {
+			FirewallMACFilter bool `json:"firewall_mac_filter"`
+		} `json:"specification"`
 	}
 	userGroupResult struct {
 		Group struct {
@@ -732,15 +735,16 @@ func virtualMachineOperations() (operations remoteResourceOperations) {
 		}
 		var result vmResult
 		err = client.request(ctx, http.MethodPost, "/api/v1/deployments/"+strconv.Itoa(parentResult.Node.DeploymentID)+"/virtual-machines", map[string]any{
-			"parent_node_id":    parentResult.Node.ID,
-			"name":              data.Get("name").(string),
-			"provisioning_mode": "proxmox",
-			"template":          data.Get("template").(string),
-			"pool":              data.Get("pool").(string),
-			"storage":           data.Get("storage").(string),
-			"cpu_cores":         data.Get("cpu_cores").(int),
-			"memory_mib":        data.Get("memory_mib").(int),
-			"boot_disk_gib":     data.Get("boot_disk_gib").(int),
+			"parent_node_id":      parentResult.Node.ID,
+			"name":                data.Get("name").(string),
+			"provisioning_mode":   "proxmox",
+			"template":            data.Get("template").(string),
+			"pool":                data.Get("pool").(string),
+			"storage":             data.Get("storage").(string),
+			"cpu_cores":           data.Get("cpu_cores").(int),
+			"memory_mib":          data.Get("memory_mib").(int),
+			"boot_disk_gib":       data.Get("boot_disk_gib").(int),
+			"firewall_mac_filter": data.Get("firewall_mac_filter").(bool),
 		}, &result)
 		if err == nil {
 			data.SetId(strconv.Itoa(result.Resource.ID))
@@ -752,8 +756,14 @@ func virtualMachineOperations() (operations remoteResourceOperations) {
 		return
 	}
 	// Legacy provisioning_mode changes are intentionally ignored without replacing the VM.
-	operations.Update = func(_ context.Context, _ *schema.ResourceData, _ *apiClient) (err error) {
-		return
+	operations.Update = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
+		var id string
+		if id, err = remoteID(data.Id()); err != nil {
+			return
+		}
+		return client.request(ctx, http.MethodPut, "/api/v1/virtual-machines/"+id+"/firewall-mac-filter", map[string]bool{
+			"enabled": data.Get("firewall_mac_filter").(bool),
+		}, nil)
 	}
 	operations.Read = func(ctx context.Context, data *schema.ResourceData, client *apiClient) (err error) {
 		var id string
@@ -768,6 +778,7 @@ func virtualMachineOperations() (operations remoteResourceOperations) {
 			_ = data.Set("power_state", result.Resource.PowerState)
 			_ = data.Set("proxmox_vmid", result.Resource.ExternalID)
 			_ = data.Set("proxmox_node", result.Resource.ExternalNode)
+			_ = data.Set("firewall_mac_filter", result.Specification.FirewallMACFilter)
 		}
 		return
 	}

@@ -29,16 +29,17 @@ type (
 
 	// VMCloneRequest describes the bounded configuration applied to a VM clone.
 	VMCloneRequest struct {
-		SourceVMID    string `json:"source_vm_id"`
-		TemplateAlias string `json:"template_alias"`
-		Name          string `json:"name"`
-		TargetNode    string `json:"target_node,omitempty"`
-		Pool          string `json:"pool"`
-		Storage       string `json:"storage"`
-		Cores         int    `json:"cores"`
-		MemoryMiB     int    `json:"memory_mib"`
-		BootDiskGiB   int    `json:"boot_disk_gib"`
-		OperationKey  string `json:"operation_key"`
+		SourceVMID        string `json:"source_vm_id"`
+		TemplateAlias     string `json:"template_alias"`
+		Name              string `json:"name"`
+		TargetNode        string `json:"target_node,omitempty"`
+		Pool              string `json:"pool"`
+		Storage           string `json:"storage"`
+		Cores             int    `json:"cores"`
+		MemoryMiB         int    `json:"memory_mib"`
+		BootDiskGiB       int    `json:"boot_disk_gib"`
+		FirewallMACFilter *bool  `json:"firewall_mac_filter,omitempty"`
+		OperationKey      string `json:"operation_key"`
 	}
 
 	// VMPlacement is the authoritative Proxmox location and current power state.
@@ -103,6 +104,63 @@ func (service *Service) ReadVM(ctx context.Context, node string, vmid string, op
 		return
 	}
 	placement, err = service.vmDriver.Read(ctx, node, vmid, operationKey)
+	return
+}
+
+// SetVMFirewallMACFilter updates only the Proxmox MAC-filter option for one managed VM.
+func (service *Service) SetVMFirewallMACFilter(ctx context.Context, nodeName string, id string, operationKey string, enabled bool) (err error) {
+	if service == nil || service.vmDriver == nil || !service.Configured() {
+		err = ErrNotConfigured
+		return
+	}
+	service.lifecycleLock.Lock()
+	defer service.lifecycleLock.Unlock()
+
+	var driver *apiVMDriver
+	var ok bool
+	if driver, ok = service.vmDriver.(*apiVMDriver); !ok {
+		err = errors.New("Proxmox VM firewall updates are unavailable with the configured VM driver")
+		return
+	}
+	err = driver.setFirewallMACFilter(ctx, nodeName, id, operationKey, enabled)
+	return
+}
+
+// setFirewallMACFilter updates only the MAC-filter option after verifying VM ownership.
+func (driver *apiVMDriver) setFirewallMACFilter(ctx context.Context, nodeName string, id string, operationKey string, enabled bool) (err error) {
+	var client *pve.Client
+	if client, err = newAPIClient(driver.settings); err != nil {
+		return
+	}
+	var vmid int
+	if vmid, err = parseVMID(id); err != nil {
+		return
+	}
+	var vm *pve.VirtualMachine
+	var actualNode string
+	if _, vm, actualNode, err = locateManagedVMWithInventory(ctx, client, vmid, driver.inventory); err != nil {
+		return
+	}
+	if actualNode != nodeName {
+		err = errors.New("managed VM is no longer on the expected Proxmox node")
+		return
+	}
+	if err = verifyManagedVM(vm, operationKey); err != nil {
+		return
+	}
+	err = applyVMFirewallMACFilter(ctx, client, vm, enabled)
+	return
+}
+
+// applyVMFirewallMACFilter changes only the PVE MAC-filter option and preserves the rest.
+func applyVMFirewallMACFilter(ctx context.Context, client *pve.Client, vm *pve.VirtualMachine, enabled bool) (err error) {
+	var options *pve.FirewallVirtualMachineOption
+	if options, err = getVMFirewallOptions(ctx, client, vm); err != nil {
+		return
+	}
+	var macFilter pve.IntOrBool = pve.IntOrBool(enabled)
+	options.Macfilter = &macFilter
+	err = vm.FirewallOptionSet(ctx, options)
 	return
 }
 
@@ -374,6 +432,11 @@ func (driver *apiVMDriver) applyBaseline(ctx context.Context, client *pve.Client
 	}
 	if err = resizeBootDisk(ctx, client, vm, request.BootDiskGiB); err != nil {
 		return
+	}
+	if request.FirewallMACFilter != nil {
+		if err = applyVMFirewallMACFilter(ctx, client, vm, *request.FirewallMACFilter); err != nil {
+			return
+		}
 	}
 	placement = VMPlacement{VMID: strconv.Itoa(vmid), Node: nodeName, Name: request.Name, PowerState: vm.Status}
 	return

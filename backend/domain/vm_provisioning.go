@@ -66,6 +66,10 @@ func (service *Service) provisioningVMTemplate(selector string, allowSystemOnly 
 func (service *Service) ReserveProxmoxVirtualMachine(actorID int, deploymentID int, parentNodeID int, request proxmox.VMCloneRequest) (resource *db.ManagedResource, template *db.VMTemplate, err error) {
 	service.provisioningLock.Lock()
 	defer service.provisioningLock.Unlock()
+	if request.FirewallMACFilter == nil {
+		var enabled bool = true
+		request.FirewallMACFilter = &enabled
+	}
 
 	var parent *db.OwnershipNode
 	if parent, err = service.store.OwnershipNodes.Select(parentNodeID); err != nil {
@@ -123,6 +127,10 @@ func (service *Service) ReserveProxmoxVirtualMachine(actorID int, deploymentID i
 			var existingConfiguration proxmox.VMCloneRequest
 			if err = json.Unmarshal([]byte(current.ConfigurationJSON), &existingConfiguration); err != nil {
 				return
+			}
+			if existingConfiguration.FirewallMACFilter == nil {
+				var enabled bool = true
+				existingConfiguration.FirewallMACFilter = &enabled
 			}
 			var existingEncoded []byte
 			if existingEncoded, err = json.Marshal(existingConfiguration); err != nil {
@@ -189,6 +197,38 @@ func (service *Service) ReserveProxmoxVirtualMachine(actorID int, deploymentID i
 	if err = service.createProxmoxVMRecord(actorID, deploymentID, parentNodeID, request.Name, request.OperationKey, string(encoded), &resource); err != nil {
 		return
 	}
+	return
+}
+
+// UpdateVMFirewallMACFilter stores the requested MAC-filter state after Proxmox accepts it.
+func (service *Service) UpdateVMFirewallMACFilter(actorID int, resourceID int, enabled bool) (resource *db.ManagedResource, err error) {
+	service.provisioningLock.Lock()
+	defer service.provisioningLock.Unlock()
+
+	if resource, err = service.store.ManagedResources.Select(resourceID); err != nil {
+		return
+	}
+	if resource == nil || resource.Kind != "virtual_machine" || resource.ExternalID == "" {
+		err = ErrNotFound
+		return
+	}
+	if err = service.Require(actorID, db.PermissionDeploymentManage, resource.OwnershipID); err != nil {
+		return
+	}
+	var specification proxmox.VMCloneRequest
+	if err = json.Unmarshal([]byte(resource.ConfigurationJSON), &specification); err != nil {
+		return
+	}
+	specification.FirewallMACFilter = &enabled
+	var encoded []byte
+	if encoded, err = json.Marshal(specification); err != nil {
+		return
+	}
+	resource.ConfigurationJSON = string(encoded)
+	if err = service.store.ManagedResources.Update(resource); err != nil {
+		return
+	}
+	err = service.writeAudit(actorID, "vm.firewall_mac_filter.update", fmt.Sprintf("resource:%d", resourceID), "succeeded", map[string]any{"enabled": enabled})
 	return
 }
 

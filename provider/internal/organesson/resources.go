@@ -193,20 +193,21 @@ func resourceAddressPoolRequest() (resource *schema.Resource) {
 // resourceVirtualMachine defines a catalog-template virtual machine.
 func resourceVirtualMachine() (resource *schema.Resource) {
 	resource = apiResource(map[string]*schema.Schema{
-		"boot_disk_gib":     {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested boot disk size in GiB."},
-		"cpu_cores":         {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested virtual CPU cores."},
-		"logical_group_id":  {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Parent logical ownership node identifier."},
-		"memory_mib":        {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested memory in MiB."},
-		"name":              {Type: schema.TypeString, Required: true, ForceNew: true, Description: "VM name."},
-		"pool":              {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Authorized Proxmox resource pool; omitted when policy allows exactly one."},
-		"provisioning_mode": {Type: schema.TypeString, Optional: true, Deprecated: "This field is ignored. Virtual machines are provisioned through the configured Proxmox environment."},
-		"proxmox_node":      {Type: schema.TypeString, Computed: true, Description: "The Proxmox node hosting this VM."},
-		"proxmox_vmid":      {Type: schema.TypeString, Computed: true, Description: "The Proxmox VMID assigned to this resource."},
-		"ownership_node_id": {Type: schema.TypeInt, Computed: true, Description: "The VM's ownership-tree node identifier."},
-		"power_state":       {Type: schema.TypeString, Computed: true, Description: "Current VM power state."},
-		"storage":           {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Authorized Proxmox storage; omitted when policy allows exactly one."},
-		"template":          {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Ready Organesson VM template alias."},
-		"summary":           summarySchema(),
+		"boot_disk_gib":       {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested boot disk size in GiB."},
+		"cpu_cores":           {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested virtual CPU cores."},
+		"firewall_mac_filter": {Type: schema.TypeBool, Optional: true, Default: true, Description: "Proxmox VM-wide source MAC filtering. Disable only for guests that bridge downstream client MAC addresses."},
+		"logical_group_id":    {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Parent logical ownership node identifier."},
+		"memory_mib":          {Type: schema.TypeInt, Required: true, ForceNew: true, Description: "Requested memory in MiB."},
+		"name":                {Type: schema.TypeString, Required: true, ForceNew: true, Description: "VM name."},
+		"pool":                {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Authorized Proxmox resource pool; omitted when policy allows exactly one."},
+		"provisioning_mode":   {Type: schema.TypeString, Optional: true, Deprecated: "This field is ignored. Virtual machines are provisioned through the configured Proxmox environment."},
+		"proxmox_node":        {Type: schema.TypeString, Computed: true, Description: "The Proxmox node hosting this VM."},
+		"proxmox_vmid":        {Type: schema.TypeString, Computed: true, Description: "The Proxmox VMID assigned to this resource."},
+		"ownership_node_id":   {Type: schema.TypeInt, Computed: true, Description: "The VM's ownership-tree node identifier."},
+		"power_state":         {Type: schema.TypeString, Computed: true, Description: "Current VM power state."},
+		"storage":             {Type: schema.TypeString, Optional: true, ForceNew: true, Description: "Authorized Proxmox storage; omitted when policy allows exactly one."},
+		"template":            {Type: schema.TypeString, Required: true, ForceNew: true, Description: "Ready Organesson VM template alias."},
+		"summary":             summarySchema(),
 	}, virtualMachineOperations())
 
 	return
