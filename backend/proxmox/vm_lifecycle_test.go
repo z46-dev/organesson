@@ -74,13 +74,15 @@ func TestCloneVMUsesPVECloneTasksAndAppliesTheRequestedSafeBaseline(t *testing.T
 		case request.Method == http.MethodPut && request.URL.Path == "/api2/json/nodes/pve2/qemu/900/resize":
 			resizeCount++
 			if resizeCount == 1 {
-				response.WriteHeader(http.StatusInternalServerError)
+				writePVEData(response, "UPID:pve1:3:3:3:qmresize:900:root@pam:")
 				return
 			}
 			resizeRequest = body
 			bootDiskSize = "64G"
-			writePVEData(response, "UPID:pve1:3:3:3:qmresize:900:root@pam:")
+			writePVEData(response, "UPID:pve1:4:4:4:qmresize:900:root@pam:")
 		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/tasks/UPID:pve1:3:3:3:qmresize:900:root@pam:/status"):
+			writePVEData(response, map[string]any{"status": "stopped", "exitstatus": "volume 'laas:vm-900-disk-0.qcow2' does not exist"})
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/tasks/UPID:pve1:4:4:4:qmresize:900:root@pam:/status"):
 			writePVEData(response, map[string]any{"status": "stopped", "exitstatus": "OK"})
 		default:
 			t.Errorf("unexpected fake PVE request: %s %s", request.Method, request.URL.String())
@@ -102,14 +104,8 @@ func TestCloneVMUsesPVECloneTasksAndAppliesTheRequestedSafeBaseline(t *testing.T
 		SourceVMID: "156", Name: "alice-fedora", Pool: "class-labs", Storage: "laas", Cores: 2,
 		MemoryMiB: 4096, BootDiskGiB: 64, OperationKey: "og-test",
 	}
-	if _, err = driver.Clone(context.Background(), cloneRequestInput); err == nil {
-		t.Fatal("first request should expose the simulated interrupted resize")
-	}
-	if cloneCount != 1 || resizeCount != 1 {
-		t.Fatalf("failed request should leave one recoverable VM: clones=%d resizes=%d", cloneCount, resizeCount)
-	}
 	if placement, err = driver.Clone(context.Background(), cloneRequestInput); err != nil {
-		t.Fatalf("recover interrupted clone: %v", err)
+		t.Fatalf("clone should retry while the cross-node disk becomes visible: %v", err)
 	}
 	if placement.VMID != "900" || placement.Node != "pve2" || placement.PowerState != "stopped" || cloneCount != 1 || resizeCount != 2 {
 		t.Fatalf("unexpected Proxmox placement: %#v", placement)

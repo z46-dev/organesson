@@ -847,23 +847,53 @@ func locateManagedVMWithInventory(ctx context.Context, client *pve.Client, vmid 
 }
 
 func resizeBootDisk(ctx context.Context, client *pve.Client, vm *pve.VirtualMachine, targetGiB int) (err error) {
-	var selected string
-	var currentGiB int
-	if selected, currentGiB, err = primaryBootDisk(vm); err != nil {
+	const (
+		maximumAttempts int           = 24
+		retryInterval   time.Duration = 5 * time.Second
+	)
+	var attempt int
+	for attempt = 1; attempt <= maximumAttempts; attempt++ {
+		if err = vm.Ping(ctx); err != nil {
+			return
+		}
+		var selected string
+		var currentGiB int
+		if selected, currentGiB, err = primaryBootDisk(vm); err != nil {
+			return
+		}
+		if targetGiB < currentGiB {
+			err = fmt.Errorf("requested boot disk size %d GiB is smaller than the source disk size %d GiB", targetGiB, currentGiB)
+			return
+		}
+		if targetGiB == currentGiB {
+			return
+		}
+		var task *pve.Task
+		if task, err = vm.ResizeDisk(ctx, selected, fmt.Sprintf("+%dG", targetGiB-currentGiB)); err == nil {
+			err = waitTask(ctx, client, task)
+		}
+		if err == nil || !retryableBootDiskResizeError(err) || attempt == maximumAttempts {
+			return
+		}
+		var timer *time.Timer = time.NewTimer(retryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			err = ctx.Err()
+			return
+		case <-timer.C:
+		}
+	}
+	return
+}
+
+// retryableBootDiskResizeError recognizes PVE's temporary shared-storage visibility race after cross-node clones.
+func retryableBootDiskResizeError(err error) (retry bool) {
+	if err == nil {
 		return
 	}
-	if targetGiB < currentGiB {
-		err = fmt.Errorf("requested boot disk size %d GiB is smaller than the source disk size %d GiB", targetGiB, currentGiB)
-		return
-	}
-	if targetGiB == currentGiB {
-		return
-	}
-	var task *pve.Task
-	if task, err = vm.ResizeDisk(ctx, selected, fmt.Sprintf("+%dG", targetGiB-currentGiB)); err != nil {
-		return
-	}
-	err = waitTask(ctx, client, task)
+	var message string = strings.ToLower(err.Error())
+	retry = strings.Contains(message, "volume '") && strings.Contains(message, "' does not exist")
 	return
 }
 
